@@ -32,6 +32,7 @@ type Response struct {
 	Cats    []roster.Cat `json:"cats,omitempty"`
 	Outbox  []Entry      `json:"outbox,omitempty"`
 	Spool   int          `json:"spool,omitempty"`
+	Stats   *Stats       `json:"stats,omitempty"`
 }
 
 func fail(err error) Response { return Response{OK: false, Error: err.Error()} }
@@ -130,12 +131,14 @@ func (d *Daemon) handleIPC(req Request) Response {
 
 	case "status":
 		me := d.Me()
+		st := d.stats.snapshot()
 		return Response{
 			OK:     true,
 			Me:     &me,
 			Cats:   d.ros.All(),
 			Outbox: d.ob.All(),
 			Spool:  d.spool.Count(),
+			Stats:  &st,
 		}
 
 	default:

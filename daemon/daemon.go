@@ -72,6 +72,7 @@ type Daemon struct {
 	ros   *roster.Roster
 	spool *store.Spool
 	ob    *outbox
+	stats *statsKeeper
 	inbox string
 
 	syncSeq atomic.Int64 // round-robin cursor for peer sync
@@ -113,6 +114,7 @@ func New(cfg Config, tr Transport) (*Daemon, error) {
 		ros:   ros,
 		spool: store.New(filepath.Join(cfg.Dir, "spool"), 0),
 		ob:    newOutbox(filepath.Join(cfg.Dir, "outbox")),
+		stats: newStatsKeeper(cfg.Dir),
 		inbox: inbox,
 	}
 	d.meCat = roster.Cat{
@@ -180,8 +182,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	d.mu.Lock()
 	d.meCat.Addr = d.tr.MyAddr()
+	me := d.meCat
 	d.mu.Unlock()
-	d.cfg.logf("clowder: cat %s listening at %s", d.meCat.Name, d.meCat.Addr)
+	d.cfg.logf("clowder: cat %s listening at %s", me.Name, me.Addr)
 
 	for _, c := range d.ros.All() {
 		d.allowCat(c)
@@ -343,15 +346,17 @@ func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *proto
 		return false
 	}
 	_ = pc.SetDeadline(time.Now().Add(streamTimeout))
-	if err := d.saveIncoming(o, io.LimitReader(pc.Reader(), o.Size), d.env.Identity.Private); err != nil {
+	plainSize, err := d.saveIncoming(o, io.LimitReader(pc.Reader(), o.Size), d.env.Identity.Private)
+	if err != nil {
 		d.cfg.logf("clowder: receiving %s from %s: %v", o.FileName, from.Name, err)
 		return false
 	}
+	d.stats.add(func(s *Stats) { s.Received++; s.ReceivedBytes += plainSize })
 	_ = pc.SetDeadline(time.Now().Add(msgTimeout))
 	if err := pc.WriteMsg(&protocol.Message{Ack: &protocol.Ack{ID: o.ID, Kind: protocol.AckDelivered}}); err != nil {
 		return false
 	}
-	d.cfg.logf("clowder: received %s from %s", o.FileName, from.Name)
+	d.cfg.logf("clowder: received %s (%s) from %s", o.FileName, HumanBytes(plainSize), from.Name)
 	return true
 }
 
@@ -453,41 +458,43 @@ func (d *Daemon) handleFetch(pc *protocol.Conn, hello *protocol.Hello, f *protoc
 	if err := d.spool.Delete(meta.ID); err != nil {
 		d.cfg.logf("clowder: deleting delivered %s: %v", meta.ID, err)
 	}
+	d.stats.add(func(s *Stats) { s.Fetched++ })
 	d.cfg.logf("clowder: delivered held %s to %s", meta.FileName, d.Me().Name)
 	return true
 }
 
 // saveIncoming decrypts a sealed stream from src into the inbox under a
-// unique name, verifying the announced plaintext digest.
-func (d *Daemon) saveIncoming(o *protocol.Offer, src io.Reader, recipient key.NodePrivate) error {
+// unique name, verifying the announced plaintext digest. It returns the
+// plaintext size.
+func (d *Daemon) saveIncoming(o *protocol.Offer, src io.Reader, recipient key.NodePrivate) (int64, error) {
 	inbox := d.InboxDir()
 	if err := os.MkdirAll(inbox, 0o700); err != nil {
-		return fmt.Errorf("creating inbox: %w", err)
+		return 0, fmt.Errorf("creating inbox: %w", err)
 	}
 	name := inboxPath(inbox, o.FileName)
 	tmp, err := os.CreateTemp(inbox, ".recv-*")
 	if err != nil {
-		return fmt.Errorf("creating temp file: %w", err)
+		return 0, fmt.Errorf("creating temp file: %w", err)
 	}
 	defer func() { _ = os.Remove(tmp.Name()) }()
-	_, gotSha, err := envelope.OpenStream(recipient, src, tmp)
+	gotSize, gotSha, err := envelope.OpenStream(recipient, src, tmp)
 	if err != nil {
 		tmp.Close()
-		return err
+		return 0, err
 	}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("closing temp file: %w", err)
+		return 0, fmt.Errorf("closing temp file: %w", err)
 	}
 	if gotSha != o.SHA256 {
-		return fmt.Errorf("digest mismatch: got %s, announced %s", gotSha, o.SHA256)
+		return 0, fmt.Errorf("digest mismatch: got %s, announced %s", gotSha, o.SHA256)
 	}
 	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
-		return fmt.Errorf("chmod temp file: %w", err)
+		return 0, fmt.Errorf("chmod temp file: %w", err)
 	}
 	if err := os.Rename(tmp.Name(), name); err != nil {
-		return fmt.Errorf("moving into inbox: %w", err)
+		return 0, fmt.Errorf("moving into inbox: %w", err)
 	}
-	return nil
+	return gotSize, nil
 }
 
 // inboxPath picks a non-existing name for a received file.
@@ -616,7 +623,8 @@ func (d *Daemon) deliverStream(ctx context.Context, peer roster.Cat, e Entry, ta
 	if m.Ack == nil || m.Ack.Kind != wantAck {
 		return fmt.Errorf("wanted %s ack, got %v", wantAck, m.Ack)
 	}
-	d.cfg.logf("clowder: sent %s to %s", e.FileName, targetName)
+	d.stats.add(func(s *Stats) { s.Sent++; s.SentBytes += size })
+	d.cfg.logf("clowder: sent %s (%s) to %s", e.FileName, HumanBytes(size), targetName)
 	return nil
 }
 
@@ -664,7 +672,7 @@ func (d *Daemon) fetchOne(pc *protocol.Conn, f protocol.PendingFile) error {
 		return err
 	}
 	_ = pc.SetDeadline(time.Now().Add(streamTimeout))
-	if err := d.saveIncoming(o, io.LimitReader(pc.Reader(), o.Size), d.env.Identity.Private); err != nil {
+	if _, err := d.saveIncoming(o, io.LimitReader(pc.Reader(), o.Size), d.env.Identity.Private); err != nil {
 		return err
 	}
 	_ = pc.SetDeadline(time.Now().Add(msgTimeout))

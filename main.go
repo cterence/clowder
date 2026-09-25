@@ -341,13 +341,28 @@ func cmdStatus() error {
 	}
 	fmt.Printf("config: %s\n", configDir())
 	fmt.Printf("inbox:  %s\n", inboxDir())
-	fmt.Printf("roster: %d cats\n", len(resp.Cats))
+	fmt.Printf("roster: %d %s\n", len(resp.Cats), plural(len(resp.Cats), "cat", "cats"))
 	fmt.Printf("outbox: %d pending\n", len(resp.Outbox))
 	for _, e := range resp.Outbox {
 		fmt.Printf("  %s -> %s (%s)\n", e.FileName, e.TargetName, age(e.AddedAt))
 	}
 	fmt.Printf("spool:  %d held\n", resp.Spool)
+	if resp.Stats != nil {
+		st := resp.Stats
+		fmt.Printf("stats:  sent %d %s (%s), received %d %s (%s)\n",
+			st.Sent, plural(int(st.Sent), "file", "files"), daemon.HumanBytes(st.SentBytes),
+			st.Received, plural(int(st.Received), "file", "files"), daemon.HumanBytes(st.ReceivedBytes))
+		fmt.Printf("        spooled %d, fetched %d\n", st.Spooled, st.Fetched)
+	}
 	return nil
+}
+
+// plural picks the singular or plural form for n.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 // age renders a coarse "x ago" for pending entries.
