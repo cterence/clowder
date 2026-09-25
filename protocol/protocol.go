@@ -4,8 +4,8 @@
 // Each connection starts with both sides sending a Hello (self
 // introduction), then both sides sending a Roster (full-roster sync).
 // After the handshake, a connection carries one request/response exchange
-// at a time: an Offer/Answer/blob/Ack file transfer, a Pending query, or a
-// Fetch request. The sealed file blob itself is not framed as a message:
+// at a time: an Offer/Answer/stream/Ack file transfer, a Pending query, or
+// a Fetch request. The sealed stream itself is not framed as a message:
 // after an accepted Offer, exactly Size raw bytes follow on the stream.
 package protocol
 
@@ -15,6 +15,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"time"
 
 	"github.com/fxamacker/cbor/v2"
 	"clowder/roster"
@@ -44,16 +46,18 @@ type RosterSync struct {
 	Cats []roster.Cat `cbor:"c"`
 }
 
-// Offer announces a sealed file. TargetKey/TargetName identify the cat the
-// file is for: the peer itself for a direct delivery, a third cat when the
-// peer is acting as a storer. Size is the sealed blob's length in bytes,
-// streamed raw after the peer's Answer.
+// Offer announces a sealed file stream. TargetKey/TargetName identify
+// the cat the file is for: the peer itself for a direct delivery, a
+// third cat when the peer is acting as a storer. Size is the sealed
+// stream's exact length in bytes (see envelope.SealedSize): after the
+// peer's Answer, exactly Size raw bytes follow on the stream. SHA256 is
+// of the plaintext, so the recipient can verify what it decrypts.
 type Offer struct {
 	ID         string `cbor:"i"`
 	FileName   string `cbor:"f"`
 	Size       int64  `cbor:"z"`
 	From       string `cbor:"o"` // sender's declared name
-	SHA256     string `cbor:"h"` // hex SHA-256 of the sealed blob
+	SHA256     string `cbor:"h"` // hex SHA-256 of the plaintext
 	TargetKey  string `cbor:"t"`
 	TargetName string `cbor:"m"`
 }
@@ -189,25 +193,23 @@ func (c *Conn) WriteMsg(m *Message) error { return WriteMsg(c.c, m) }
 // ReadMsg receives one message. See the package-level function.
 func (c *Conn) ReadMsg() (*Message, error) { return ReadMsg(c.r) }
 
-// ReadBlob reads exactly n raw bytes following an accepted Offer.
-func (c *Conn) ReadBlob(n int64) ([]byte, error) {
-	if n < 0 {
-		return nil, fmt.Errorf("protocol: negative blob size %d", n)
-	}
-	blob := make([]byte, n)
-	if _, err := io.ReadFull(c.r, blob); err != nil {
-		return nil, fmt.Errorf("protocol: reading blob: %w", err)
-	}
-	return blob, nil
-}
+// Reader returns the stream positioned right after the last message
+// read, for consuming raw transfer bytes (the sealed stream after an
+// accepted Offer). Reads must go through this, not the underlying
+// connection, because it may hold buffered bytes.
+func (c *Conn) Reader() io.Reader { return c.r }
 
-// WriteBlob streams exactly n raw bytes.
-func (c *Conn) WriteBlob(blob []byte) error {
-	if _, err := c.c.Write(blob); err != nil {
-		return fmt.Errorf("protocol: writing blob: %w", err)
-	}
-	return nil
-}
+// Writer returns the raw stream for writing raw transfer bytes.
+func (c *Conn) Writer() io.Writer { return c.c }
 
 // Close closes the underlying connection.
 func (c *Conn) Close() error { return c.c.Close() }
+
+// SetDeadline sets the read/write deadline on the underlying stream if it
+// supports deadlines, and is a no-op otherwise.
+func (c *Conn) SetDeadline(t time.Time) error {
+	if nc, ok := c.c.(net.Conn); ok {
+		return nc.SetDeadline(t)
+	}
+	return nil
+}

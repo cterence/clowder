@@ -1,16 +1,16 @@
-// Package store implements a storer cat's spool: sealed files held on
+// Package store implements a storer cat's spool: sealed streams held on
 // disk for offline recipients, with a time-to-live and explicit deletion
-// once the target acknowledges delivery. Files are written atomically
+// once the target acknowledges delivery. Streams are written atomically
 // (temporary file then rename) so a crash never leaves a half-written
-// blob visible.
+// stream visible.
 package store
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -23,12 +23,12 @@ const DefaultTTL = 7 * 24 * time.Hour
 // ErrNotFound is returned when no spooled file matches the request.
 var ErrNotFound = errors.New("store: no such spooled file")
 
-// Meta describes one spooled sealed file.
+// Meta describes one spooled sealed stream.
 type Meta struct {
 	ID         string `json:"id"`
 	FileName   string `json:"file_name"`
-	Size       int64  `json:"size"` // sealed blob size in bytes
-	SHA256     string `json:"sha256"`
+	Size       int64  `json:"size"` // sealed stream size in bytes
+	SHA256     string `json:"sha256"` // hex SHA-256 of the plaintext
 	From       string `json:"from"`        // sender's declared name
 	TargetKey  string `json:"target_key"`  // recipient node public key, string form
 	TargetName string `json:"target_name"` // recipient's declared name
@@ -56,22 +56,25 @@ func New(dir string, ttl time.Duration) *Spool {
 	return &Spool{dir: dir, ttl: ttl}
 }
 
-// Put writes a sealed blob and its metadata atomically.
-func (s *Spool) Put(meta Meta, blob []byte) error {
+// Put writes a sealed stream and its metadata atomically. meta.Size
+// must be set: exactly that many bytes are consumed from r. The SHA256
+// is taken as given (it is the plaintext digest the sender announced;
+// the stream is opaque to the storer).
+func (s *Spool) Put(meta Meta, r io.Reader) error {
 	if meta.ID == "" {
 		return errors.New("store: meta has no ID")
+	}
+	if meta.Size < 0 {
+		return fmt.Errorf("store: negative stream size %d", meta.Size)
 	}
 	if meta.StoredAt == 0 {
 		meta.StoredAt = time.Now().Unix()
 	}
-	sum := sha256.Sum256(blob)
-	meta.Size = int64(len(blob))
-	meta.SHA256 = hex.EncodeToString(sum[:])
 
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return fmt.Errorf("store: creating spool dir: %w", err)
 	}
-	if err := writeFileAtomic(s.blobPath(meta.ID), blob); err != nil {
+	if err := writeStreamAtomic(s.blobPath(meta.ID), r, meta.Size); err != nil {
 		return err
 	}
 	metaJSON, err := json.Marshal(meta)
@@ -105,9 +108,9 @@ func (s *Spool) List(targetKey string) []Meta {
 	return metas
 }
 
-// Open returns the metadata and sealed blob for an ID the target is
-// fetching.
-func (s *Spool) Open(id string) (Meta, []byte, error) {
+// Open returns the metadata and a reader over the sealed stream for an ID
+// the target is fetching. Close the reader when done.
+func (s *Spool) Open(id string) (Meta, io.ReadCloser, error) {
 	var meta Meta
 	mb, err := os.ReadFile(s.metaPath(id))
 	if os.IsNotExist(err) {
@@ -119,14 +122,14 @@ func (s *Spool) Open(id string) (Meta, []byte, error) {
 	if err := json.Unmarshal(mb, &meta); err != nil {
 		return Meta{}, nil, fmt.Errorf("store: parsing meta %s: %w", id, err)
 	}
-	blob, err := os.ReadFile(s.blobPath(id))
+	f, err := os.Open(s.blobPath(id))
 	if os.IsNotExist(err) {
 		return Meta{}, nil, ErrNotFound
 	}
 	if err != nil {
-		return Meta{}, nil, fmt.Errorf("store: reading blob %s: %w", id, err)
+		return Meta{}, nil, fmt.Errorf("store: opening blob %s: %w", id, err)
 	}
-	return meta, blob, nil
+	return meta, f, nil
 }
 
 // Delete removes a spooled file. Deleting a missing file is not an error.
@@ -187,12 +190,18 @@ func (s *Spool) metaPath(id string) string { return filepath.Join(s.dir, id+".me
 
 // writeFileAtomic writes data to path via a temp file and rename.
 func writeFileAtomic(path string, data []byte) error {
+	return writeStreamAtomic(path, bytes.NewReader(data), int64(len(data)))
+}
+
+// writeStreamAtomic copies exactly size bytes from r to path via a temp
+// file and rename, so a crash never leaves a half-written stream visible.
+func writeStreamAtomic(path string, r io.Reader, size int64) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
 	if err != nil {
 		return fmt.Errorf("store: creating temp file: %w", err)
 	}
 	defer os.Remove(tmp.Name()) // no-op after a successful rename
-	if _, err := tmp.Write(data); err != nil {
+	if _, err := io.CopyN(tmp, r, size); err != nil {
 		tmp.Close()
 		return fmt.Errorf("store: writing temp file: %w", err)
 	}
