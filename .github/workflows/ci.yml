@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go build ./...
+      - run: go vet ./...
+      # The suite is loopback-only; no network, no DERP access needed.
+      - run: go test -race -count=1 ./...
+
+  cross-compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: GOOS=darwin GOARCH=arm64 go build ./...
+      - run: GOOS=darwin GOARCH=amd64 go build ./...
+      - run: GOOS=windows go build ./...
+      - run: GOOS=linux GOARCH=arm64 go build ./...
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: golangci/golangci-lint-action@v7
+        with:
+          # Keep in sync with the nix devshell's golangci-lint.
+          version: v2.13.2
