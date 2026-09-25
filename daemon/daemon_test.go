@@ -259,6 +259,28 @@ func TestRosterPropagation(t *testing.T) {
 	}
 }
 
+func TestForgetClearsOutbox(t *testing.T) {
+	milo := startDaemon(t, "milo")
+	niko, _ := offlineCat(t, "niko")
+	addCat(t, milo, niko)
+
+	src := writeSource(t, "doomed nap")
+	if _, err := milo.Send("niko", src); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return len(milo.ob.All()) == 1 }, "outbox to hold the send")
+
+	if _, ok := milo.Forget("niko"); !ok {
+		t.Fatal("Forget failed")
+	}
+	if got := len(milo.ob.All()); got != 0 {
+		t.Fatalf("outbox has %d entries after forget, want 0", got)
+	}
+	if _, ok := milo.Roster().Get("niko"); ok {
+		t.Fatal("roster still has niko after forget")
+	}
+}
+
 func TestStorerRefusesWhenNotStorer(t *testing.T) {
 	milo := startDaemon(t, "milo")
 	picky := startDaemon(t, "picky") // not a storer

@@ -163,10 +163,22 @@ func (d *Daemon) Roster() *roster.Roster { return d.ros }
 // Spool returns the storer spool, for inspection and tests.
 func (d *Daemon) Spool() *store.Spool { return d.spool }
 
-// Forget removes a cat from the roster (local, manual operation; entries
-// are never removed by propagation in v1).
+// Forget removes a cat from the roster and drops any pending outbox
+// sends destined to it (local, manual operation; entries are never
+// removed by propagation in v1).
 func (d *Daemon) Forget(name string) (roster.Cat, bool) {
-	return d.ros.RemoveName(name)
+	c, ok := d.ros.RemoveName(name)
+	if !ok {
+		return c, false
+	}
+	for _, e := range d.ob.All() {
+		if e.TargetKey == c.Key {
+			if err := d.ob.Delete(e.ID); err != nil {
+				d.cfg.logf("clowder: dropping outbox entry %s: %v", e.ID, err)
+			}
+		}
+	}
+	return c, true
 }
 
 // SetStorer declares or retracts this cat's storer role and persists it.
