@@ -299,6 +299,7 @@ func (d *Daemon) addPeerCat(p *protocol.PairIntro) error {
 	if err != nil {
 		return err
 	}
+	c.ClientKey = p.ClientKey
 	c.Storer = p.Storer
 	if err := d.ros.Add(c); err != nil {
 		return err
@@ -354,9 +355,10 @@ func (d *Daemon) Join(ctx context.Context, code string) error {
 // pairIntroOf sends our intro and returns the peer's.
 func pairIntroOf(pc *protocol.Conn, me roster.Cat) (*protocol.PairIntro, error) {
 	if err := pc.WriteMsg(&protocol.Message{Pair: &protocol.PairIntro{
-		Name:   me.Name,
-		Addr:   me.Addr,
-		Storer: me.Storer,
+		Name:      me.Name,
+		Addr:      me.Addr,
+		ClientKey: me.ClientKey,
+		Storer:    me.Storer,
 	}}); err != nil {
 		return nil, err
 	}

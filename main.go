@@ -27,7 +27,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return usage(nil)
+		return shortUsage()
 	}
 	cmd, rest := args[0], args[1:]
 	switch cmd {
@@ -41,8 +41,12 @@ func run(args []string) error {
 		return cmdJoin(rest)
 	case "outbox":
 		return cmdOutbox(rest)
+	case "forget":
+		return cmdForget(rest)
 	case "reset":
 		return cmdReset(rest)
+	case "help":
+		return longUsage()
 	case "cats":
 		return cmdCats()
 	case "send":
@@ -60,8 +64,21 @@ func run(args []string) error {
 	}
 }
 
-func usage(nilErr error) error {
-	fmt.Fprint(os.Stderr, `clow - a member of a clowder, an async file-transfer mesh over tailcat
+// shortUsage prints the one-screen command list.
+func shortUsage() error {
+	fmt.Fprint(os.Stderr, `usage: clow <command> [args]
+
+  init, daemon, invite, join, send, fetch, inbox, cats, storer,
+  outbox, forget, reset, status, help
+
+run "clow help" for details.
+`)
+	return nil
+}
+
+// longUsage prints the full command reference and conventions.
+func longUsage() error {
+	fmt.Print(`clow - a member of a clowder, an async file-transfer mesh over tailcat
 
 usage:
   clow init [--name NAME] [--dir DIR] [--inbox DIR]  create this cat's identity
@@ -71,10 +88,11 @@ usage:
   clow send <CAT> <FILE>                  send a file asynchronously
   clow fetch                              pull files storers hold for me
   clow cats                               list the clowder
-  clow inbox [--set DIR]               list received files (full paths) or
-                                        change where they land
+  clow inbox [--set DIR]                  list received files (full paths) or
+                                           change where they land
   clow storer on|off                      declare or retract storer duty
   clow outbox clear                       drop all pending sends
+  clow forget <CAT>                      drop a cat from the roster
   clow reset [--yes]                      wipe this cat's identity and rosters
   clow status                             config, outbox, spool and roster summary
 
@@ -86,7 +104,7 @@ other via "clow invite" / "clow join" pairing codes; tailcat addresses
 are never exchanged by hand. Everything but init and inbox needs the
 daemon running.
 `)
-	return nilErr
+	return nil
 }
 
 // configDir resolves the cat's config directory.
@@ -158,7 +176,7 @@ func cmdDaemon(args []string) error {
 	}
 	logf := func(format string, args ...any) { log.Printf(format, args...) }
 	cfg := daemon.Config{Dir: dir, Logf: logf}
-	tr := daemon.NewTailcatTransport(env.Identity, uint16(*port), logf)
+	tr := daemon.NewTailcatTransport(env.Identity, env.ClientIdentity, uint16(*port), logf)
 	d, err := daemon.New(cfg, tr)
 	if err != nil {
 		return err
@@ -206,6 +224,18 @@ func cmdOutbox(args []string) error {
 		return fmt.Errorf("usage: clow outbox clear")
 	}
 	return printResp(call(daemon.Request{Op: "outbox", Path: "clear"}))
+}
+
+// cmdForget drops a cat from the roster.
+func cmdForget(args []string) error {
+	fs := flag.NewFlagSet("forget", flag.ContinueOnError)
+	if err := fs.Parse(flagsFirst(fs, args)); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: clow forget <CAT>")
+	}
+	return printResp(call(daemon.Request{Op: "forget", Target: fs.Arg(0)}))
 }
 
 // cmdReset wipes the cat's config dir: identity, rosters, spool and

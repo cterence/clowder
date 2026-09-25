@@ -11,12 +11,17 @@ import (
 )
 
 // TailcatTransport is the production Transport: it runs a tailcat Server
-// (WireGuard over the DERP-relayed data plane) and dials peers with
-// tailcat Clients, reusing the cat's single node identity for both.
+// under the cat's identity key and dials peers with tailcat Clients
+// under a separate client key. The keys must differ: server and client
+// engines sharing one static key cross-deliver each other's handshakes
+// (their per-side pre-shared keys differ) and the connection wedges.
 type TailcatTransport struct {
 	Port uint16
 	Key  *tailcat.PrivateKey
-	Logf func(format string, args ...any)
+	// ClientKey is the identity all outbound dials use. Peers must
+	// allowlist its public form.
+	ClientKey key.NodePrivate
+	Logf      func(format string, args ...any)
 
 	mu      sync.Mutex
 	pending []key.NodePublic           // allows before Listen
@@ -25,9 +30,9 @@ type TailcatTransport struct {
 }
 
 // NewTailcatTransport returns a transport serving the cat's identity on
-// the given clowder protocol port.
-func NewTailcatTransport(k *tailcat.PrivateKey, port uint16, logf func(format string, args ...any)) *TailcatTransport {
-	return &TailcatTransport{Port: port, Key: k, Logf: logf}
+// the given clowder protocol port, dialing out with clientKey.
+func NewTailcatTransport(k *tailcat.PrivateKey, clientKey key.NodePrivate, port uint16, logf func(format string, args ...any)) *TailcatTransport {
+	return &TailcatTransport{Port: port, Key: k, ClientKey: clientKey, Logf: logf}
 }
 
 // Listen starts the tailcat server. Callers learn their address via
@@ -86,13 +91,23 @@ func (t *TailcatTransport) Dial(ctx context.Context, addr string) (net.Conn, err
 	if !ok {
 		c = &tailcat.Client{
 			Server: tailcat.Addr(addr),
-			Key:    t.Key.Private,
+			Key:    t.ClientKey,
 			Logf:   t.Logf,
 		}
 		t.clients[addr] = c
 	}
 	t.mu.Unlock()
-	return c.DialTCPPort(ctx, t.Port)
+	conn, err := c.DialTCPPort(ctx, t.Port)
+	if err != nil {
+		// Drop the cached client so the next attempt is rebuilt from
+		// the current roster entry (the peer may have re-paired with a
+		// new address).
+		t.mu.Lock()
+		delete(t.clients, addr)
+		t.mu.Unlock()
+		return nil, err
+	}
+	return conn, nil
 }
 
 // PeerKey returns the authenticated node key of a connected peer.

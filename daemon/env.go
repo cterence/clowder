@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/tailscale/tailcat"
+	"tailscale.com/types/key"
 )
 
 // Me is the local cat's declared state: its name, whether it volunteers
@@ -61,8 +62,17 @@ func SetInboxAt(dir, inbox string) error {
 type Env struct {
 	Dir      string
 	Identity *tailcat.PrivateKey
-	Me       Me
+	// ClientIdentity is the keypair used for all outbound dials. It must
+	// differ from Identity: a cat runs a tailcat server and tailcat
+	// clients concurrently, and two engines sharing one static key with
+	// different per-side pre-shared keys cross-deliver handshakes and
+	// wedge. Peers allowlist this key to authenticate our dials.
+	ClientIdentity key.NodePrivate
+	Me             Me
 }
+
+// clientKeyPath is where the client identity lives.
+func clientKeyPath(dir string) string { return filepath.Join(dir, "clientkey.json") }
 
 // Init creates a new cat identity in dir: a node keypair with a WireGuard
 // pre-shared key (RegionID -1 picks the DERP region automatically at
@@ -89,6 +99,9 @@ func Init(dir, name string) error {
 	if err := os.WriteFile(idPath, b, 0o600); err != nil {
 		return fmt.Errorf("daemon: writing identity: %w", err)
 	}
+	if err := writeClientKey(dir, key.NewNode()); err != nil {
+		return err
+	}
 	if err := saveMe(dir, Me{Name: name}); err != nil {
 		return err
 	}
@@ -114,7 +127,49 @@ func Open(dir string) (*Env, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Env{Dir: dir, Identity: k, Me: me}, nil
+	ck, err := loadClientKey(dir)
+	if err != nil {
+		return nil, err
+	}
+	return &Env{Dir: dir, Identity: k, ClientIdentity: ck, Me: me}, nil
+}
+
+// writeClientKey persists an outbound client identity.
+func writeClientKey(dir string, priv key.NodePrivate) error {
+	text, err := priv.MarshalText()
+	if err != nil {
+		return fmt.Errorf("daemon: encoding client key: %w", err)
+	}
+	b, err := json.Marshal(string(text))
+	if err != nil {
+		return fmt.Errorf("daemon: encoding client key: %w", err)
+	}
+	return os.WriteFile(clientKeyPath(dir), b, 0o600)
+}
+
+// loadClientKey loads the outbound client identity, generating one for
+// identities created before client keys existed.
+func loadClientKey(dir string) (key.NodePrivate, error) {
+	b, err := os.ReadFile(clientKeyPath(dir))
+	if os.IsNotExist(err) {
+		priv := key.NewNode()
+		if err := writeClientKey(dir, priv); err != nil {
+			return key.NodePrivate{}, err
+		}
+		return priv, nil
+	}
+	if err != nil {
+		return key.NodePrivate{}, fmt.Errorf("daemon: reading client key: %w", err)
+	}
+	var text string
+	if err := json.Unmarshal(b, &text); err != nil {
+		return key.NodePrivate{}, fmt.Errorf("daemon: parsing client key: %w", err)
+	}
+	var priv key.NodePrivate
+	if err := priv.UnmarshalText([]byte(text)); err != nil {
+		return key.NodePrivate{}, fmt.Errorf("daemon: client key: %w", err)
+	}
+	return priv, nil
 }
 
 func saveMe(dir string, me Me) error {

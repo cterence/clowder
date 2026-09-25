@@ -33,11 +33,14 @@ const (
 )
 
 // Hello is the first message on each connection, sent by both sides.
+// Key is the sender's identity (server) key; ClientKey is the separate
+// keypair all its outbound dials use, which peers allowlist.
 type Hello struct {
-	Name   string `cbor:"n"`
-	Key    string `cbor:"k"` // sender's node public key, string form
-	Addr   string `cbor:"a"`
-	Storer bool   `cbor:"s,omitempty"`
+	Name      string `cbor:"n"`
+	Key       string `cbor:"k"`
+	ClientKey string `cbor:"c,omitempty"`
+	Addr      string `cbor:"a"`
+	Storer    bool   `cbor:"s,omitempty"`
 }
 
 // RosterSync carries the sender's full roster (including its own entry)
@@ -103,9 +106,10 @@ type Fetch struct {
 // copying full tailcat addresses. Addr is the sender's real address,
 // not the ephemeral pairing one.
 type PairIntro struct {
-	Name   string `cbor:"n"`
-	Addr   string `cbor:"a"`
-	Storer bool   `cbor:"s,omitempty"`
+	Name      string `cbor:"n"`
+	Addr      string `cbor:"a"`
+	ClientKey string `cbor:"c,omitempty"`
+	Storer    bool   `cbor:"s,omitempty"`
 }
 
 // Message is the union of all protocol messages. Exactly one field is

@@ -38,30 +38,45 @@ path must be exercised by a daemon integration test.
 - Trust is established ONLY via pairing (`clow invite`/`clow join`);
   tailcat addresses are never exchanged by hand. Pairing codes are
   5 words (50 bits) + the inviter's DERP region, valid 5 minutes.
+- **Two keypairs per cat**: the identity (server) key inside the
+  tailcat address, and a separate client key (`clientkey.json`) used
+  for ALL outbound dials, which peers allowlist (roster `ClientKey`,
+  carried in Hello and PairIntro, authenticated via
+  `Server.PeerKey`). Never share one key between the server and client
+  engines: two WireGuard engines with the same static key but different
+  per-side PSKs cross-deliver handshakes and wedge unrecoverably.
 - Both sides of a pairing derive ephemeral keypairs from the words;
   real addresses ride the encrypted pairing channel.
 - Roster sync is add-only LWW; never delete entries outside the (pending)
   tombstone mechanism.
 - Keep transferred files out of memory: stream everywhere; the sealed
   stream is opaque to storers by construction.
+- Loopback tests cannot catch transport-authentication bugs; run
+  `CLOWDER_INTEGRATION=1 go test ./daemon/ -run Integration -v -count=1`
+  (real DERP) after touching the transport, pairing, or hello paths.
 
 ## Pending work
 
 Ordered; do not reorder without a reason. Update this list and the
 README when something ships.
 
-1. **Dropbox storer** — a third cat mode (`clow storer dropbox`): accepts
+1. **Address rotation** — `clow rotate`: new PSK/address under the same
+   identity key, announced to every reachable peer (hello/roster sync
+   updates our entry via LWW); must fail unless at least one cat
+   acknowledged, keeping the old address otherwise. Needs a transport
+   re-listen operation (close server, re-listen with new PSK).
+2. **Dropbox storer** — a third cat mode (`clow storer dropbox`): accepts
    deposits and serves fetches for third parties only; refuses direct
    sends to itself; cannot originate sends. Flag propagates via roster
    entries like Storer. No protocol changes needed.
-2. **Leave with signed forget-me gossip** — derive an Ed25519 keypair
+3. **Leave with signed forget-me gossip** — derive an Ed25519 keypair
    from the node key seed (ed25519.NewKeyFromSeed(nodeRaw32)); announce
    the sign-public in Hello/roster entries; `clow leave` broadcasts a
    signed {leaver, timestamp} to all reachable peers; recipients drop
    the leaver (roster, allowlist, spool) and re-broadcast once. Roster
    sync must carry signed tombstones that always outrank later unsigned
    re-adds (offline peers catch up on next sync).
-3. **Multiple clowders** — named clowders: per-clowder roster files,
+4. **Multiple clowders** — named clowders: per-clowder roster files,
    `--clowder` on invite/join/send, Hello carries the clowder name so a
    connection routes to the right roster. One identity, one daemon,
    clowders stay disjoint (flat sync would otherwise merge them).
@@ -70,4 +85,5 @@ README when something ships.
 
 Known caveats: the golangci-lint-action version in CI (v7 + v2.13.2) is
 unverified until a green run is observed; storer spools have TTL but no
-size quota; no resume of interrupted transfers.
+size quota; no resume of interrupted transfers; rosters created before
+the two-keypair fix must be re-paired (`clow forget` + invite/join).

@@ -21,11 +21,12 @@ import (
 // address, and Updated the unix time of the last change, used for
 // last-write-wins merge.
 type Cat struct {
-	Name    string `json:"name" cbor:"n"`
-	Addr    string `json:"addr" cbor:"a"`
-	Key     string `json:"key" cbor:"k"`
-	Storer  bool   `json:"storer,omitempty" cbor:"s,omitempty"`
-	Updated int64  `json:"updated" cbor:"u"`
+	Name      string `json:"name" cbor:"n"`
+	Addr      string `json:"addr" cbor:"a"`
+	Key       string `json:"key" cbor:"k"`                            // node identity (the address's key)
+	ClientKey string `json:"client_key,omitempty" cbor:"c,omitempty"` // outbound-dial identity peers allowlist
+	Storer    bool   `json:"storer,omitempty" cbor:"s,omitempty"`
+	Updated   int64  `json:"updated" cbor:"u"`
 }
 
 // NewCat builds a Cat from a tailcat address, deriving the identity key

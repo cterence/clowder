@@ -118,10 +118,11 @@ func New(cfg Config, tr Transport) (*Daemon, error) {
 		inbox: inbox,
 	}
 	d.meCat = roster.Cat{
-		Name:    env.Me.Name,
-		Key:     env.Identity.Public.ServerPublic.String(),
-		Storer:  env.Me.Storer,
-		Updated: time.Now().Unix(),
+		Name:      env.Me.Name,
+		Key:       env.Identity.Public.ServerPublic.String(),
+		ClientKey: env.ClientIdentity.Public().String(),
+		Storer:    env.Me.Storer,
+		Updated:   time.Now().Unix(),
 	}
 	return d, nil
 }
@@ -161,6 +162,12 @@ func (d *Daemon) Roster() *roster.Roster { return d.ros }
 
 // Spool returns the storer spool, for inspection and tests.
 func (d *Daemon) Spool() *store.Spool { return d.spool }
+
+// Forget removes a cat from the roster (local, manual operation; entries
+// are never removed by propagation in v1).
+func (d *Daemon) Forget(name string) (roster.Cat, bool) {
+	return d.ros.RemoveName(name)
+}
 
 // SetStorer declares or retracts this cat's storer role and persists it.
 func (d *Daemon) SetStorer(on bool) error {
@@ -286,9 +293,9 @@ func (d *Daemon) serveConn(pc *protocol.Conn, authKey key.NodePublic, authed boo
 	}
 	peer := m.Hello
 	if authed {
-		claimed, err := parseKey(peer.Key)
+		claimed, err := parseKey(peer.ClientKey)
 		if err != nil || claimed != authKey {
-			d.cfg.logf("clowder: closing conn with claimed key %s != authenticated %s", peer.Key, authKey)
+			d.cfg.logf("clowder: closing conn from %s: claimed client key %q does not match authenticated %s", peer.Name, peer.ClientKey, authKey)
 			return
 		}
 	}
@@ -702,7 +709,13 @@ func (d *Daemon) syncPeers(ctx context.Context) {
 
 func (d *Daemon) helloMsg() *protocol.Hello {
 	me := d.Me()
-	return &protocol.Hello{Name: me.Name, Key: me.Key, Addr: me.Addr, Storer: me.Storer}
+	return &protocol.Hello{
+		Name:      me.Name,
+		Key:       me.Key,
+		ClientKey: me.ClientKey,
+		Addr:      me.Addr,
+		Storer:    me.Storer,
+	}
 }
 
 func (d *Daemon) rosterMsg() *protocol.RosterSync {
@@ -773,7 +786,12 @@ func (d *Daemon) mergeRemote(cats []roster.Cat) {
 }
 
 func (d *Daemon) allowCat(c roster.Cat) {
-	k, err := parseKey(c.Key)
+	// Peers dial us with their client key, not their identity key.
+	allow := c.ClientKey
+	if allow == "" {
+		allow = c.Key
+	}
+	k, err := parseKey(allow)
 	if err != nil {
 		d.cfg.logf("clowder: bad key for %s: %v", c.Name, err)
 		return

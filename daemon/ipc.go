@@ -103,6 +103,16 @@ func (d *Daemon) handleIPC(req Request) Response {
 		}
 		return okMsg(fmt.Sprintf("inbox now %s", d.InboxDir()))
 
+	case "forget":
+		if req.Target == "" {
+			return fail(fmt.Errorf("forget needs a cat name"))
+		}
+		if c, ok := d.Forget(req.Target); !ok {
+			return fail(fmt.Errorf("no cat named %s", req.Target))
+		} else {
+			return okMsg(fmt.Sprintf("forgot %s", c.Name))
+		}
+
 	case "invite":
 		code, err := d.StartInvite(ctx)
 		if err != nil {
