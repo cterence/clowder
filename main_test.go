@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"os"
 	"path/filepath"
 	"testing"
@@ -42,5 +43,37 @@ func TestStorerUsage(t *testing.T) {
 func TestSendUsage(t *testing.T) {
 	if err := run([]string{"send", "only-one-arg"}); err == nil {
 		t.Error("send with one arg succeeded, want usage error")
+	}
+}
+
+func TestFlagsFirst(t *testing.T) {
+	newFS := func() *flag.FlagSet {
+		fs := flag.NewFlagSet("t", flag.ContinueOnError)
+		fs.String("name", "", "")
+		fs.Bool("dry", false, "")
+		return fs
+	}
+	tests := []struct {
+		in, want []string
+	}{
+		{[]string{"addr", "--name", "milo"}, []string{"--name", "milo", "addr"}},
+		{[]string{"--name", "milo", "addr"}, []string{"--name", "milo", "addr"}},
+		{[]string{"--name=milo", "addr"}, []string{"--name=milo", "addr"}},
+		{[]string{"a", "b", "-x"}, []string{"-x", "a", "b"}},
+		{[]string{"addr", "--dry", "other"}, []string{"--dry", "addr", "other"}},
+		{nil, nil},
+	}
+	for _, tt := range tests {
+		got := flagsFirst(newFS(), tt.in)
+		if len(got) != len(tt.want) {
+			t.Errorf("flagsFirst(%v) = %v, want %v", tt.in, got, tt.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tt.want[i] {
+				t.Errorf("flagsFirst(%v) = %v, want %v", tt.in, got, tt.want)
+				break
+			}
+		}
 	}
 }

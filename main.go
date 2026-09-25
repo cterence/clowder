@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -158,13 +159,46 @@ func printResp(resp daemon.Response, err error) error {
 func cmdAdd(args []string) error {
 	fs := flag.NewFlagSet("add", flag.ContinueOnError)
 	name := fs.String("name", "", "the new cat's declared name (required)")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(flagsFirst(fs, args)); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
 		return fmt.Errorf("usage: clow add <ADDR> --name NAME")
 	}
 	return printResp(call(daemon.Request{Op: "add", Name: *name, Addr: fs.Arg(0)}))
+}
+
+// flagsFirst reorders args so flags precede positionals, letting Go's
+// flag package (which stops at the first positional) parse
+// `clow add <addr> --name x` as well as `clow add --name x <addr>`.
+// A flag that takes a value keeps the token after it attached; boolean
+// flags do not.
+func flagsFirst(fs *flag.FlagSet, args []string) []string {
+	var flags, pos []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "-" || !strings.HasPrefix(a, "-") {
+			pos = append(pos, a)
+			continue
+		}
+		flags = append(flags, a)
+		if strings.Contains(a, "=") {
+			continue // --flag=value carries its own value
+		}
+		name := strings.TrimPrefix(strings.TrimPrefix(a, "--"), "-")
+		if fl := fs.Lookup(name); fl != nil && !isBoolFlag(fl) && i+1 < len(args) {
+			i++
+			flags = append(flags, args[i])
+		}
+	}
+	return append(flags, pos...)
+}
+
+// isBoolFlag reports whether a flag's value is boolean, which never
+// consumes the following argument.
+func isBoolFlag(fl *flag.Flag) bool {
+	bv, ok := fl.Value.(interface{ IsBoolFlag() bool })
+	return ok && bv.IsBoolFlag()
 }
 
 func cmdCats() error {
