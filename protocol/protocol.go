@@ -18,8 +18,8 @@ import (
 	"net"
 	"time"
 
-	"github.com/fxamacker/cbor/v2"
 	"clowder/roster"
+	"github.com/fxamacker/cbor/v2"
 )
 
 // MaxMessageSize bounds a single framed message. Roster syncs are the
@@ -28,7 +28,7 @@ const MaxMessageSize = 8 << 20
 
 // Ack kinds.
 const (
-	AckStored   = "stored"   // storer spooled the blob; sender's job is done
+	AckStored    = "stored"    // storer spooled the blob; sender's job is done
 	AckDelivered = "delivered" // recipient saved and decrypted the blob
 )
 
@@ -79,7 +79,7 @@ type Ack struct {
 // Pending is both a query ("what are you holding for me?") and the
 // storer's response listing held files.
 type Pending struct {
-	Query bool         `cbor:"q,omitempty"`
+	Query bool          `cbor:"q,omitempty"`
 	Files []PendingFile `cbor:"f,omitempty"`
 }
 

@@ -27,8 +27,8 @@ var ErrNotFound = errors.New("store: no such spooled file")
 type Meta struct {
 	ID         string `json:"id"`
 	FileName   string `json:"file_name"`
-	Size       int64  `json:"size"` // sealed stream size in bytes
-	SHA256     string `json:"sha256"` // hex SHA-256 of the plaintext
+	Size       int64  `json:"size"`        // sealed stream size in bytes
+	SHA256     string `json:"sha256"`      // hex SHA-256 of the plaintext
 	From       string `json:"from"`        // sender's declared name
 	TargetKey  string `json:"target_key"`  // recipient node public key, string form
 	TargetName string `json:"target_name"` // recipient's declared name
@@ -97,7 +97,9 @@ func (s *Spool) List(targetKey string) []Meta {
 			continue
 		}
 		if m.ExpiresAt(s.ttl).Before(now) {
-			s.Delete(m.ID)
+			// An unremovable expired entry resurfaces on the next
+			// Sweep; keep listing the rest.
+			_ = s.Delete(m.ID)
 			continue
 		}
 		metas = append(metas, m)
@@ -200,7 +202,7 @@ func writeStreamAtomic(path string, r io.Reader, size int64) error {
 	if err != nil {
 		return fmt.Errorf("store: creating temp file: %w", err)
 	}
-	defer os.Remove(tmp.Name()) // no-op after a successful rename
+	defer func() { _ = os.Remove(tmp.Name()) }() // no-op after a successful rename
 	if _, err := io.CopyN(tmp, r, size); err != nil {
 		tmp.Close()
 		return fmt.Errorf("store: writing temp file: %w", err)

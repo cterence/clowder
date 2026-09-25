@@ -234,7 +234,9 @@ func (r *Roster) RemoveName(name string) (Cat, bool) {
 	for k, c := range r.cats {
 		if c.Name == name {
 			delete(r.cats, k)
-			r.saveLocked()
+			if err := r.saveLocked(); err != nil {
+				return Cat{}, false
+			}
 			return c, true
 		}
 	}

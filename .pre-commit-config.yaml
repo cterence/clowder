@@ -1,0 +1,36 @@
+# prek-managed pre-commit hooks. All hooks are `language: system` so they
+# use the tools from the nix devshell; no downloads on install.
+minimum_prek_version: "0.5.0"
+repos:
+  - repo: local
+    hooks:
+      - id: gofmt
+        name: gofmt
+        entry: gofmt -l .
+        language: system
+        pass_filenames: false
+        types_or: [go]
+      - id: go-vet
+        name: go vet
+        entry: go vet ./...
+        language: system
+        pass_filenames: false
+        types_or: [go]
+      # Static analysis (staticcheck et al.) runs inside golangci-lint,
+      # whose binary is built with a current toolchain; the standalone
+      # go-tools staticcheck lags behind go 1.27 packages.
+      - id: golangci-lint
+        name: golangci-lint
+        entry: golangci-lint run
+        language: system
+        pass_filenames: false
+        types_or: [go]
+  - repo: local
+    hooks:
+      - id: go-test
+        name: go test
+        entry: go test ./...
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+        types_or: [go]

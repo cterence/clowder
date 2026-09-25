@@ -1,0 +1,7 @@
+{
+  // The Go extension defaults to launching gopls from ~/go/bin, which
+  // doesn't exist on this machine; use the nix-profile gopls instead.
+  "go.alternateTools": {
+    "gopls": "/etc/profiles/per-user/terence/bin/gopls"
+  }
+}

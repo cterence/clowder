@@ -67,8 +67,8 @@ func TestOversizedFrameRejected(t *testing.T) {
 
 func TestConnStreamRoundTrip(t *testing.T) {
 	c1, c2 := newPipe(t)
-	defer c1.Close()
-	defer c2.Close()
+	defer func() { _ = c1.Close() }()
+	defer func() { _ = c2.Close() }()
 
 	stream := bytes.Repeat([]byte("sealed chunk "), 10000) // ~140 KB
 	go func() {

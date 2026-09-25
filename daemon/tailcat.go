@@ -1,0 +1,124 @@
+package daemon
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"sync"
+
+	"github.com/tailscale/tailcat"
+	"tailscale.com/types/key"
+)
+
+// TailcatTransport is the production Transport: it runs a tailcat Server
+// (WireGuard over the DERP-relayed data plane) and dials peers with
+// tailcat Clients, reusing the cat's single node identity for both.
+type TailcatTransport struct {
+	Port uint16
+	Key  *tailcat.PrivateKey
+	Logf func(format string, args ...any)
+
+	mu      sync.Mutex
+	pending []key.NodePublic           // allows before Listen
+	srv     *tailcat.Server            // non-nil after Listen
+	clients map[string]*tailcat.Client // one client per peer address
+}
+
+// NewTailcatTransport returns a transport serving the cat's identity on
+// the given clowder protocol port.
+func NewTailcatTransport(k *tailcat.PrivateKey, port uint16, logf func(format string, args ...any)) *TailcatTransport {
+	return &TailcatTransport{Port: port, Key: k, Logf: logf}
+}
+
+// Listen starts the tailcat server. Callers learn their address via
+// MyAddr once this returns.
+func (t *TailcatTransport) Listen(ctx context.Context) (net.Listener, error) {
+	t.mu.Lock()
+	s := &tailcat.Server{
+		Key:          t.Key.Private,
+		PresharedKey: t.Key.Public.PresharedKey,
+		Logf:         t.Logf,
+	}
+	s.AllowedClients = append([]key.NodePublic(nil), t.pending...)
+	t.srv = s
+	t.mu.Unlock()
+
+	ln, err := s.Listen(ctx, "tcp", fmt.Sprintf(":%d", t.Port))
+	if err != nil {
+		t.mu.Lock()
+		t.srv = nil
+		t.mu.Unlock()
+		return nil, fmt.Errorf("tailcat listen: %w", err)
+	}
+	return ln, nil
+}
+
+// MyAddr returns the cat's tailcat address, or "" before Listen.
+func (t *TailcatTransport) MyAddr() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.srv == nil {
+		return ""
+	}
+	return string(t.srv.TailcatAddr())
+}
+
+// Allow permits a peer node key to connect, before or after Listen.
+func (t *TailcatTransport) Allow(peer key.NodePublic) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.srv == nil {
+		t.pending = append(t.pending, peer)
+		return
+	}
+	t.srv.AddAllowedClient(peer)
+}
+
+// Dial connects to the clowder port of the cat at the given tailcat
+// address. Clients are cached per address: each holds a WireGuard
+// engine, and a cat dials the same peers repeatedly.
+func (t *TailcatTransport) Dial(ctx context.Context, addr string) (net.Conn, error) {
+	t.mu.Lock()
+	if t.clients == nil {
+		t.clients = map[string]*tailcat.Client{}
+	}
+	c, ok := t.clients[addr]
+	if !ok {
+		c = &tailcat.Client{
+			Server: tailcat.Addr(addr),
+			Key:    t.Key.Private,
+			Logf:   t.Logf,
+		}
+		t.clients[addr] = c
+	}
+	t.mu.Unlock()
+	return c.DialTCPPort(ctx, t.Port)
+}
+
+// PeerKey returns the authenticated node key of a connected peer.
+func (t *TailcatTransport) PeerKey(remote net.Addr) (key.NodePublic, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.srv == nil {
+		return key.NodePublic{}, false
+	}
+	return t.srv.PeerKey(remote)
+}
+
+// Close shuts down the server and any dialed clients.
+func (t *TailcatTransport) Close() error {
+	t.mu.Lock()
+	srv := t.srv
+	clients := t.clients
+	t.srv = nil
+	t.clients = nil
+	t.mu.Unlock()
+
+	for _, c := range clients {
+		_ = c.Close()
+	}
+	if srv != nil {
+		return srv.Close()
+	}
+	return nil
+}
