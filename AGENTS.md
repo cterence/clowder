@@ -86,18 +86,20 @@ README when something ships.
 5. **HTTP health endpoint** for container probes (currently exec
    `clow status`).
 
-Shipped recently (context for a fresh session): dropbox storer mode
-(`clow storer dropbox`: third-party storage only — refuses deliveries
-to itself, cannot send or fetch for itself; flag propagates via roster),
-storer push sweep (a storer delivers held files as soon as their target
-is online and known, plus a sweep on the poll tick — `clow fetch`
-remains as a manual pull), `clow rotate` (new pre-shared key/address
-under the same identity, announced via roster sync, fails unless one
-peer acknowledged; the daemon restart serves the new address), passive
-liveness ("online / seen Xm ago" in `clow status`, updated on every
-successful handshake), `clow forget` (roster entry plus outbox),
-dash-numbered inbox collisions, transfer stats, the two-keypair fix
-(see invariants).
+Shipped recently (context for a fresh session): container support
+(Dockerfile; daemon auto-initializes on first start; CLOWDER_NAME and
+CLOWDER_STORER env vars; k8s guidance in the README), dropbox storer
+mode (`clow storer dropbox`: third-party storage only — refuses
+deliveries to itself, cannot send or fetch for itself; flag propagates
+via roster), storer push sweep (a storer delivers held files as soon as
+their target is online and known, plus a sweep on the poll tick —
+`clow fetch` remains as a manual pull), `clow rotate` (new pre-shared
+key/address under the same identity, announced via roster sync, fails
+unless one peer acknowledged; the daemon restart serves the new
+address), passive liveness ("online / seen Xm ago" in `clow status`,
+updated on every successful handshake), `clow forget` (roster entry
+plus outbox), dash-numbered inbox collisions, transfer stats, the
+two-keypair fix (see invariants).
 
 Known caveats: the golangci-lint-action version in CI (v7 + v2.13.2) is
 unverified until a green run is observed; storer spools have TTL but no
