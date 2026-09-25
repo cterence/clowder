@@ -16,6 +16,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -516,18 +517,27 @@ func (d *Daemon) saveIncoming(o *protocol.Offer, src io.Reader, recipient key.No
 	return gotSize, nil
 }
 
-// inboxPath picks a non-existing name for a received file.
+// inboxPath picks a non-existing name for a received file, numbering
+// collisions with a dash before the extension (nap-1.txt): a dot would
+// read as an extension, which is especially confusing for files that
+// never had one. Dotfiles keep their whole name as the stem.
 func inboxPath(dir, name string) string {
 	clean := filepath.Base(filepath.Clean(name))
 	if clean == "" || clean == "." || clean == ".." || clean == "/" {
 		clean = "file"
+	}
+	stem, ext := clean, ""
+	if !strings.HasPrefix(clean, ".") {
+		if e := filepath.Ext(clean); e != "" {
+			stem, ext = strings.TrimSuffix(clean, e), e
+		}
 	}
 	p := filepath.Join(dir, clean)
 	for i := 1; ; i++ {
 		if _, err := os.Stat(p); os.IsNotExist(err) {
 			return p
 		}
-		p = filepath.Join(dir, fmt.Sprintf("%s.%d", clean, i))
+		p = filepath.Join(dir, fmt.Sprintf("%s-%d%s", stem, i, ext))
 	}
 }
 
