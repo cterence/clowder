@@ -79,6 +79,12 @@ README when something ships.
    a foreground service, with a thin UI for init/invite/join/send/
    inbox. Decide the UI approach (plainCompose/gomobile) before
    starting; the daemon package itself must not grow Android deps.
+4. **Self-hosted DERP map config** — an env/flag (e.g.
+   CLOWDER_DERPMAP_URL) plumbed into the tailcat Server/Clients
+   (DERPMapURL) so air-gapped clusters can run their own DERP relays.
+   Needed for serious Kubernetes use; see the README container section.
+5. **HTTP health endpoint** for container probes (currently exec
+   `clow status`).
 
 Shipped recently (context for a fresh session): dropbox storer mode
 (`clow storer dropbox`: third-party storage only — refuses deliveries

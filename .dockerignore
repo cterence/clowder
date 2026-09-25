@@ -1,0 +1,7 @@
+.git
+.github
+.vscode
+result
+flake.lock
+docs
+*.md

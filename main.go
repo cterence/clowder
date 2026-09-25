@@ -152,8 +152,12 @@ func cmdInit(args []string) error {
 	return nil
 }
 
-// defaultName derives a cat name from the hostname.
+// defaultName derives a cat name from the environment: $CLOWDER_NAME if
+// set (the usual way in containers), else the short hostname.
 func defaultName() string {
+	if n := os.Getenv("CLOWDER_NAME"); n != "" {
+		return n
+	}
 	h, err := os.Hostname()
 	if err != nil || h == "" {
 		return "cat"
@@ -169,10 +173,19 @@ func defaultName() string {
 func cmdDaemon(args []string) error {
 	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
 	port := fs.Uint("port", daemon.DefaultPort, "clowder protocol port")
+	name := fs.String("name", defaultName(), "cat name, used to auto-initialize a fresh cat")
 	if err := fs.Parse(flagsFirst(fs, args)); err != nil {
 		return err
 	}
 	dir := configDir()
+	if _, err := os.Stat(filepath.Join(dir, "identity.json")); os.IsNotExist(err) {
+		// First start (typical in a container with a fresh volume):
+		// become a cat before joining the clowder.
+		if err := daemon.Init(dir, *name); err != nil {
+			return err
+		}
+		fmt.Printf("initialized new cat %s in %s\n", *name, dir)
+	}
 	env, err := daemon.Open(dir)
 	if err != nil {
 		return err
@@ -183,6 +196,25 @@ func cmdDaemon(args []string) error {
 	d, err := daemon.New(cfg, tr)
 	if err != nil {
 		return err
+	}
+	// CLOWDER_STORER declares the role as desired state, the
+	// container-friendly way: applied on every start, so a restart
+	// reasserts it. Empty means leave the persisted role alone.
+	if role := os.Getenv("CLOWDER_STORER"); role != "" {
+		var roleErr error
+		switch role {
+		case "on":
+			roleErr = d.SetStorer(true)
+		case "dropbox":
+			roleErr = d.SetDropbox(true)
+		case "off":
+			roleErr = d.SetStorer(false)
+		default:
+			roleErr = fmt.Errorf("CLOWDER_STORER must be on, off or dropbox (got %q)", role)
+		}
+		if roleErr != nil {
+			return roleErr
+		}
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

@@ -52,6 +52,47 @@ default; change with `clow inbox --set DIR`). Config lives under
     clow status                                         config, stats, outbox, spool, roster
     clow reset [--yes]                                  wipe this cat (identity, rosters)
 
+## Running in a container
+
+The image runs the daemon unprivileged; tailcat is userspace-only (no
+TUN, no host routes, no root) and the mesh opens **no inbound ports** —
+it only needs outbound access to the DERP relays (TCP 443) and to
+peers' public endpoints. So no Service is needed for the mesh itself.
+
+    docker build -t clowder .
+    docker run -d --name clowder -v clowcfg:/config \
+        -e CLOWDER_NAME=whiskers -e CLOWDER_STORER=dropbox clowder
+
+The daemon auto-initializes a fresh cat on first start. Everything else
+runs through the CLI inside the container:
+
+    kubectl exec clowder-0 -- clow invite
+    kubectl exec clowder-0 -- clow status
+
+Environment: `CLOWDER_DIR` (config path), `CLOWDER_NAME` (cat name;
+defaults to the hostname, i.e. the pod name), `CLOWDER_STORER`
+(`on`/`off`/`dropbox`, applied on every start).
+
+Things to know before running it on Kubernetes:
+
+- **Mount a persistent volume** on the config dir. The identity lives
+  there; a pod that restarts with an empty volume comes back as a
+  brand-new cat, and the old one stays as a zombie in everyone's
+  rosters (until signed-leave ships). A StatefulSet fits best.
+- **One replica per cat**: clowder is a mesh of individual identities,
+  not a horizontally-scaled service.
+- **DERP reachability**: the default DERP map is fetched from
+  tailcat.dev at startup. In an air-gapped or egress-restricted
+  cluster you need a self-hosted DERP server and a way to point
+  clowder at it (not yet configurable — tracked in AGENTS.md).
+- **Clocks matter**: roster merges are last-write-wins on timestamps,
+  so keep node clocks sane (NTP).
+- **NAT**: outbound UDP enables direct peer-to-peer paths when the CNI
+  allows it; otherwise everything relays over DERP, which always
+  works but is slower.
+- **Probes**: there is no HTTP health endpoint yet; an exec probe on
+  `clow status` works.
+
 ## Design
 
 See [docs/specs/2026-09-25-clowder-design.md](docs/specs/2026-09-25-clowder-design.md)
