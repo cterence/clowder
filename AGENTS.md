@@ -86,7 +86,17 @@ README when something ships.
 5. **HTTP health endpoint** for container probes (currently exec
    `clow status`).
 
-Shipped recently (context for a fresh session): in-flight transfer
+Shipped recently (context for a fresh session): storer capacity
+(`clow storer on --max 10G`, required to enable; deposits are refused
+when they would overflow, with an atomic first-come-first-served
+reservation so concurrent deposits never oversubscribe; delivery
+frees space and refused sends retry later), duplicate-transfer
+prevention (in-flight claims per outbox entry and per received offer
+ID — the retry ticker, sweep and pull races no longer restart big
+transfers; the deliver context now spans stream-sized transfers),
+size-lie enforcement (a sealed stream must match its announced size
+exactly or the receive is killed without an ack), a 64 MiB real-DERP
+integration test (CLOWDER_INTEGRATION), in-flight transfer
 progress in `clow status` (percent per queued send, plus receiving
 rows; counted per 64 KiB chunk on the sealed stream, both directions),
 container support

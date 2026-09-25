@@ -202,13 +202,14 @@ func cmdDaemon(args []string) error {
 	// reasserts it. Empty means leave the persisted role alone.
 	if role := os.Getenv("CLOWDER_STORER"); role != "" {
 		var roleErr error
+		capacity, _ := daemon.ParseSize(os.Getenv("CLOWDER_MAX"))
 		switch role {
 		case "on":
-			roleErr = d.SetStorer(true)
+			roleErr = d.SetStorer(true, capacity)
 		case "dropbox":
-			roleErr = d.SetDropbox(true)
+			roleErr = d.SetDropbox(true, capacity)
 		case "off":
-			roleErr = d.SetStorer(false)
+			roleErr = d.SetStorer(false, 0)
 		default:
 			roleErr = fmt.Errorf("CLOWDER_STORER must be on, off or dropbox (got %q)", role)
 		}
@@ -390,19 +391,30 @@ func cmdFetch() error {
 }
 
 func cmdStorer(args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("usage: clow storer on|off|dropbox")
+	fs := flag.NewFlagSet("storer", flag.ContinueOnError)
+	max := fs.String("max", "", "spool capacity, e.g. 500M or 10G (required to enable)")
+	if err := fs.Parse(flagsFirst(fs, args)); err != nil {
+		return err
 	}
-	switch args[0] {
-	case "on", "off", "dropbox":
-		return printResp(call(daemon.Request{
-			Op:      "storer",
-			On:      args[0] != "off",
-			Dropbox: args[0] == "dropbox",
-		}))
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: clow storer on|off|dropbox [--max SIZE]")
+	}
+	mode := fs.Arg(0)
+	switch mode {
+	case "on", "dropbox":
+		if *max == "" {
+			return fmt.Errorf("storer %s requires --max (e.g. --max 10G)", mode)
+		}
+	case "off":
 	default:
-		return fmt.Errorf("usage: clow storer on|off|dropbox")
+		return fmt.Errorf("usage: clow storer on|off|dropbox [--max SIZE]")
 	}
+	return printResp(call(daemon.Request{
+		Op:      "storer",
+		On:      mode != "off",
+		Dropbox: mode == "dropbox",
+		Max:     *max,
+	}))
 }
 
 func cmdStatus() error {
@@ -447,7 +459,11 @@ func cmdStatus() error {
 				p.FileName, p.Peer, p.Percent()*100, daemon.HumanBytes(p.Total))
 		}
 	}
-	fmt.Printf("spool:  %d held\n", resp.Spool)
+	fmt.Printf("spool:  %d held", resp.Spool)
+	if resp.Me != nil && resp.Me.Storer && resp.Me.Capacity > 0 {
+		fmt.Printf(" (%s of %s)", daemon.HumanBytes(resp.SpoolBytes), daemon.HumanBytes(resp.Me.Capacity))
+	}
+	fmt.Println()
 	if resp.Stats != nil {
 		st := resp.Stats
 		fmt.Printf("stats:  sent %d %s (%s), received %d %s (%s)\n",

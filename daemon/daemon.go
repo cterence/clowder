@@ -88,6 +88,20 @@ type Daemon struct {
 	// liveness records the unix time each cat's key was last seen on a
 	// successful connection, either direction. Guarded by mu.
 	liveness map[string]int64
+
+	// inflightDelivery guards outbox entries against concurrent
+	// delivery attempts (the retry ticker must not start a second
+	// transfer while a big one is still streaming).
+	inflightDelivery map[string]bool
+	// inflightReceive refuses a second stream for a transfer ID we are
+	// already receiving (retry/sweep/pull races).
+	inflightReceive map[string]bool
+	// resMu guards reserved: spool bytes promised to in-flight
+	// deposits. The capacity check and the claim are one atomic
+	// operation, so many deposits arriving at once are accepted
+	// first-come-first-served, each later one only if it still fits.
+	resMu    sync.Mutex
+	reserved int64
 }
 
 // New loads a cat's state from cfg.Dir and wires it to a transport.
@@ -114,16 +128,18 @@ func New(cfg Config, tr Transport) (*Daemon, error) {
 		return nil, fmt.Errorf("daemon: creating inbox: %w", err)
 	}
 	d := &Daemon{
-		cfg:      cfg,
-		tr:       tr,
-		env:      env,
-		ros:      ros,
-		spool:    store.New(filepath.Join(cfg.Dir, "spool"), 0),
-		ob:       newOutbox(filepath.Join(cfg.Dir, "outbox")),
-		stats:    newStatsKeeper(cfg.Dir),
-		prog:     newProgressKeeper(),
-		liveness: map[string]int64{},
-		inbox:    inbox,
+		cfg:              cfg,
+		tr:               tr,
+		env:              env,
+		ros:              ros,
+		spool:            store.New(filepath.Join(cfg.Dir, "spool"), 0),
+		ob:               newOutbox(filepath.Join(cfg.Dir, "outbox")),
+		stats:            newStatsKeeper(cfg.Dir),
+		prog:             newProgressKeeper(),
+		liveness:         map[string]int64{},
+		inflightDelivery: map[string]bool{},
+		inflightReceive:  map[string]bool{},
+		inbox:            inbox,
 	}
 	d.meCat = roster.Cat{
 		Name:      env.Me.Name,
@@ -219,27 +235,71 @@ func (d *Daemon) livenessSnapshot() map[string]int64 {
 	return out
 }
 
+// claimDelivery reports whether a delivery for the entry may start,
+// claiming it if so. A second attempt for an already-streaming entry
+// (from the retry ticker racing a slow transfer) returns false.
+func (d *Daemon) claimDelivery(id string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.inflightDelivery[id] {
+		return false
+	}
+	d.inflightDelivery[id] = true
+	return true
+}
+
+func (d *Daemon) releaseDelivery(id string) {
+	d.mu.Lock()
+	delete(d.inflightDelivery, id)
+	d.mu.Unlock()
+}
+
+// claimReceive reports whether a transfer ID may start being received,
+// claiming it if so.
+func (d *Daemon) claimReceive(id string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.inflightReceive[id] {
+		return false
+	}
+	d.inflightReceive[id] = true
+	return true
+}
+
+func (d *Daemon) releaseReceive(id string) {
+	d.mu.Lock()
+	delete(d.inflightReceive, id)
+	d.mu.Unlock()
+}
+
 // SetStorer declares or retracts this cat's storer role and persists it.
-func (d *Daemon) SetStorer(on bool) error {
-	return d.setStorerMode(on, false)
+func (d *Daemon) SetStorer(on bool, capacity int64) error {
+	return d.setStorerMode(on, false, capacity)
 }
 
 // SetDropbox switches this cat to dropbox mode (a storer that only
 // serves third parties) or back off entirely.
-func (d *Daemon) SetDropbox(on bool) error {
-	return d.setStorerMode(on, on)
+func (d *Daemon) SetDropbox(on bool, capacity int64) error {
+	return d.setStorerMode(on, on, capacity)
 }
 
-// setStorerMode applies the storer/dropbox flags and persists them.
-func (d *Daemon) setStorerMode(storer, dropbox bool) error {
+// setStorerMode applies the storer/dropbox flags with the spool
+// capacity in bytes and persists them. Enabling requires a capacity;
+// disabling ignores it.
+func (d *Daemon) setStorerMode(storer, dropbox bool, capacity int64) error {
+	if storer && capacity <= 0 {
+		return errors.New("daemon: enabling the storer role requires a capacity (e.g. --max 10G)")
+	}
 	d.mu.Lock()
 	d.meCat.Storer = storer
 	d.meCat.Dropbox = dropbox
+	d.meCat.Capacity = capacity
 	d.meCat.Updated = time.Now().Unix()
 	d.mu.Unlock()
 	me := d.env.Me
 	me.Storer = storer
 	me.Dropbox = dropbox
+	me.Capacity = capacity
 	return saveMe(d.cfg.Dir, me)
 }
 
@@ -424,15 +484,24 @@ func (d *Daemon) handleOffer(pc *protocol.Conn, from *protocol.Hello, o *protoco
 // receiveDirect decrypts a sealed stream into the inbox and acks
 // delivery.
 func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *protocol.Offer) bool {
-	if d.Me().Dropbox {
-		// A dropbox relays files for others; it takes none for itself.
+	refuse := func(reason string) bool {
 		if err := pc.WriteMsg(&protocol.Message{Answer: &protocol.Answer{
-			ID: o.ID, OK: false, Reason: "dropbox cat: no personal deliveries",
+			ID: o.ID, OK: false, Reason: reason,
 		}}); err != nil {
 			return false
 		}
 		return true
 	}
+	if d.Me().Dropbox {
+		// A dropbox relays files for others; it takes none for itself.
+		return refuse("dropbox cat: no personal deliveries")
+	}
+	if !d.claimReceive(o.ID) {
+		// A duplicate stream for a transfer already in flight (the
+		// sender retried, or the sweep raced the pull): refuse it.
+		return refuse("transfer already in progress")
+	}
+	defer d.releaseReceive(o.ID)
 	if err := pc.WriteMsg(&protocol.Message{Answer: &protocol.Answer{ID: o.ID, OK: true}}); err != nil {
 		return false
 	}
@@ -463,7 +532,8 @@ func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *proto
 // receiveAsStorer spools a sealed stream for an offline target. The
 // stream stays opaque: the storer cannot decrypt it.
 func (d *Daemon) receiveAsStorer(pc *protocol.Conn, o *protocol.Offer) bool {
-	if !d.Me().Storer {
+	me := d.Me()
+	if !me.Storer {
 		if err := pc.WriteMsg(&protocol.Message{Answer: &protocol.Answer{
 			ID: o.ID, OK: false, Reason: "not a storer",
 		}}); err != nil {
@@ -471,6 +541,24 @@ func (d *Daemon) receiveAsStorer(pc *protocol.Conn, o *protocol.Offer) bool {
 		}
 		return true
 	}
+	if me.Capacity <= 0 {
+		if err := pc.WriteMsg(&protocol.Message{Answer: &protocol.Answer{
+			ID: o.ID, OK: false, Reason: "storer has no capacity set",
+		}}); err != nil {
+			return false
+		}
+		return true
+	}
+	if !d.tryReserve(me.Capacity, o.Size) {
+		if err := pc.WriteMsg(&protocol.Message{Answer: &protocol.Answer{
+			ID: o.ID, OK: false,
+			Reason: fmt.Sprintf("storer full (%s of %s held)", HumanBytes(d.heldBytes()), HumanBytes(me.Capacity)),
+		}}); err != nil {
+			return false
+		}
+		return true
+	}
+	defer d.releaseReserve(o.Size)
 	if err := pc.WriteMsg(&protocol.Message{Answer: &protocol.Answer{ID: o.ID, OK: true}}); err != nil {
 		return false
 	}
@@ -498,6 +586,39 @@ func (d *Daemon) receiveAsStorer(pc *protocol.Conn, o *protocol.Offer) bool {
 	// instead of waiting for the next sweep.
 	go d.sweepSpoolFor(context.Background(), o.TargetKey)
 	return true
+}
+
+// tryReserve atomically claims spool capacity for a deposit of the
+// given size: the check and the claim happen under one lock, so
+// concurrent deposits are accepted first-come-first-served and a
+// deposit is only accepted if it still fits.
+func (d *Daemon) tryReserve(capacity, size int64) bool {
+	d.resMu.Lock()
+	defer d.resMu.Unlock()
+	if capacity <= 0 || d.spool.Usage()+d.reserved+size > capacity {
+		return false
+	}
+	d.reserved += size
+	return true
+}
+
+// releaseReserve gives a deposit's reservation back (stream ended,
+// failed, or refused mid-flight).
+func (d *Daemon) releaseReserve(size int64) {
+	d.resMu.Lock()
+	d.reserved -= size
+	if d.reserved < 0 {
+		d.reserved = 0
+	}
+	d.resMu.Unlock()
+}
+
+// heldBytes reports the spool usage plus reservations, for refusal
+// messages.
+func (d *Daemon) heldBytes() int64 {
+	d.resMu.Lock()
+	defer d.resMu.Unlock()
+	return d.spool.Usage() + d.reserved
 }
 
 // handlePending answers a "what are you holding for me?" query from the
@@ -581,13 +702,20 @@ func (d *Daemon) saveIncoming(o *protocol.Offer, src io.Reader, recipient key.No
 		return 0, fmt.Errorf("creating temp file: %w", err)
 	}
 	defer func() { _ = os.Remove(tmp.Name()) }()
-	gotSize, gotSha, err := envelope.OpenStream(recipient, src, tmp)
+	ex := &exactReader{r: src}
+	gotSize, gotSha, err := envelope.OpenStream(recipient, ex, tmp)
 	if err != nil {
 		tmp.Close()
 		return 0, err
 	}
 	if err := tmp.Close(); err != nil {
 		return 0, fmt.Errorf("closing temp file: %w", err)
+	}
+	// The sealed stream must be exactly as long as announced: a sender
+	// lying about the size (a modified client) gets the connection
+	// killed and no delivery ack.
+	if ex.n != o.Size {
+		return 0, fmt.Errorf("protocol violation: sealed stream was %d bytes, %d announced", ex.n, o.Size)
 	}
 	if gotSha != o.SHA256 {
 		return 0, fmt.Errorf("digest mismatch: got %s, announced %s", gotSha, o.SHA256)
@@ -599,6 +727,18 @@ func (d *Daemon) saveIncoming(o *protocol.Offer, src io.Reader, recipient key.No
 		return 0, fmt.Errorf("moving into inbox: %w", err)
 	}
 	return gotSize, nil
+}
+
+// exactReader counts the bytes consumed from a stream.
+type exactReader struct {
+	r io.Reader
+	n int64
+}
+
+func (e *exactReader) Read(p []byte) (int, error) {
+	n, err := e.r.Read(p)
+	e.n += int64(n)
+	return n, err
 }
 
 // inboxPath picks a non-existing name for a received file, numbering
@@ -638,7 +778,12 @@ func (d *Daemon) retryOutbox() {
 // deliver tries the target directly, then each known storer, and removes
 // the outbox entry on success.
 func (d *Daemon) deliver(e Entry) {
-	ctx, cancel := context.WithTimeout(context.Background(), msgTimeout)
+	if !d.claimDelivery(e.ID) {
+		return // already streaming this entry
+	}
+	defer d.releaseDelivery(e.ID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), streamTimeout)
 	defer cancel()
 
 	if cat, ok := d.ros.GetByKey(e.TargetKey); ok {
@@ -794,6 +939,10 @@ func (d *Daemon) fetchOne(pc *protocol.Conn, f protocol.PendingFile) error {
 		return err
 	}
 	_ = pc.SetDeadline(time.Now().Add(streamTimeout))
+	if !d.claimReceive(o.ID) {
+		return errors.New("transfer already in progress")
+	}
+	defer d.releaseReceive(o.ID)
 	d.prog.start(Progress{
 		ID:        o.ID,
 		FileName:  o.FileName,

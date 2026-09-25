@@ -200,7 +200,7 @@ func TestDirectSend(t *testing.T) {
 func TestStorerRelayForOfflineCat(t *testing.T) {
 	milo := startDaemon(t, "milo")
 	storer := startDaemon(t, "storer")
-	if err := storer.SetStorer(true); err != nil {
+	if err := storer.SetStorer(true, 1<<30); err != nil {
 		t.Fatal(err)
 	}
 	trust(t, milo, storer)
@@ -250,7 +250,7 @@ func TestStorerRelayForOfflineCat(t *testing.T) {
 func TestStorerPullByFetch(t *testing.T) {
 	milo := startDaemon(t, "milo")
 	storer := startDaemon(t, "storer")
-	if err := storer.SetStorer(true); err != nil {
+	if err := storer.SetStorer(true, 1<<30); err != nil {
 		t.Fatal(err)
 	}
 	trust(t, milo, storer)
@@ -370,7 +370,7 @@ func TestIPCRoundTrip(t *testing.T) {
 		t.Fatalf("cats = %+v", resp)
 	}
 
-	resp, err = CallIPC(sock, Request{Op: "storer", On: true})
+	resp, err = CallIPC(sock, Request{Op: "storer", On: true, Max: "1G"})
 	if err != nil || !resp.OK {
 		t.Fatalf("storer on: %v, %+v", err, resp)
 	}

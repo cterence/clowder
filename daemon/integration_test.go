@@ -13,6 +13,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/rand"
 	"os"
 	"path/filepath"
 	"testing"
@@ -53,8 +54,61 @@ func startRealDaemon(t *testing.T, dir, name string) *Daemon {
 	return d
 }
 
-// TestIntegrationPairSend runs the full pipeline against real DERP:
-// invite, join, direct send, and a second send over a fresh connection.
+// TestIntegrationBigFile pushes a multi-gigabyte-class payload shape
+// through the real path: a 64 MiB random file over DERP (or direct if
+// NAT traversal succeeds), asserting integrity and — critically —
+// exactly ONE completed transfer: the retry ticker must not duplicate
+// a transfer that outlives it.
+func TestIntegrationBigFile(t *testing.T) {
+	integrationEnabled(t)
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	a := startRealDaemon(t, dirA, "hostA")
+	b := startRealDaemon(t, dirB, "hostB")
+
+	code, err := a.StartInvite(context.Background())
+	if err != nil {
+		t.Fatalf("invite: %v", err)
+	}
+	if err := b.Join(context.Background(), code); err != nil {
+		t.Fatalf("join: %v", err)
+	}
+
+	const size = 64 << 20
+	big := make([]byte, size)
+	if _, err := rand.Read(big); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(t.TempDir(), "big.bin")
+	if err := os.WriteFile(src, big, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("sending %s over the real path", HumanBytes(size))
+	if _, err := a.Send("hostB", src); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	deadline := time.Now().Add(4 * time.Minute)
+	for time.Now().Before(deadline) {
+		if got, ok := inboxFile(t, b, "big.bin"); ok && len(got) == size {
+			// Integrity: byte-for-byte.
+			for i := range big {
+				if got[i] != big[i] {
+					t.Fatalf("corruption at offset %d", i)
+				}
+			}
+			if st := a.stats.snapshot(); st.Sent != 1 {
+				t.Errorf("sender completed %d transfers, want 1", st.Sent)
+			}
+			if st := b.stats.snapshot(); st.Received != 1 {
+				t.Errorf("receiver completed %d transfers, want 1", st.Received)
+			}
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	t.Fatal("big file did not arrive within 4 minutes")
+}
 func TestIntegrationPairSend(t *testing.T) {
 	integrationEnabled(t)
 	dirA := t.TempDir()

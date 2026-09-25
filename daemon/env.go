@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/tailscale/tailcat"
 	"tailscale.com/types/key"
@@ -20,9 +22,41 @@ type Me struct {
 	// Dropbox marks a storer that only serves third parties: no
 	// deliveries to itself, no originating sends. Implies Storer.
 	Dropbox bool `json:"dropbox,omitempty"`
+	// Capacity is the storer's spool budget in bytes. Enabling the
+	// storer role requires one; deposits that would exceed it are
+	// refused.
+	Capacity int64 `json:"capacity,omitempty"`
 	// Inbox is the absolute directory received files land in. Empty
 	// means the default (see DefaultInbox).
 	Inbox string `json:"inbox,omitempty"`
+}
+
+// ParseSize parses a human byte size like "10G", "500MiB" or "1024"
+// (binary units), for storer capacity flags.
+func ParseSize(s string) (int64, error) {
+	t := strings.ToLower(strings.TrimSpace(s))
+	mult := int64(1)
+	t = strings.TrimSuffix(t, "ib")
+	for _, suf := range []struct {
+		s string
+		m int64
+	}{
+		{"t", 1 << 40},
+		{"g", 1 << 30},
+		{"m", 1 << 20},
+		{"k", 1 << 10},
+	} {
+		if strings.HasSuffix(t, suf.s) {
+			mult = suf.m
+			t = t[:len(t)-1]
+			break
+		}
+	}
+	n, err := strconv.ParseInt(t, 10, 64)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("daemon: invalid size %q", s)
+	}
+	return n * mult, nil
 }
 
 // DefaultInbox is where received files land when no inbox dir is set: a

@@ -9,7 +9,7 @@ func TestDropboxMode(t *testing.T) {
 	box := startDaemon(t, "box")
 	niko, nikoDir := offlineCat(t)
 
-	if err := box.SetDropbox(true); err != nil {
+	if err := box.SetDropbox(true, 1<<30); err != nil {
 		t.Fatal(err)
 	}
 	trust(t, milo, box)
@@ -62,7 +62,7 @@ func TestDropboxMode(t *testing.T) {
 	}, "milo to see box as a dropbox")
 
 	// Turning storer mode off clears dropbox as well.
-	if err := box.SetStorer(false); err != nil {
+	if err := box.SetStorer(false, 0); err != nil {
 		t.Fatal(err)
 	}
 	if box.Me().Dropbox || box.Me().Storer {

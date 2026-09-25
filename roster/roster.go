@@ -29,8 +29,10 @@ type Cat struct {
 	// Dropbox marks a storer that only serves third parties: it holds
 	// and relays files for others but takes no deliveries for itself
 	// and cannot originate sends. Implies Storer.
-	Dropbox bool  `json:"dropbox,omitempty" cbor:"d,omitempty"`
-	Updated int64 `json:"updated" cbor:"u"`
+	Dropbox bool `json:"dropbox,omitempty" cbor:"d,omitempty"`
+	// Capacity is the storer's spool budget in bytes (storer only).
+	Capacity int64 `json:"capacity,omitempty" cbor:"p,omitempty"`
+	Updated  int64 `json:"updated" cbor:"u"`
 }
 
 // NewCat builds a Cat from a tailcat address, deriving the identity key

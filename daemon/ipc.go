@@ -21,19 +21,21 @@ type Request struct {
 	Path    string `json:"path,omitempty"`
 	On      bool   `json:"on,omitempty"`
 	Dropbox bool   `json:"dropbox,omitempty"`
+	Max     string `json:"max,omitempty"`   // spool capacity for the storer role (e.g. "10G")
 	Words   string `json:"words,omitempty"` // pairing code for join
 }
 
 // Response is the daemon's reply.
 type Response struct {
-	OK      bool         `json:"ok"`
-	Error   string       `json:"error,omitempty"`
-	Message string       `json:"message,omitempty"`
-	Me      *roster.Cat  `json:"me,omitempty"`
-	Cats    []roster.Cat `json:"cats,omitempty"`
-	Outbox  []Entry      `json:"outbox,omitempty"`
-	Spool   int          `json:"spool,omitempty"`
-	Stats   *Stats       `json:"stats,omitempty"`
+	OK         bool         `json:"ok"`
+	Error      string       `json:"error,omitempty"`
+	Message    string       `json:"message,omitempty"`
+	Me         *roster.Cat  `json:"me,omitempty"`
+	Cats       []roster.Cat `json:"cats,omitempty"`
+	Outbox     []Entry      `json:"outbox,omitempty"`
+	Spool      int          `json:"spool,omitempty"`
+	SpoolBytes int64        `json:"spool_bytes,omitempty"`
+	Stats      *Stats       `json:"stats,omitempty"`
 	// Liveness maps cat keys to the unix time they were last seen on a
 	// successful connection (status op).
 	Liveness map[string]int64 `json:"liveness,omitempty"`
@@ -100,14 +102,19 @@ func (d *Daemon) handleIPC(req Request) Response {
 		return Response{OK: true, Me: &me, Cats: d.ros.All()}
 
 	case "storer":
-		var err error
+		capacity, err := ParseSize(req.Max)
+		if req.Max == "" {
+			capacity = 0
+		} else if err != nil {
+			return fail(err)
+		}
 		switch {
 		case req.Dropbox && req.On:
-			err = d.SetDropbox(true)
+			err = d.SetDropbox(true, capacity)
 		case req.On:
-			err = d.SetStorer(true)
+			err = d.SetStorer(true, capacity)
 		default:
-			err = d.SetStorer(false)
+			err = d.SetStorer(false, 0)
 		}
 		if err != nil {
 			return fail(err)
@@ -177,14 +184,15 @@ func (d *Daemon) handleIPC(req Request) Response {
 		me := d.Me()
 		st := d.stats.snapshot()
 		return Response{
-			OK:       true,
-			Me:       &me,
-			Cats:     d.ros.All(),
-			Outbox:   d.ob.All(),
-			Spool:    d.spool.Count(),
-			Stats:    &st,
-			Liveness: d.livenessSnapshot(),
-			Progress: d.prog.snapshot(),
+			OK:         true,
+			Me:         &me,
+			Cats:       d.ros.All(),
+			Outbox:     d.ob.All(),
+			Spool:      d.spool.Count(),
+			SpoolBytes: d.spool.Usage(),
+			Stats:      &st,
+			Liveness:   d.livenessSnapshot(),
+			Progress:   d.prog.snapshot(),
 		}
 
 	default:

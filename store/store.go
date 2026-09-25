@@ -129,6 +129,15 @@ func (s *Spool) All() []Meta {
 	return metas
 }
 
+// Usage returns the total sealed bytes currently held.
+func (s *Spool) Usage() int64 {
+	var total int64
+	for _, m := range s.all() {
+		total += m.Size
+	}
+	return total
+}
+
 // Open returns the metadata and a reader over the sealed stream for an ID
 // the target is fetching. Close the reader when done.
 func (s *Spool) Open(id string) (Meta, io.ReadCloser, error) {
