@@ -287,6 +287,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		case <-poll.C:
 			go d.Poll(context.WithoutCancel(ctx))
 			go d.syncPeers(context.WithoutCancel(ctx))
+			go d.sweepSpool(context.WithoutCancel(ctx))
 		}
 	}
 }
@@ -451,7 +452,11 @@ func (d *Daemon) receiveAsStorer(pc *protocol.Conn, o *protocol.Offer) bool {
 	if err := pc.WriteMsg(&protocol.Message{Ack: &protocol.Ack{ID: o.ID, Kind: protocol.AckStored}}); err != nil {
 		return false
 	}
+	d.stats.add(func(s *Stats) { s.Spooled++ })
 	d.cfg.logf("clowder: holding %s from %s for %s", o.FileName, o.From, o.TargetName)
+	// The target may be online already: try to push right away
+	// instead of waiting for the next sweep.
+	go d.sweepSpoolFor(context.Background(), o.TargetKey)
 	return true
 }
 

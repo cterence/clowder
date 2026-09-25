@@ -47,7 +47,10 @@ on a fixed port (default 2569).
 4. **Fetch**: a cat periodically (and on daemon start) asks every known
    storer `Pending{Query}` → `Pending{Files}` → for each: `Fetch{ID}` →
    storer replays the sealed stream → recipient decrypts, saves, `Ack{Kind:
-   delivered}` → storer deletes from spool.
+   delivered}` → storer deletes from spool. Additionally the storer runs a
+   **push sweep** on its poll tick and right after each deposit: any held
+   file whose target is in the storer's roster is offered directly over a
+   fresh connection, so an online target receives its files without polling.
 5. Sealed streams are chunked (64 KiB XChaCha20-Poly1305 chunks under a
    per-stream file key sealed to the recipient's node key, age's STREAM
    construction), so arbitrarily large files transfer without either side
@@ -95,7 +98,8 @@ Files: `identity.json`, `roster.json`, `outbox/`, `spool/`, `inbox/`, `clow.sock
   from the first chunk.
 - No roster deletions; renames are LWW.
 - No gossip: full roster sync on every connection (scales to ~1000 cats).
-- No storer push sweep; delivery is receiver-poll.
+- Storer delivery is push-first (sweep) with pull as fallback; a target
+  that races both paths may see a dash-numbered duplicate file.
 - Tests use loopback TCP through the Transport interface; a live tailcat/DERP
   smoke test is out of scope for CI and must be run manually.
 - Reusing the WireGuard node key for file sealing is accepted (the key is

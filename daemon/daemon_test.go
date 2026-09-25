@@ -223,17 +223,53 @@ func TestStorerRelayForOfflineCat(t *testing.T) {
 		t.Fatal("spooled stream contains plaintext")
 	}
 
-	// Now niko wakes up — same persisted identity — and fetches from
-	// the storer.
+	// Now niko wakes up — same persisted identity — and receives the
+	// held file WITHOUT polling: the storer's sweep pushes it once
+	// the target is online and known.
 	nikoD := startDaemonAt(t, nikoDir)
 	trust(t, nikoD, storer)
 	trust(t, storer, nikoD)
-	nikoD.Poll(context.Background())
 
 	waitFor(t, func() bool {
 		got, ok := inboxFile(t, nikoD, "nap.txt")
 		return ok && got == "nap for a sleeping cat"
-	}, "niko to fetch the held file")
+	}, "niko to receive the held file via the storer's push sweep")
+	waitFor(t, func() bool { return storer.Spool().Count() == 0 }, "storer to drop the delivered file")
+}
+
+// TestStorerPullByFetch covers the explicit pull path: a target that
+// asks the storer directly receives the file even if the sweep has not
+// fired.
+func TestStorerPullByFetch(t *testing.T) {
+	milo := startDaemon(t, "milo")
+	storer := startDaemon(t, "storer")
+	if err := storer.SetStorer(true); err != nil {
+		t.Fatal(err)
+	}
+	trust(t, milo, storer)
+	trust(t, storer, milo)
+
+	niko, nikoDir := offlineCat(t)
+	addCat(t, milo, niko)
+	// The storer never learns niko (no roster entry), so its sweep
+	// cannot push: only niko's explicit fetch can retrieve the file.
+
+	src := writeSource(t, "pulled nap")
+	if _, err := milo.Send("niko", src); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return storer.Spool().Count() == 1 }, "storer to hold the file")
+
+	// Wake the target; only its explicit fetch can reach the file,
+	// since the storer cannot sweep to a cat it never learned.
+	nikoD := startDaemonAt(t, nikoDir)
+	trust(t, nikoD, storer)
+	nikoD.Poll(context.Background())
+
+	waitFor(t, func() bool {
+		got, ok := inboxFile(t, nikoD, "nap.txt")
+		return ok && got == "pulled nap"
+	}, "niko to pull the held file with a direct fetch")
 	waitFor(t, func() bool { return storer.Spool().Count() == 0 }, "storer to drop the delivered file")
 }
 

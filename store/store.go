@@ -110,6 +110,25 @@ func (s *Spool) List(targetKey string) []Meta {
 	return metas
 }
 
+// All returns the metadata of every held entry (expired entries
+// dropped), sorted by stored time. It is the storer-side view used to
+// find delivery targets.
+func (s *Spool) All() []Meta {
+	now := time.Now()
+	var metas []Meta
+	for _, m := range s.all() {
+		if m.ExpiresAt(s.ttl).Before(now) {
+			_ = s.Delete(m.ID)
+			continue
+		}
+		metas = append(metas, m)
+	}
+	slices.SortFunc(metas, func(a, b Meta) int {
+		return int(a.StoredAt - b.StoredAt)
+	})
+	return metas
+}
+
 // Open returns the metadata and a reader over the sealed stream for an ID
 // the target is fetching. Close the reader when done.
 func (s *Spool) Open(id string) (Meta, io.ReadCloser, error) {

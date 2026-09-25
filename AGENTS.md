@@ -77,14 +77,22 @@ README when something ships.
    clowders stay disjoint (flat sync would otherwise merge them).
    Largest refactor; do last, design tombstones against the final
    roster shape.
+4. **Android app client** — a clowder client for Android. tailcat has
+   Android support (see its android_linux.go and INSTALL.md), so the
+   shape is: the daemon packages as an Android library (aar) or runs in
+   a foreground service, with a thin UI for init/invite/join/send/
+   inbox. Decide the UI approach (plainCompose/gomobile) before
+   starting; the daemon package itself must not grow Android deps.
 
-Shipped recently (context for a fresh session): `clow rotate` (new
-pre-shared key/address under the same identity, announced via roster
-sync, fails unless one peer acknowledged; the daemon restart serves
-the new address), passive liveness ("online / seen Xm ago" in
-`clow status`, updated on every successful handshake), `clow forget`
-(roster entry plus outbox), dash-numbered inbox collisions, transfer
-stats, the two-keypair fix (see invariants).
+Shipped recently (context for a fresh session): storer push sweep (a
+storer delivers held files as soon as their target is online and known,
+plus a sweep on the poll tick — `clow fetch` remains as a manual pull),
+`clow rotate` (new pre-shared key/address under the same identity,
+announced via roster sync, fails unless one peer acknowledged; the
+daemon restart serves the new address), passive liveness
+("online / seen Xm ago" in `clow status`, updated on every successful
+handshake), `clow forget` (roster entry plus outbox), dash-numbered
+inbox collisions, transfer stats, the two-keypair fix (see invariants).
 
 Known caveats: the golangci-lint-action version in CI (v7 + v2.13.2) is
 unverified until a green run is observed; storer spools have TTL but no
