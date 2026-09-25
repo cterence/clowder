@@ -16,6 +16,7 @@ import (
 	"crypto/rand"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -28,7 +29,9 @@ func integrationEnabled(t *testing.T) {
 }
 
 // startRealDaemon runs a daemon with the production tailcat transport.
-func startRealDaemon(t *testing.T, dir, name string) *Daemon {
+// startRealDaemon runs a daemon with the production tailcat transport;
+// the returned stop function tears it down early.
+func startRealDaemon(t *testing.T, dir, name string) (*Daemon, func()) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir()) // keep the default inbox in the sandbox
 	if err := Init(dir, name); err != nil {
@@ -45,13 +48,14 @@ func startRealDaemon(t *testing.T, dir, name string) *Daemon {
 		t.Fatalf("New: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(func() {
+	stop := func() {
 		cancel()
 		_ = tr.Close()
-	})
+	}
+	t.Cleanup(stop)
 	go func() { _ = d.Run(ctx) }()
 	waitFor(t, func() bool { return d.Me().Addr != "" }, "%s to listen", name)
-	return d
+	return d, stop
 }
 
 // TestIntegrationBigFile pushes a multi-gigabyte-class payload shape
@@ -63,8 +67,8 @@ func TestIntegrationBigFile(t *testing.T) {
 	integrationEnabled(t)
 	dirA := t.TempDir()
 	dirB := t.TempDir()
-	a := startRealDaemon(t, dirA, "hostA")
-	b := startRealDaemon(t, dirB, "hostB")
+	a, _ := startRealDaemon(t, dirA, "hostA")
+	b, _ := startRealDaemon(t, dirB, "hostB")
 
 	code, err := a.StartInvite(context.Background())
 	if err != nil {
@@ -109,12 +113,63 @@ func TestIntegrationBigFile(t *testing.T) {
 	}
 	t.Fatal("big file did not arrive within 4 minutes")
 }
+
+// TestIntegrationFailedDialDropsClient proves the leak fix: after a
+// dial to a dead peer fails, the cached tailcat client (and its
+// WireGuard engine) is closed and dropped instead of lingering and
+// handshaking the unreachable peer forever.
+func TestIntegrationFailedDialDropsClient(t *testing.T) {
+	integrationEnabled(t)
+	dirA, dirB := t.TempDir(), t.TempDir()
+	a, _ := startRealDaemon(t, dirA, "hostA")
+	b, stopB := startRealDaemon(t, dirB, "hostB")
+
+	code, err := a.StartInvite(context.Background())
+	if err != nil {
+		t.Fatalf("invite: %v", err)
+	}
+	if err := b.Join(context.Background(), code); err != nil {
+		t.Fatalf("join: %v", err)
+	}
+
+	src := filepath.Join(t.TempDir(), "nap.txt")
+	if err := os.WriteFile(src, []byte("offline soon"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Send("hostB", src); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		_, ok := inboxFile(t, b, "nap.txt")
+		return ok
+	}, "the first send to arrive")
+
+	// Kill hostB, then keep sending for a while: every dial fails, and
+	// each failure must close the client's WireGuard engine. A leak
+	// would accumulate goroutines; closing keeps the count flat.
+	stopB()
+	time.Sleep(20 * time.Second) // let the first failures settle
+	baseline := runtime.NumGoroutine()
+	deadline := time.Now().Add(45 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := a.Send("hostB", src); err != nil {
+			t.Fatalf("send: %v", err)
+		}
+		time.Sleep(3 * time.Second)
+	}
+	// In-flight retries hold a couple of engines at once; a leak would
+	// hold one per failed attempt, ever-growing.
+	if g := runtime.NumGoroutine(); g > baseline+40 {
+		t.Fatalf("goroutines grew from %d to %d during failed dials: engines are leaking", baseline, g)
+	}
+}
+
 func TestIntegrationPairSend(t *testing.T) {
 	integrationEnabled(t)
 	dirA := t.TempDir()
 	dirB := t.TempDir()
-	a := startRealDaemon(t, dirA, "hostA")
-	b := startRealDaemon(t, dirB, "hostB")
+	a, _ := startRealDaemon(t, dirA, "hostA")
+	b, _ := startRealDaemon(t, dirB, "hostB")
 
 	code, err := a.StartInvite(context.Background())
 	if err != nil {

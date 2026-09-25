@@ -106,17 +106,33 @@ func (t *TailcatTransport) clientFor(addr string) *tailcat.Client {
 
 func (t *TailcatTransport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	c := t.clientFor(addr)
+	// Meow first: a cached client's one-shot handshake state can't
+	// tell a dead peer from a quiet one, and dialing into a dead
+	// session hangs in netstack SYN retries (handshake spam) for
+	// minutes. One ping is a cheap round trip for a live peer and a
+	// bounded (10s) failure for a dead one.
+	if _, err := c.Ping(ctx); err != nil {
+		t.dropClient(addr, c)
+		return nil, err
+	}
 	conn, err := c.DialTCPPort(ctx, t.Port)
 	if err != nil {
-		// Drop the cached client so the next attempt is rebuilt from
-		// the current roster entry (the peer may have re-paired with a
-		// new address).
-		t.mu.Lock()
-		delete(t.clients, addr)
-		t.mu.Unlock()
+		t.dropClient(addr, c)
 		return nil, err
 	}
 	return conn, nil
+}
+
+// dropClient closes and forgets a cached client: a client holds a live
+// WireGuard engine, and one abandoned mid-handshake keeps retrying the
+// unreachable peer forever (log spam and a goroutine leak). The next
+// use rebuilds it from the current roster entry (the peer may have
+// re-paired with a new address).
+func (t *TailcatTransport) dropClient(addr string, c *tailcat.Client) {
+	_ = c.Close()
+	t.mu.Lock()
+	delete(t.clients, addr)
+	t.mu.Unlock()
 }
 
 // Ping probes the path to the cat at the given tailcat address with a
@@ -126,6 +142,9 @@ func (t *TailcatTransport) Ping(ctx context.Context, addr string) (PathInfo, err
 	c := t.clientFor(addr)
 	res, err := c.DiscoPing(ctx)
 	if err != nil {
+		// A failed probe leaves the engine mid-handshake with an
+		// unreachable peer: close it rather than leak the retries.
+		t.dropClient(addr, c)
 		return PathInfo{}, err
 	}
 	if res.Err != "" {
