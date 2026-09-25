@@ -8,10 +8,10 @@ import (
 	"github.com/tailscale/tailcat"
 )
 
-func cat(t *testing.T, name string, updated int64) Cat {
+func cat(t *testing.T, name string) Cat {
 	t.Helper()
 	k := tailcat.NewPrivateKey()
-	c, err := NewCat(name, string(k.Public.Addr()), updated)
+	c, err := NewCat(name, string(k.Public.Addr()), 100)
 	if err != nil {
 		t.Fatalf("NewCat: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestNewCatRejectsEmptyName(t *testing.T) {
 
 func TestMergeLastWriteWins(t *testing.T) {
 	r := New()
-	a := cat(t, "a", 100)
+	a := cat(t, "a")
 	if _, err := r.Merge([]Cat{a}); err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestMergeLastWriteWins(t *testing.T) {
 
 func TestMergeTieBreakDeterministic(t *testing.T) {
 	r := New()
-	a := cat(t, "a", 100)
+	a := cat(t, "a")
 	a.Name = "left"
 	a2 := a
 	a2.Name = "right"
@@ -113,7 +113,7 @@ func TestPersistenceRoundTrip(t *testing.T) {
 	if err := r.SetPath(path); err != nil {
 		t.Fatal(err)
 	}
-	a := cat(t, "a", 100)
+	a := cat(t, "a")
 	a.Storer = true
 	if err := r.Add(a); err != nil {
 		t.Fatal(err)
@@ -135,9 +135,9 @@ func TestPersistenceRoundTrip(t *testing.T) {
 
 func TestStorers(t *testing.T) {
 	r := New()
-	a := cat(t, "a", 100)
+	a := cat(t, "a")
 	a.Storer = true
-	b := cat(t, "b", 100)
+	b := cat(t, "b")
 	if _, err := r.Merge([]Cat{a, b}); err != nil {
 		t.Fatal(err)
 	}

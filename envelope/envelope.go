@@ -47,8 +47,8 @@ const (
 	fileKeyLen   = chacha20poly1305.KeySize
 	prefixLen    = 11
 	nonceLen     = chacha20poly1305.NonceSizeX // 24
-	boxOverhead  = 24 + 16 // sealed-box nonce + Poly1305 tag
-	flagLen      = nonceLen - prefixLen - 8 // 5: counter padding + flag bytes
+	boxOverhead  = 24 + 16                     // sealed-box nonce + Poly1305 tag
+	flagLen      = nonceLen - prefixLen - 8    // 5: counter padding + flag bytes
 
 	// lastChunkFlag is set in the final chunk's nonce to make silent
 	// truncation detectable.
@@ -85,7 +85,7 @@ func SealStream(sender key.NodePrivate, recipient key.NodePublic, dst io.Writer,
 	}
 
 	// Header: sender key || sealed box of (file key || nonce prefix).
-	pub := tailcat.NodePublic{sender.Public()}
+	pub := tailcat.NodePublic{NodePublic: sender.Public()}
 	pubRaw, err := pub.MarshalBinary()
 	if err != nil {
 		return 0, "", fmt.Errorf("envelope: encoding sender key: %w", err)
