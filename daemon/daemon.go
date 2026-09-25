@@ -361,7 +361,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 		case <-retry.C:
 			go d.retryOutbox()
 		case <-poll.C:
-			go d.Poll(context.WithoutCancel(ctx))
+			// No periodic storer polling: the push sweep delivers
+			// held files to online targets on its own, and `clow
+			// fetch` remains as a manual pull. This keeps the
+			// background traffic to one roster sync per tick plus
+			// spool pushes only while files are held.
 			go d.syncPeers(context.WithoutCancel(ctx))
 			go d.sweepSpool(context.WithoutCancel(ctx))
 		}
