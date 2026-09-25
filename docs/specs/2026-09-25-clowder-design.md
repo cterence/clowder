@@ -37,26 +37,33 @@ on a fixed port (default 2569).
    `Updated` (tie-break: lexicographically greater Addr string wins).
    Identity key = the node public key embedded in `Cat.Addr`. Roster entries
    are never deleted in v1.
-2. **Direct send**: sender dials target, `Offer {ID, FileName, Size, From,
-   TargetKey}` → `Answer{OK}` → sealed blob → target decrypts, saves to inbox,
-   `Ack{Kind: delivered}`.
-3. **Storer send**: target down → sender dials a storer, same `Offer` (target
-   is the third cat) → storer spools the sealed blob, `Ack{Kind: stored}`.
+2. **Direct send**: sender dials target, `Offer {ID, FileName, Size,
+   From, TargetKey}` → `Answer{OK}` → sealed stream (exactly Size raw
+   bytes) → target decrypts streaming to its inbox, `Ack{Kind:
+   delivered}`.
+3. **Storer send**: target down → sender dials a storer, same `Offer`
+   (target is the third cat) → storer copies the opaque sealed stream to
+   its spool, `Ack{Kind: stored}`.
 4. **Fetch**: a cat periodically (and on daemon start) asks every known
    storer `Pending{Query}` → `Pending{Files}` → for each: `Fetch{ID}` →
-   storer streams the sealed blob → recipient decrypts, saves, `Ack{Kind:
+   storer replays the sealed stream → recipient decrypts, saves, `Ack{Kind:
    delivered}` → storer deletes from spool.
-5. Sealed files are sealed to the recipient's node key, so a storer provides
-   availability, not confidentiality.
+5. Sealed streams are chunked (64 KiB XChaCha20-Poly1305 chunks under a
+   per-stream file key sealed to the recipient's node key, age's STREAM
+   construction), so arbitrarily large files transfer without either side
+   holding them in memory, and a storer provides availability, not
+   confidentiality: it spools and replays the stream without ever being
+   able to decrypt it.
 
-If neither target nor any storer is reachable, the sealed file stays in the
-sender's outbox and the daemon retries (target first, then storers) on a
-ticker.
+If neither target nor any storer is reachable, the send stays in the
+sender's outbox (referencing the source file) and the daemon retries
+(target first, then storers) on a ticker, re-sealing the file per attempt.
 
 ## Components
 
-- `envelope/` — seal/open using the tailscale sealed box; wire format is
-  `senderNodePub(32B) || ciphertext`.
+- `envelope/` — chunked streaming seal/open using the tailscale sealed
+  box for the header (which carries the file key) and XChaCha20-Poly1305
+  chunks; the sealed stream is self-contained and storer-opaque.
 - `roster/` — `Cat`, LWW merge, JSON persistence, name lookup.
 - `protocol/` — message types, CBOR framing, read/write helpers.
 - `store/` — storer spool: put/pending/fetch/delete/TTL sweep. Atomic writes.
@@ -81,8 +88,10 @@ Files: `identity.json`, `roster.json`, `outbox/`, `spool/`, `inbox/`, `clow.sock
 
 ## Non-goals / v1 limits
 
-- Whole-file sealing in memory (no chunked streaming); fine up to large tens
-  of MB, documented limit.
+- Files transfer as chunked sealed streams (64 KiB chunks, envelope
+  package): no size limit, memory bounded by one chunk per side.
+- No resume of partially transferred streams: a failed transfer restarts
+  from the first chunk.
 - No roster deletions; renames are LWW.
 - No gossip: full roster sync on every connection (scales to ~1000 cats).
 - No storer push sweep; delivery is receiver-poll.

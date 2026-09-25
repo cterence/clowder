@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"bytes"
+	"io"
 	"net"
 	"testing"
 
@@ -64,23 +65,23 @@ func TestOversizedFrameRejected(t *testing.T) {
 	}
 }
 
-func TestConnBlobRoundTrip(t *testing.T) {
+func TestConnStreamRoundTrip(t *testing.T) {
 	c1, c2 := newPipe(t)
 	defer c1.Close()
 	defer c2.Close()
 
-	blob := []byte("sealed bytes sealed bytes sealed")
+	stream := bytes.Repeat([]byte("sealed chunk "), 10000) // ~140 KB
 	go func() {
-		if err := c1.WriteBlob(blob); err != nil {
-			t.Errorf("WriteBlob: %v", err)
+		if _, err := c1.Writer().Write(stream); err != nil {
+			t.Errorf("stream write: %v", err)
 		}
 	}()
-	got, err := c2.ReadBlob(int64(len(blob)))
+	got, err := io.ReadAll(io.LimitReader(c2.Reader(), int64(len(stream))))
 	if err != nil {
-		t.Fatalf("ReadBlob: %v", err)
+		t.Fatalf("stream read: %v", err)
 	}
-	if string(got) != string(blob) {
-		t.Fatalf("blob round trip = %q, want %q", got, blob)
+	if !bytes.Equal(got, stream) {
+		t.Fatalf("stream round trip: got %d bytes, want %d", len(got), len(stream))
 	}
 }
 
