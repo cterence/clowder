@@ -318,18 +318,21 @@ func cmdCats() error {
 		return fmt.Errorf("%s", resp.Error)
 	}
 	if resp.Me != nil {
-		fmt.Printf("%s (me)%s\n", resp.Me.Name, storerTag(resp.Me.Storer))
+		fmt.Printf("%s (me)%s\n", resp.Me.Name, storerTag(resp.Me.Storer, resp.Me.Dropbox))
 		fmt.Printf("  address: %s\n", resp.Me.Addr)
 	}
 	for _, c := range resp.Cats {
-		fmt.Printf("%s%s\n", c.Name, storerTag(c.Storer))
+		fmt.Printf("%s%s\n", c.Name, storerTag(c.Storer, c.Dropbox))
 		fmt.Printf("  address: %s\n", c.Addr)
 	}
 	return nil
 }
 
-func storerTag(storer bool) string {
-	if storer {
+func storerTag(storer, dropbox bool) string {
+	switch {
+	case dropbox:
+		return " [dropbox]"
+	case storer:
 		return " [storer]"
 	}
 	return ""
@@ -379,20 +382,21 @@ func cmdStatus() error {
 		return fmt.Errorf("%s", resp.Error)
 	}
 	if resp.Me != nil {
-		fmt.Printf("me:     %s%s\n", resp.Me.Name, storerTag(resp.Me.Storer))
+		fmt.Printf("me:     %s%s\n", resp.Me.Name, storerTag(resp.Me.Storer, resp.Me.Dropbox))
 	}
 	fmt.Printf("config: %s\n", configDir())
 	fmt.Printf("inbox:  %s\n", inboxDir())
 	fmt.Printf("roster: %d %s\n", len(resp.Cats), plural(len(resp.Cats), "cat", "cats"))
 	for _, c := range resp.Cats {
+		name := c.Name + storerTag(c.Storer, c.Dropbox)
 		seen, ok := resp.Liveness[c.Key]
 		switch {
 		case !ok:
-			fmt.Printf("  %-20s never seen\n", c.Name)
+			fmt.Printf("  %-28s never seen\n", name)
 		case time.Since(time.Unix(seen, 0)) < 2*time.Minute:
-			fmt.Printf("  %-20s online (seen %s ago)\n", c.Name, sinceStr(seen))
+			fmt.Printf("  %-28s online (seen %s ago)\n", name, sinceStr(seen))
 		default:
-			fmt.Printf("  %-20s seen %s ago\n", c.Name, sinceStr(seen))
+			fmt.Printf("  %-28s seen %s ago\n", name, sinceStr(seen))
 		}
 	}
 	fmt.Printf("outbox: %d pending\n", len(resp.Outbox))
