@@ -85,6 +85,16 @@ README when something ships.
    Needed for serious Kubernetes use; see the README container section.
 5. **HTTP health endpoint** for container probes (currently exec
    `clow status`).
+6. **Nix packaging** — a flake `packages.default` building the clow
+   binary (buildGoModule; needs a vendorHash — compute with a first
+   `nix build`, then pin). Keep the devShell as the default output.
+7. **Delivery receipts** — approved design, not yet built: when a
+   target receives a file (direct or via storer) it seals a tiny
+   receipt {transferID, fileName, deliveredAt} to the sender's node key
+   with its own (sealed-box authenticated, storer-opaque) and relays it
+   direct-or-via-storer like any small message; the sender keeps a
+   receipts.json ledger shown in `clow status`, closing the loop for
+   sends that left the outbox while the sender was offline.
 
 Shipped recently (context for a fresh session): storer capacity
 (`clow storer on --max 10G`, required to enable; deposits are refused
