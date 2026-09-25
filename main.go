@@ -46,6 +46,8 @@ func run(args []string) error {
 		return cmdStorer(rest)
 	case "status":
 		return cmdStatus()
+	case "inbox":
+		return cmdInbox()
 	default:
 		return fmt.Errorf("unknown command %q", cmd)
 	}
@@ -61,11 +63,14 @@ usage:
   clow send <CAT> <FILE>                  send a file asynchronously
   clow fetch                              pull files storers hold for me
   clow cats                               list the clowder
+  clow inbox                              list received files with full paths
   clow storer on|off                      declare or retract storer duty
-  clow status                             outbox, spool and roster summary
+  clow status                             config, outbox, spool and roster summary
 
-The config dir defaults to $CLOWDER_DIR, else
-<user config home>/clowder. Everything but init needs the daemon running.
+The config dir defaults to $CLOWDER_DIR, else <user config home>/clowder
+(~/.config/clowder on Linux, ~/Library/Application Support/clowder on
+macOS). Received files land in <config dir>/inbox. Everything but init
+and inbox needs the daemon running.
 `)
 	return nilErr
 }
@@ -81,6 +86,9 @@ func configDir() string {
 	}
 	return filepath.Join(base, "clowder")
 }
+
+// inboxDir is where received files land.
+func inboxDir() string { return filepath.Join(configDir(), "inbox") }
 
 func cmdInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
@@ -265,6 +273,7 @@ func cmdStatus() error {
 		fmt.Printf("me:     %s%s\n", resp.Me.Name, storerTag(resp.Me.Storer))
 	}
 	fmt.Printf("config: %s\n", configDir())
+	fmt.Printf("inbox:  %s\n", inboxDir())
 	fmt.Printf("roster: %d cats\n", len(resp.Cats))
 	fmt.Printf("outbox: %d pending\n", len(resp.Outbox))
 	for _, e := range resp.Outbox {
@@ -278,4 +287,29 @@ func cmdStatus() error {
 func age(unix int64) string {
 	d := time.Since(time.Unix(unix, 0)).Round(time.Second)
 	return d.String() + " old"
+}
+
+// cmdInbox lists received files with their full paths.
+func cmdInbox() error {
+	dir := inboxDir()
+	des, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Printf("no inbox yet at %s\n", dir)
+			return nil
+		}
+		return fmt.Errorf("reading inbox: %w", err)
+	}
+	if len(des) == 0 {
+		fmt.Printf("inbox %s is empty\n", dir)
+		return nil
+	}
+	for _, de := range des {
+		info, err := de.Info()
+		if err != nil {
+			continue
+		}
+		fmt.Printf("%s\t%s\n", info.ModTime().Format(time.DateTime), filepath.Join(dir, de.Name()))
+	}
+	return nil
 }
