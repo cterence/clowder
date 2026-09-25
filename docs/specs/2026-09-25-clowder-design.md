@@ -77,11 +77,12 @@ sender's outbox (referencing the source file) and the daemon retries
 
     clow init [--name NAME] [--dir DIR]      # create identity, print key info
     clow daemon [--port N]                   # run the mesh daemon
-    clow add <ADDR> [--name NAME]            # trust a cat (out of band)
+    clow add <ADDR> --name NAME              # trust a cat (out of band)
     clow cats                                # list roster + me
     clow send <CAT> <FILE>                   # async send
     clow fetch                               # poll storers now
     clow storer on|off                       # declare storer role
+    clow status                              # outbox, spool and roster summary
 
 Config dir default: `$XDG_CONFIG_HOME/clowder` or `~/.config/clowder`.
 Files: `identity.json`, `roster.json`, `outbox/`, `spool/`, `inbox/`, `clow.sock`.
