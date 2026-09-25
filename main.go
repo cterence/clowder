@@ -264,6 +264,7 @@ func cmdStatus() error {
 	if resp.Me != nil {
 		fmt.Printf("me:     %s%s\n", resp.Me.Name, storerTag(resp.Me.Storer))
 	}
+	fmt.Printf("config: %s\n", configDir())
 	fmt.Printf("roster: %d cats\n", len(resp.Cats))
 	fmt.Printf("outbox: %d pending\n", len(resp.Outbox))
 	for _, e := range resp.Outbox {
