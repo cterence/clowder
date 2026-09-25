@@ -86,7 +86,7 @@ func cmdInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	name := fs.String("name", defaultName(), "this cat's declared name")
 	dir := fs.String("dir", configDir(), "config directory")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(flagsFirst(fs, args)); err != nil {
 		return err
 	}
 	if *name == "" {
@@ -117,7 +117,7 @@ func defaultName() string {
 func cmdDaemon(args []string) error {
 	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
 	port := fs.Uint("port", daemon.DefaultPort, "clowder protocol port")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(flagsFirst(fs, args)); err != nil {
 		return err
 	}
 	dir := configDir()
