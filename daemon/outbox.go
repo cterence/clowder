@@ -89,6 +89,17 @@ func (o *outbox) Delete(id string) error {
 	return nil
 }
 
+// Clear removes all pending entries and returns how many.
+func (o *outbox) Clear() (int, error) {
+	entries := o.All()
+	for _, e := range entries {
+		if err := o.Delete(e.ID); err != nil {
+			return 0, err
+		}
+	}
+	return len(entries), nil
+}
+
 // atomicWrite writes data to path via a temp file and rename.
 func atomicWrite(path string, data []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")

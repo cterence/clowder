@@ -13,15 +13,14 @@ import (
 	"clowder/roster"
 )
 
-// Request is one command from the clow CLI to the daemon. Ops: add,
-// send, fetch, cats, storer, status.
+// Request is one command from the clow CLI to the daemon. Ops: send,
+// fetch, cats, storer, status, setinbox, invite, join, outbox.
 type Request struct {
 	Op     string `json:"op"`
-	Name   string `json:"name,omitempty"`
-	Addr   string `json:"addr,omitempty"`
 	Target string `json:"target,omitempty"`
 	Path   string `json:"path,omitempty"`
 	On     bool   `json:"on,omitempty"`
+	Words  string `json:"words,omitempty"` // pairing code for join
 }
 
 // Response is the daemon's reply.
@@ -66,16 +65,10 @@ func (d *Daemon) serveIPCConn(conn net.Conn) {
 }
 
 func (d *Daemon) handleIPC(req Request) Response {
-	switch req.Op {
-	case "add":
-		if req.Name == "" || req.Addr == "" {
-			return fail(fmt.Errorf("add needs a name and an address"))
-		}
-		if err := d.AddCat(req.Name, req.Addr); err != nil {
-			return fail(err)
-		}
-		return okMsg(fmt.Sprintf("added %s", req.Name))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
 
+	switch req.Op {
 	case "send":
 		id, err := d.Send(req.Target, req.Path)
 		if err != nil {
@@ -84,8 +77,6 @@ func (d *Daemon) handleIPC(req Request) Response {
 		return okMsg(fmt.Sprintf("queued %s for %s (id %s)", filepath.Base(req.Path), req.Target, id))
 
 	case "fetch":
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
 		d.Poll(ctx)
 		return okMsg("fetch pass complete")
 
@@ -110,6 +101,32 @@ func (d *Daemon) handleIPC(req Request) Response {
 			return fail(err)
 		}
 		return okMsg(fmt.Sprintf("inbox now %s", d.InboxDir()))
+
+	case "invite":
+		code, err := d.StartInvite(ctx)
+		if err != nil {
+			return fail(err)
+		}
+		return okMsg(fmt.Sprintf("ask the other cat to run: clow join %s", code))
+
+	case "join":
+		if req.Words == "" {
+			return fail(fmt.Errorf("join needs a pairing code"))
+		}
+		if err := d.Join(ctx, req.Words); err != nil {
+			return fail(err)
+		}
+		return okMsg("paired")
+
+	case "outbox":
+		if req.Path != "clear" {
+			return fail(fmt.Errorf("usage: clow outbox clear"))
+		}
+		n, err := d.ob.Clear()
+		if err != nil {
+			return fail(err)
+		}
+		return okMsg(fmt.Sprintf("cleared %d pending sends", n))
 
 	case "status":
 		me := d.Me()

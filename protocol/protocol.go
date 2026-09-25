@@ -98,6 +98,16 @@ type Fetch struct {
 	ID string `cbor:"i"`
 }
 
+// PairIntro is exchanged over a pairing channel (clow invite / clow
+// join) so two cats can learn each other's real identities without
+// copying full tailcat addresses. Addr is the sender's real address,
+// not the ephemeral pairing one.
+type PairIntro struct {
+	Name   string `cbor:"n"`
+	Addr   string `cbor:"a"`
+	Storer bool   `cbor:"s,omitempty"`
+}
+
 // Message is the union of all protocol messages. Exactly one field is
 // non-nil on the wire.
 type Message struct {
@@ -108,6 +118,7 @@ type Message struct {
 	Ack     *Ack        `cbor:"k,omitempty"`
 	Pending *Pending    `cbor:"p,omitempty"`
 	Fetch   *Fetch      `cbor:"t,omitempty"`
+	Pair    *PairIntro  `cbor:"j,omitempty"`
 }
 
 // Kind returns a short label for the set message, for logging and errors.
@@ -127,6 +138,8 @@ func (m *Message) Kind() string {
 		return "pending"
 	case m.Fetch != nil:
 		return "fetch"
+	case m.Pair != nil:
+		return "pair"
 	}
 	return "empty"
 }

@@ -34,8 +34,12 @@ func run(args []string) error {
 		return cmdInit(rest)
 	case "daemon":
 		return cmdDaemon(rest)
-	case "add":
-		return cmdAdd(rest)
+	case "invite":
+		return cmdInvite()
+	case "join":
+		return cmdJoin(rest)
+	case "outbox":
+		return cmdOutbox(rest)
 	case "cats":
 		return cmdCats()
 	case "send":
@@ -59,20 +63,24 @@ func usage(nilErr error) error {
 usage:
   clow init [--name NAME] [--dir DIR] [--inbox DIR]  create this cat's identity
   clow daemon [--port N]                  run the mesh daemon
-  clow add <ADDR> --name NAME             trust another cat (out of band)
+  clow invite                             print a pairing code (5 words, 5 min)
+  clow join <CODE>                        pair with the cat that invited
   clow send <CAT> <FILE>                  send a file asynchronously
   clow fetch                              pull files storers hold for me
   clow cats                               list the clowder
   clow inbox [--set DIR]               list received files (full paths) or
                                         change where they land
   clow storer on|off                      declare or retract storer duty
+  clow outbox clear                       drop all pending sends
   clow status                             config, outbox, spool and roster summary
 
 The config dir defaults to $CLOWDER_DIR, else <user config home>/clowder
 (~/.config/clowder on Linux, ~/Library/Application Support/clowder on
 macOS). Received files land in a distinct inbox dir, defaulting to
-~/Downloads/clowder, changeable with "clow inbox --set". Everything but
-init and inbox needs the daemon running.
+~/Downloads/clowder, changeable with "clow inbox --set". Cats trust each
+other via "clow invite" / "clow join" pairing codes; tailcat addresses
+are never exchanged by hand. Everything but init and inbox needs the
+daemon running.
 `)
 	return nilErr
 }
@@ -175,16 +183,25 @@ func printResp(resp daemon.Response, err error) error {
 	return nil
 }
 
-func cmdAdd(args []string) error {
-	fs := flag.NewFlagSet("add", flag.ContinueOnError)
-	name := fs.String("name", "", "the new cat's declared name (required)")
-	if err := fs.Parse(flagsFirst(fs, args)); err != nil {
-		return err
+// cmdInvite starts a pairing code the other cat joins with.
+func cmdInvite() error {
+	return printResp(call(daemon.Request{Op: "invite"}))
+}
+
+// cmdJoin pairs with an inviter using the given code words.
+func cmdJoin(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: clow join <CODE> (the words from `clow invite`)")
 	}
-	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: clow add <ADDR> --name NAME")
+	return printResp(call(daemon.Request{Op: "join", Words: strings.Join(args, " ")}))
+}
+
+// cmdOutbox manages pending sends; only "clear" exists for now.
+func cmdOutbox(args []string) error {
+	if len(args) != 1 || args[0] != "clear" {
+		return fmt.Errorf("usage: clow outbox clear")
 	}
-	return printResp(call(daemon.Request{Op: "add", Name: *name, Addr: fs.Arg(0)}))
+	return printResp(call(daemon.Request{Op: "outbox", Path: "clear"}))
 }
 
 // flagsFirst reorders args so flags precede positionals, letting Go's

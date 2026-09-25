@@ -13,12 +13,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/tailscale/tailcat"
 	"tailscale.com/types/key"
 
 	"clowder/envelope"
@@ -73,6 +75,12 @@ type Daemon struct {
 	inbox string
 
 	syncSeq atomic.Int64 // round-robin cursor for peer sync
+
+	// Pairing invite state (see pairing.go).
+	pairMu   sync.Mutex
+	pairSrv  *tailcat.Server
+	pairLn   net.Listener
+	pairDone chan struct{}
 }
 
 // New loads a cat's state from cfg.Dir and wires it to a transport.
@@ -262,20 +270,6 @@ func (d *Daemon) Poll(ctx context.Context) {
 			d.cfg.logf("clowder: fetching from storer %s: %v", s.Name, err)
 		}
 	}
-}
-
-// AddCat records a cat in the roster (as `clow add` does) and allows it
-// to connect.
-func (d *Daemon) AddCat(name, addr string) error {
-	c, err := roster.NewCat(name, addr, time.Now().Unix())
-	if err != nil {
-		return err
-	}
-	if err := d.ros.Add(c); err != nil {
-		return err
-	}
-	d.allowCat(c)
-	return nil
 }
 
 // ---- serving ----
