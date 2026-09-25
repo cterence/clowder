@@ -160,6 +160,11 @@ func TestPairIntroExchange(t *testing.T) {
 		if got.Addr == "" {
 			t.Errorf("%s's entry for %s has no address", tc.d.Me().Name, tc.name)
 		}
+		// The pairing exchange counts as contact: liveness must be
+		// recorded immediately, not wait for the sync ticker.
+		if tc.d.SeenAt(tc.wantKey) == 0 {
+			t.Errorf("%s did not mark %s as seen after pairing", tc.d.Me().Name, tc.name)
+		}
 	}
 }
 

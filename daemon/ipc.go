@@ -41,6 +41,9 @@ type Response struct {
 	Liveness map[string]int64 `json:"liveness,omitempty"`
 	// Progress lists the in-flight transfers (status op).
 	Progress []Progress `json:"progress,omitempty"`
+	// Paths maps cat keys to their probed route (status op); cats
+	// that did not answer the probe have no entry.
+	Paths map[string]*PathInfo `json:"paths,omitempty"`
 }
 
 func fail(err error) Response { return Response{OK: false, Error: err.Error()} }
@@ -193,6 +196,7 @@ func (d *Daemon) handleIPC(req Request) Response {
 			Stats:      &st,
 			Liveness:   d.livenessSnapshot(),
 			Progress:   d.prog.snapshot(),
+			Paths:      d.pathsFor(ctx),
 		}
 
 	default:

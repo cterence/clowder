@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -82,8 +83,12 @@ func (t *TailcatTransport) Allow(peer key.NodePublic) {
 // Dial connects to the clowder port of the cat at the given tailcat
 // address. Clients are cached per address: each holds a WireGuard
 // engine, and a cat dials the same peers repeatedly.
-func (t *TailcatTransport) Dial(ctx context.Context, addr string) (net.Conn, error) {
+// clientFor returns the cached client for an address, creating it on
+// first use. Each client holds a WireGuard engine, and a cat dials the
+// same peers repeatedly.
+func (t *TailcatTransport) clientFor(addr string) *tailcat.Client {
 	t.mu.Lock()
+	defer t.mu.Unlock()
 	if t.clients == nil {
 		t.clients = map[string]*tailcat.Client{}
 	}
@@ -96,7 +101,11 @@ func (t *TailcatTransport) Dial(ctx context.Context, addr string) (net.Conn, err
 		}
 		t.clients[addr] = c
 	}
-	t.mu.Unlock()
+	return c
+}
+
+func (t *TailcatTransport) Dial(ctx context.Context, addr string) (net.Conn, error) {
+	c := t.clientFor(addr)
 	conn, err := c.DialTCPPort(ctx, t.Port)
 	if err != nil {
 		// Drop the cached client so the next attempt is rebuilt from
@@ -108,6 +117,24 @@ func (t *TailcatTransport) Dial(ctx context.Context, addr string) (net.Conn, err
 		return nil, err
 	}
 	return conn, nil
+}
+
+// Ping probes the path to the cat at the given tailcat address with a
+// disco ping, which also triggers direct-path discovery: probing can
+// upgrade a relayed connection to a direct one.
+func (t *TailcatTransport) Ping(ctx context.Context, addr string) (PathInfo, error) {
+	c := t.clientFor(addr)
+	res, err := c.DiscoPing(ctx)
+	if err != nil {
+		return PathInfo{}, err
+	}
+	if res.Err != "" {
+		return PathInfo{}, errors.New(res.Err)
+	}
+	if res.Endpoint != "" {
+		return PathInfo{Direct: true, Endpoint: res.Endpoint}, nil
+	}
+	return PathInfo{DERPRegionID: int(res.DERPRegionID), DERPRegionCode: res.DERPRegionCode}, nil
 }
 
 // PeerKey returns the authenticated node key of a connected peer.

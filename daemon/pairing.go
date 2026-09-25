@@ -306,6 +306,9 @@ func (d *Daemon) addPeerCat(p *protocol.PairIntro) error {
 		return err
 	}
 	d.allowCat(c)
+	// We just talked to this cat over the pairing channel: it is very
+	// much "seen".
+	d.markSeen(c.Key)
 	return nil
 }
 

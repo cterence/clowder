@@ -425,53 +425,97 @@ func cmdStatus() error {
 	if !resp.OK {
 		return fmt.Errorf("%s", resp.Error)
 	}
+
+	// Me and directories.
 	if resp.Me != nil {
-		fmt.Printf("me:     %s%s\n", resp.Me.Name, storerTag(resp.Me.Storer, resp.Me.Dropbox))
+		fmt.Printf("me:      %s%s\n", resp.Me.Name, storerTag(resp.Me.Storer, resp.Me.Dropbox))
 	}
-	fmt.Printf("config: %s\n", configDir())
-	fmt.Printf("inbox:  %s\n", inboxDir())
-	fmt.Printf("roster: %d %s\n", len(resp.Cats), plural(len(resp.Cats), "cat", "cats"))
+	fmt.Printf("config:  %s\n", configDir())
+	fmt.Printf("inbox:   %s\n", inboxDir())
+
+	// The clowder: one row per cat with liveness and route.
+	fmt.Printf("\nclowder: %d %s\n", len(resp.Cats), plural(len(resp.Cats), "cat", "cats"))
 	for _, c := range resp.Cats {
 		name := c.Name + storerTag(c.Storer, c.Dropbox)
 		seen, ok := resp.Liveness[c.Key]
+		var life string
 		switch {
 		case !ok:
-			fmt.Printf("  %-28s never seen\n", name)
+			life = "never seen"
 		case time.Since(time.Unix(seen, 0)) < 2*time.Minute:
-			fmt.Printf("  %-28s online (seen %s ago)\n", name, sinceStr(seen))
+			life = fmt.Sprintf("online (seen %s ago)", sinceStr(seen))
 		default:
-			fmt.Printf("  %-28s seen %s ago\n", name, sinceStr(seen))
+			life = fmt.Sprintf("seen %s ago", sinceStr(seen))
 		}
-	}
-	fmt.Printf("outbox: %d pending\n", len(resp.Outbox))
-	for _, e := range resp.Outbox {
-		inFlight := ""
-		for _, p := range resp.Progress {
-			if p.ID == e.ID && !p.Receiving {
-				inFlight = fmt.Sprintf(", sending %.0f%%", p.Percent()*100)
+		route := ""
+		if p := resp.Paths[c.Key]; p != nil {
+			if p.Direct {
+				route = "direct " + p.Endpoint
+			} else {
+				// The relay's region label is not reliably
+				// recoverable from roster addresses, so keep it
+				// generic.
+				route = "relayed via DERP"
 			}
 		}
-		fmt.Printf("  %s -> %s (%s%s)\n", e.FileName, e.TargetName, age(e.AddedAt), inFlight)
+		fmt.Printf("  %-22s %-24s %s\n", name, life, route)
 	}
-	for _, p := range resp.Progress {
-		if p.Receiving {
-			fmt.Printf("receiving %-24s from %-16s %3.0f%% of %s\n",
-				p.FileName, p.Peer, p.Percent()*100, daemon.HumanBytes(p.Total))
+
+	// In-flight transfers, both directions.
+	if len(resp.Progress) > 0 {
+		fmt.Println("\ntransfers:")
+		for _, p := range resp.Progress {
+			if p.Receiving {
+				fmt.Printf("  receiving %-24s from %-16s %3.0f%% of %s\n",
+					p.FileName, p.Peer, p.Percent()*100, daemon.HumanBytes(p.Total))
+			}
+		}
+		for _, p := range resp.Progress {
+			if !p.Receiving {
+				fmt.Printf("  sending   %-24s to   %-16s %3.0f%% of %s\n",
+					p.FileName, p.Peer, p.Percent()*100, daemon.HumanBytes(p.Total))
+			}
 		}
 	}
-	fmt.Printf("spool:  %d held", resp.Spool)
-	if resp.Me != nil && resp.Me.Storer && resp.Me.Capacity > 0 {
-		fmt.Printf(" (%s of %s)", daemon.HumanBytes(resp.SpoolBytes), daemon.HumanBytes(resp.Me.Capacity))
+
+	// Queued but not in flight.
+	fmt.Printf("\noutbox: %d pending\n", len(resp.Outbox))
+	for _, e := range resp.Outbox {
+		queue := age(e.AddedAt)
+		if p, ok := sendingID(resp.Progress, e.ID); ok {
+			queue = fmt.Sprintf("%s, sending %.0f%%", age(e.AddedAt), p.Percent()*100)
+		}
+		fmt.Printf("  %s -> %s (%s)\n", e.FileName, e.TargetName, queue)
 	}
-	fmt.Println()
+
+	// Storer duty.
+	if resp.Spool > 0 || (resp.Me != nil && resp.Me.Storer) {
+		fmt.Printf("\nspool:  %s held", daemon.HumanBytes(resp.SpoolBytes))
+		if resp.Me != nil && resp.Me.Storer && resp.Me.Capacity > 0 {
+			fmt.Printf(" (of %s capacity)", daemon.HumanBytes(resp.Me.Capacity))
+		}
+		fmt.Printf(", %d %s\n", resp.Spool, plural(resp.Spool, "file", "files"))
+	}
+
+	// Lifetime counters.
 	if resp.Stats != nil {
 		st := resp.Stats
-		fmt.Printf("stats:  sent %d %s (%s), received %d %s (%s)\n",
+		fmt.Printf("\nstats:  sent %d %s (%s), received %d %s (%s)\n",
 			st.Sent, plural(int(st.Sent), "file", "files"), daemon.HumanBytes(st.SentBytes),
 			st.Received, plural(int(st.Received), "file", "files"), daemon.HumanBytes(st.ReceivedBytes))
 		fmt.Printf("        spooled %d, fetched %d\n", st.Spooled, st.Fetched)
 	}
 	return nil
+}
+
+// sendingID returns the in-flight send progress for a transfer ID.
+func sendingID(progress []daemon.Progress, id string) (daemon.Progress, bool) {
+	for _, p := range progress {
+		if p.ID == id && !p.Receiving {
+			return p, true
+		}
+	}
+	return daemon.Progress{}, false
 }
 
 // plural picks the singular or plural form for n.
