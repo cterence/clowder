@@ -109,9 +109,10 @@ func trust(t *testing.T, d *Daemon, other *Daemon) {
 
 // offlineCat builds a roster entry for a cat whose daemon is not
 // running, persisting its identity so it can wake up later as the same
-// cat.
-func offlineCat(t *testing.T, name string) (roster.Cat, string) {
+// cat. The name is always niko: the tests treat it as a fixture.
+func offlineCat(t *testing.T) (roster.Cat, string) {
 	t.Helper()
+	const name = "niko"
 	dir := t.TempDir()
 	if err := Init(dir, name); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -200,7 +201,7 @@ func TestStorerRelayForOfflineCat(t *testing.T) {
 
 	// A target cat that is offline (never started), known to milo and
 	// the storer by identity.
-	niko, nikoDir := offlineCat(t, "niko")
+	niko, nikoDir := offlineCat(t)
 	addCat(t, milo, niko)
 	addCat(t, storer, niko)
 
@@ -261,7 +262,7 @@ func TestRosterPropagation(t *testing.T) {
 
 func TestForgetClearsOutbox(t *testing.T) {
 	milo := startDaemon(t, "milo")
-	niko, _ := offlineCat(t, "niko")
+	niko, _ := offlineCat(t)
 	addCat(t, milo, niko)
 
 	src := writeSource(t, "doomed nap")
@@ -287,7 +288,7 @@ func TestStorerRefusesWhenNotStorer(t *testing.T) {
 	trust(t, milo, picky)
 	trust(t, picky, milo)
 
-	niko, _ := offlineCat(t, "niko")
+	niko, _ := offlineCat(t)
 	addCat(t, milo, niko)
 	addCat(t, picky, niko)
 

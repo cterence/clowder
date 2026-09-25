@@ -74,6 +74,33 @@ type Env struct {
 // clientKeyPath is where the client identity lives.
 func clientKeyPath(dir string) string { return filepath.Join(dir, "clientkey.json") }
 
+// saveIdentity writes the identity (node key, pre-shared key, region
+// hint) atomically.
+func saveIdentity(dir string, k *tailcat.PrivateKey) error {
+	b, err := json.MarshalIndent(k, "", "  ")
+	if err != nil {
+		return fmt.Errorf("daemon: encoding identity: %w", err)
+	}
+	return os.WriteFile(filepath.Join(dir, "identity.json"), b, 0o600)
+}
+
+// UpdatePresharedKey persists a new pre-shared key into the identity,
+// changing the cat's tailcat address from the next daemon start. The
+// running daemon keeps serving under the old address until restarted.
+func UpdatePresharedKey(dir string, psk tailcat.PresharedKey) error {
+	idPath := filepath.Join(dir, "identity.json")
+	b, err := os.ReadFile(idPath)
+	if err != nil {
+		return fmt.Errorf("daemon: reading identity: %w", err)
+	}
+	var k *tailcat.PrivateKey
+	if err := json.Unmarshal(b, &k); err != nil {
+		return fmt.Errorf("daemon: parsing identity: %w", err)
+	}
+	k.Public.PresharedKey = psk
+	return saveIdentity(dir, k)
+}
+
 // Init creates a new cat identity in dir: a node keypair with a WireGuard
 // pre-shared key (RegionID -1 picks the DERP region automatically at
 // startup), plus the cat's declared name. The directory must not already
@@ -92,12 +119,8 @@ func Init(dir, name string) error {
 
 	k := tailcat.NewPrivateKey()
 	k.Public.RegionID = -1 // auto-select DERP region at startup
-	b, err := json.MarshalIndent(k, "", "  ")
-	if err != nil {
-		return fmt.Errorf("daemon: encoding identity: %w", err)
-	}
-	if err := os.WriteFile(idPath, b, 0o600); err != nil {
-		return fmt.Errorf("daemon: writing identity: %w", err)
+	if err := saveIdentity(dir, k); err != nil {
+		return err
 	}
 	if err := writeClientKey(dir, key.NewNode()); err != nil {
 		return err

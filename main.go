@@ -43,6 +43,8 @@ func run(args []string) error {
 		return cmdOutbox(rest)
 	case "forget":
 		return cmdForget(rest)
+	case "rotate":
+		return printResp(call(daemon.Request{Op: "rotate"}))
 	case "reset":
 		return cmdReset(rest)
 	case "help":
@@ -69,7 +71,7 @@ func shortUsage() error {
 	fmt.Fprint(os.Stderr, `usage: clow <command> [args]
 
   init, daemon, invite, join, send, fetch, inbox, cats, storer,
-  outbox, forget, reset, status, help
+  outbox, forget, rotate, reset, status, help
 
 run "clow help" for details.
 `)
@@ -93,6 +95,7 @@ usage:
   clow storer on|off                      declare or retract storer duty
   clow outbox clear                       drop all pending sends
   clow forget <CAT>                      drop a cat from the roster
+  clow rotate                            new address, announced to the clowder
   clow reset [--yes]                      wipe this cat's identity and rosters
   clow status                             config, outbox, spool and roster summary
 
@@ -372,6 +375,17 @@ func cmdStatus() error {
 	fmt.Printf("config: %s\n", configDir())
 	fmt.Printf("inbox:  %s\n", inboxDir())
 	fmt.Printf("roster: %d %s\n", len(resp.Cats), plural(len(resp.Cats), "cat", "cats"))
+	for _, c := range resp.Cats {
+		seen, ok := resp.Liveness[c.Key]
+		switch {
+		case !ok:
+			fmt.Printf("  %-20s never seen\n", c.Name)
+		case time.Since(time.Unix(seen, 0)) < 2*time.Minute:
+			fmt.Printf("  %-20s online (seen %s ago)\n", c.Name, sinceStr(seen))
+		default:
+			fmt.Printf("  %-20s seen %s ago\n", c.Name, sinceStr(seen))
+		}
+	}
 	fmt.Printf("outbox: %d pending\n", len(resp.Outbox))
 	for _, e := range resp.Outbox {
 		fmt.Printf("  %s -> %s (%s)\n", e.FileName, e.TargetName, age(e.AddedAt))
@@ -399,6 +413,11 @@ func plural(n int, one, many string) string {
 func age(unix int64) string {
 	d := time.Since(time.Unix(unix, 0)).Round(time.Second)
 	return d.String() + " old"
+}
+
+// sinceStr renders how long ago a unix time was, e.g. "4s" or "1m20s".
+func sinceStr(unix int64) string {
+	return time.Since(time.Unix(unix, 0)).Round(time.Second).String()
 }
 
 // inboxDir resolves where received files land for the current config dir.

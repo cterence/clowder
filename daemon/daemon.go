@@ -83,6 +83,10 @@ type Daemon struct {
 	pairSrv  *tailcat.Server
 	pairLn   net.Listener
 	pairDone chan struct{}
+
+	// liveness records the unix time each cat's key was last seen on a
+	// successful connection, either direction. Guarded by mu.
+	liveness map[string]int64
 }
 
 // New loads a cat's state from cfg.Dir and wires it to a transport.
@@ -109,14 +113,15 @@ func New(cfg Config, tr Transport) (*Daemon, error) {
 		return nil, fmt.Errorf("daemon: creating inbox: %w", err)
 	}
 	d := &Daemon{
-		cfg:   cfg,
-		tr:    tr,
-		env:   env,
-		ros:   ros,
-		spool: store.New(filepath.Join(cfg.Dir, "spool"), 0),
-		ob:    newOutbox(filepath.Join(cfg.Dir, "outbox")),
-		stats: newStatsKeeper(cfg.Dir),
-		inbox: inbox,
+		cfg:      cfg,
+		tr:       tr,
+		env:      env,
+		ros:      ros,
+		spool:    store.New(filepath.Join(cfg.Dir, "spool"), 0),
+		ob:       newOutbox(filepath.Join(cfg.Dir, "outbox")),
+		stats:    newStatsKeeper(cfg.Dir),
+		liveness: map[string]int64{},
+		inbox:    inbox,
 	}
 	d.meCat = roster.Cat{
 		Name:      env.Me.Name,
@@ -180,6 +185,35 @@ func (d *Daemon) Forget(name string) (roster.Cat, bool) {
 		}
 	}
 	return c, true
+}
+
+// markSeen records that the cat with the given key was just seen on a
+// successful connection.
+func (d *Daemon) markSeen(key string) {
+	if key == "" {
+		return
+	}
+	d.mu.Lock()
+	d.liveness[key] = time.Now().Unix()
+	d.mu.Unlock()
+}
+
+// SeenAt returns when a cat's key was last seen, or 0 if never.
+func (d *Daemon) SeenAt(key string) int64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.liveness[key]
+}
+
+// livenessSnapshot copies the last-seen times for the status op.
+func (d *Daemon) livenessSnapshot() map[string]int64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make(map[string]int64, len(d.liveness))
+	for k, v := range d.liveness {
+		out[k] = v
+	}
+	return out
 }
 
 // SetStorer declares or retracts this cat's storer role and persists it.
@@ -312,6 +346,7 @@ func (d *Daemon) serveConn(pc *protocol.Conn, authKey key.NodePublic, authed boo
 			return
 		}
 	}
+	d.markSeen(peer.Key)
 	if err := pc.WriteMsg(&protocol.Message{Hello: d.helloMsg()}); err != nil {
 		return
 	}
@@ -336,6 +371,10 @@ func (d *Daemon) serveConn(pc *protocol.Conn, authKey key.NodePublic, authed boo
 			if !d.handleOffer(pc, peer, m.Offer) {
 				return
 			}
+		case m.Roster != nil:
+			// Post-handshake roster push (e.g. an address rotation
+			// announcement). Merged; no reply, to avoid sync ping-pong.
+			d.mergeRemote(m.Roster.Cats)
 		case m.Pending != nil && m.Pending.Query:
 			d.handlePending(pc, peer)
 		case m.Fetch != nil:
@@ -756,6 +795,7 @@ func (d *Daemon) connect(ctx context.Context, cat roster.Cat) (*protocol.Conn, e
 		_ = pc.Close()
 		return nil, err
 	}
+	d.markSeen(cat.Key)
 	return pc, nil
 }
 

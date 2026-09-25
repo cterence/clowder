@@ -33,10 +33,21 @@ type Response struct {
 	Outbox  []Entry      `json:"outbox,omitempty"`
 	Spool   int          `json:"spool,omitempty"`
 	Stats   *Stats       `json:"stats,omitempty"`
+	// Liveness maps cat keys to the unix time they were last seen on a
+	// successful connection (status op).
+	Liveness map[string]int64 `json:"liveness,omitempty"`
 }
 
 func fail(err error) Response { return Response{OK: false, Error: err.Error()} }
 func okMsg(s string) Response { return Response{OK: true, Message: s} }
+
+// shortAddr elides the middle of a long tailcat address for display.
+func shortAddr(a string) string {
+	if len(a) <= 24 {
+		return a
+	}
+	return a[:12] + "..." + a[len(a)-9:]
+}
 
 // IPCPath returns the daemon's IPC socket path for a config dir.
 func IPCPath(dir string) string { return filepath.Join(dir, "clow.sock") }
@@ -103,6 +114,13 @@ func (d *Daemon) handleIPC(req Request) Response {
 		}
 		return okMsg(fmt.Sprintf("inbox now %s", d.InboxDir()))
 
+	case "rotate":
+		newAddr, err := d.RotateAddress(ctx)
+		if err != nil {
+			return fail(err)
+		}
+		return okMsg(fmt.Sprintf("address rotated to %s; restart the daemon to use it", shortAddr(newAddr)))
+
 	case "forget":
 		if req.Target == "" {
 			return fail(fmt.Errorf("forget needs a cat name"))
@@ -143,12 +161,13 @@ func (d *Daemon) handleIPC(req Request) Response {
 		me := d.Me()
 		st := d.stats.snapshot()
 		return Response{
-			OK:     true,
-			Me:     &me,
-			Cats:   d.ros.All(),
-			Outbox: d.ob.All(),
-			Spool:  d.spool.Count(),
-			Stats:  &st,
+			OK:       true,
+			Me:       &me,
+			Cats:     d.ros.All(),
+			Outbox:   d.ob.All(),
+			Spool:    d.spool.Count(),
+			Stats:    &st,
+			Liveness: d.livenessSnapshot(),
 		}
 
 	default:
