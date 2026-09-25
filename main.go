@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -40,6 +41,8 @@ func run(args []string) error {
 		return cmdJoin(rest)
 	case "outbox":
 		return cmdOutbox(rest)
+	case "reset":
+		return cmdReset(rest)
 	case "cats":
 		return cmdCats()
 	case "send":
@@ -72,6 +75,7 @@ usage:
                                         change where they land
   clow storer on|off                      declare or retract storer duty
   clow outbox clear                       drop all pending sends
+  clow reset [--yes]                      wipe this cat's identity and rosters
   clow status                             config, outbox, spool and roster summary
 
 The config dir defaults to $CLOWDER_DIR, else <user config home>/clowder
@@ -202,6 +206,41 @@ func cmdOutbox(args []string) error {
 		return fmt.Errorf("usage: clow outbox clear")
 	}
 	return printResp(call(daemon.Request{Op: "outbox", Path: "clear"}))
+}
+
+// cmdReset wipes the cat's config dir: identity, rosters, spool and
+// outbox. Received files in the inbox dir are outside the config dir and
+// are kept. Refuses while the daemon is running.
+func cmdReset(args []string) error {
+	fs := flag.NewFlagSet("reset", flag.ContinueOnError)
+	yes := fs.Bool("yes", false, "skip the confirmation prompt")
+	if err := fs.Parse(flagsFirst(fs, args)); err != nil {
+		return err
+	}
+	dir := configDir()
+
+	if conn, err := net.Dial("unix", daemon.IPCPath(dir)); err == nil {
+		_ = conn.Close()
+		return fmt.Errorf("daemon is running in %s; stop it before resetting", dir)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "identity.json")); err != nil {
+		return fmt.Errorf("no cat to reset in %s", dir)
+	}
+	if !*yes {
+		fmt.Printf("reset the cat in %s? its identity, rosters, spool and outbox will be deleted [y/N] ", dir)
+		var answer string
+		if _, err := fmt.Scanln(&answer); err != nil {
+			return err
+		}
+		if answer != "y" && answer != "Y" && answer != "yes" {
+			return fmt.Errorf("aborted")
+		}
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("resetting %s: %w", dir, err)
+	}
+	fmt.Printf("cat reset; run \"clow init\" to create a new one\n")
+	return nil
 }
 
 // flagsFirst reorders args so flags precede positionals, letting Go's

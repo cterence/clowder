@@ -46,6 +46,29 @@ func TestSendUsage(t *testing.T) {
 	}
 }
 
+func TestReset(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLOWDER_DIR", dir)
+
+	if err := run([]string{"reset", "--yes"}); err == nil {
+		t.Error("reset without identity succeeded, want error")
+	}
+
+	if err := run([]string{"init", "--name", "milo"}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if err := run([]string{"reset", "--yes"}); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "identity.json")); !os.IsNotExist(err) {
+		t.Error("identity survived reset")
+	}
+	// A reset cat can be re-created.
+	if err := run([]string{"init", "--name", "milo2"}); err != nil {
+		t.Fatalf("re-init after reset: %v", err)
+	}
+}
+
 func TestFlagsFirst(t *testing.T) {
 	newFS := func() *flag.FlagSet {
 		fs := flag.NewFlagSet("t", flag.ContinueOnError)
