@@ -102,6 +102,15 @@ func (d *Daemon) handleIPC(req Request) Response {
 		}
 		return okMsg("storer role off")
 
+	case "setinbox":
+		if req.Path == "" {
+			return fail(fmt.Errorf("setinbox needs a path"))
+		}
+		if err := d.SetInbox(req.Path); err != nil {
+			return fail(err)
+		}
+		return okMsg(fmt.Sprintf("inbox now %s", d.InboxDir()))
+
 	case "status":
 		me := d.Me()
 		return Response{

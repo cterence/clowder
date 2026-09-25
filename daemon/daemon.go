@@ -94,7 +94,7 @@ func New(cfg Config, tr Transport) (*Daemon, error) {
 	if err := ros.SetPath(filepath.Join(cfg.Dir, "roster.json")); err != nil {
 		return nil, err
 	}
-	inbox := filepath.Join(cfg.Dir, "inbox")
+	inbox := InboxDir(cfg.Dir)
 	if err := os.MkdirAll(inbox, 0o700); err != nil {
 		return nil, fmt.Errorf("daemon: creating inbox: %w", err)
 	}
@@ -121,6 +121,29 @@ func (d *Daemon) Me() roster.Cat {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.meCat
+}
+
+// InboxDir returns the directory received files land in.
+func (d *Daemon) InboxDir() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.inbox
+}
+
+// SetInbox changes the directory received files land in and persists it,
+// so it survives daemon restarts.
+func (d *Daemon) SetInbox(path string) error {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("daemon: resolving inbox path: %w", err)
+	}
+	if err := os.MkdirAll(abs, 0o700); err != nil {
+		return fmt.Errorf("daemon: creating inbox: %w", err)
+	}
+	d.mu.Lock()
+	d.inbox = abs
+	d.mu.Unlock()
+	return SetInboxAt(d.cfg.Dir, abs)
 }
 
 // Roster returns the cat's roster, for inspection (clow cats) and tests.
@@ -443,11 +466,12 @@ func (d *Daemon) handleFetch(pc *protocol.Conn, hello *protocol.Hello, f *protoc
 // saveIncoming decrypts a sealed stream from src into the inbox under a
 // unique name, verifying the announced plaintext digest.
 func (d *Daemon) saveIncoming(o *protocol.Offer, src io.Reader, recipient key.NodePrivate) error {
-	if err := os.MkdirAll(d.inbox, 0o700); err != nil {
+	inbox := d.InboxDir()
+	if err := os.MkdirAll(inbox, 0o700); err != nil {
 		return fmt.Errorf("creating inbox: %w", err)
 	}
-	name := inboxPath(d.inbox, o.FileName)
-	tmp, err := os.CreateTemp(d.inbox, ".recv-*")
+	name := inboxPath(inbox, o.FileName)
+	tmp, err := os.CreateTemp(inbox, ".recv-*")
 	if err != nil {
 		return fmt.Errorf("creating temp file: %w", err)
 	}

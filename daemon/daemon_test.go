@@ -77,6 +77,9 @@ func startDaemon(t *testing.T, name string) *Daemon {
 // offline cat) already prepared.
 func startDaemonAt(t *testing.T, dir string) *Daemon {
 	t.Helper()
+	// Keep the default inbox (under $HOME/Downloads/clowder) inside the
+	// test sandbox.
+	t.Setenv("HOME", t.TempDir())
 	cfg := Config{
 		Dir:        dir,
 		RetryEvery: 150 * time.Millisecond,
@@ -157,7 +160,7 @@ func writeSource(t *testing.T, content string) string {
 
 func inboxFile(t *testing.T, d *Daemon, name string) (string, bool) {
 	t.Helper()
-	p := filepath.Join(d.cfg.Dir, "inbox", name)
+	p := filepath.Join(d.InboxDir(), name)
 	b, err := os.ReadFile(p)
 	if err != nil {
 		return "", false

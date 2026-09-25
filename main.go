@@ -47,7 +47,7 @@ func run(args []string) error {
 	case "status":
 		return cmdStatus()
 	case "inbox":
-		return cmdInbox()
+		return cmdInbox(rest)
 	default:
 		return fmt.Errorf("unknown command %q", cmd)
 	}
@@ -57,20 +57,22 @@ func usage(nilErr error) error {
 	fmt.Fprint(os.Stderr, `clow - a member of a clowder, an async file-transfer mesh over tailcat
 
 usage:
-  clow init [--name NAME] [--dir DIR]     create this cat's identity
+  clow init [--name NAME] [--dir DIR] [--inbox DIR]  create this cat's identity
   clow daemon [--port N]                  run the mesh daemon
   clow add <ADDR> --name NAME             trust another cat (out of band)
   clow send <CAT> <FILE>                  send a file asynchronously
   clow fetch                              pull files storers hold for me
   clow cats                               list the clowder
-  clow inbox                              list received files with full paths
+  clow inbox [--set DIR]               list received files (full paths) or
+                                        change where they land
   clow storer on|off                      declare or retract storer duty
   clow status                             config, outbox, spool and roster summary
 
 The config dir defaults to $CLOWDER_DIR, else <user config home>/clowder
 (~/.config/clowder on Linux, ~/Library/Application Support/clowder on
-macOS). Received files land in <config dir>/inbox. Everything but init
-and inbox needs the daemon running.
+macOS). Received files land in a distinct inbox dir, defaulting to
+~/Downloads/clowder, changeable with "clow inbox --set". Everything but
+init and inbox needs the daemon running.
 `)
 	return nilErr
 }
@@ -87,13 +89,11 @@ func configDir() string {
 	return filepath.Join(base, "clowder")
 }
 
-// inboxDir is where received files land.
-func inboxDir() string { return filepath.Join(configDir(), "inbox") }
-
 func cmdInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	name := fs.String("name", defaultName(), "this cat's declared name")
 	dir := fs.String("dir", configDir(), "config directory")
+	inbox := fs.String("inbox", "", "directory received files land in (default: ~/Downloads/clowder)")
 	if err := fs.Parse(flagsFirst(fs, args)); err != nil {
 		return err
 	}
@@ -103,7 +103,18 @@ func cmdInit(args []string) error {
 	if err := daemon.Init(*dir, *name); err != nil {
 		return err
 	}
-	fmt.Printf("initialized cat %s in %s\n", *name, *dir)
+	if *inbox != "" {
+		abs, err := filepath.Abs(*inbox)
+		if err != nil {
+			return err
+		}
+		if err := daemon.SetInboxAt(*dir, abs); err != nil {
+			return err
+		}
+	}
+	fmt.Printf("initialized cat %s\n", *name)
+	fmt.Printf("config: %s\n", *dir)
+	fmt.Printf("inbox:  %s\n", daemon.InboxDir(*dir))
 	fmt.Println("run `clow daemon` to join the clowder")
 	return nil
 }
@@ -289,8 +300,20 @@ func age(unix int64) string {
 	return d.String() + " old"
 }
 
-// cmdInbox lists received files with their full paths.
-func cmdInbox() error {
+// inboxDir resolves where received files land for the current config dir.
+func inboxDir() string { return daemon.InboxDir(configDir()) }
+
+// cmdInbox lists received files with their full paths, or sets the
+// directory they land in.
+func cmdInbox(args []string) error {
+	fs := flag.NewFlagSet("inbox", flag.ContinueOnError)
+	set := fs.String("set", "", "change the directory received files land in")
+	if err := fs.Parse(flagsFirst(fs, args)); err != nil {
+		return err
+	}
+	if *set != "" {
+		return printResp(call(daemon.Request{Op: "setinbox", Path: *set}))
+	}
 	dir := inboxDir()
 	des, err := os.ReadDir(dir)
 	if err != nil {
