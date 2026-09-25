@@ -26,7 +26,11 @@ type Cat struct {
 	Key       string `json:"key" cbor:"k"`                            // node identity (the address's key)
 	ClientKey string `json:"client_key,omitempty" cbor:"c,omitempty"` // outbound-dial identity peers allowlist
 	Storer    bool   `json:"storer,omitempty" cbor:"s,omitempty"`
-	Updated   int64  `json:"updated" cbor:"u"`
+	// Dropbox marks a storer that only serves third parties: it holds
+	// and relays files for others but takes no deliveries for itself
+	// and cannot originate sends. Implies Storer.
+	Dropbox bool  `json:"dropbox,omitempty" cbor:"d,omitempty"`
+	Updated int64 `json:"updated" cbor:"u"`
 }
 
 // NewCat builds a Cat from a tailcat address, deriving the identity key

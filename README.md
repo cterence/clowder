@@ -46,7 +46,8 @@ default; change with `clow inbox --set DIR`). Config lives under
     clow fetch                                         pull files storers hold for me
     clow inbox [--set DIR]                             list received files / change inbox
     clow cats                                           list the clowder
-    clow storer on|off                                  volunteer to hold files for others
+    clow storer on|off|dropbox                          volunteer to hold files for others
+                                                        (dropbox: third parties only)
     clow outbox clear                                   drop pending sends
     clow status                                         config, stats, outbox, spool, roster
     clow reset [--yes]                                  wipe this cat (identity, rosters)

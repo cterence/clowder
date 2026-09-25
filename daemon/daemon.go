@@ -128,6 +128,7 @@ func New(cfg Config, tr Transport) (*Daemon, error) {
 		Key:       env.Identity.Public.ServerPublic.String(),
 		ClientKey: env.ClientIdentity.Public().String(),
 		Storer:    env.Me.Storer,
+		Dropbox:   env.Me.Dropbox,
 		Updated:   time.Now().Unix(),
 	}
 	return d, nil
@@ -218,12 +219,25 @@ func (d *Daemon) livenessSnapshot() map[string]int64 {
 
 // SetStorer declares or retracts this cat's storer role and persists it.
 func (d *Daemon) SetStorer(on bool) error {
+	return d.setStorerMode(on, false)
+}
+
+// SetDropbox switches this cat to dropbox mode (a storer that only
+// serves third parties) or back off entirely.
+func (d *Daemon) SetDropbox(on bool) error {
+	return d.setStorerMode(on, on)
+}
+
+// setStorerMode applies the storer/dropbox flags and persists them.
+func (d *Daemon) setStorerMode(storer, dropbox bool) error {
 	d.mu.Lock()
-	d.meCat.Storer = on
+	d.meCat.Storer = storer
+	d.meCat.Dropbox = dropbox
 	d.meCat.Updated = time.Now().Unix()
 	d.mu.Unlock()
 	me := d.env.Me
-	me.Storer = on
+	me.Storer = storer
+	me.Dropbox = dropbox
 	return saveMe(d.cfg.Dir, me)
 }
 
@@ -297,6 +311,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 // directly to the target first, then via any reachable storer, retrying
 // on the daemon's ticker until one succeeds.
 func (d *Daemon) Send(targetName, path string) (string, error) {
+	if d.Me().Dropbox {
+		return "", errors.New("dropbox cats cannot send files")
+	}
 	cat, ok := d.ros.Get(targetName)
 	if !ok {
 		return "", fmt.Errorf("unknown cat %q (known: add it first)", targetName)
@@ -323,6 +340,9 @@ func (d *Daemon) Send(targetName, path string) (string, error) {
 // Poll asks every known storer for files held for this cat and fetches
 // them. It runs periodically from Run and on demand over IPC.
 func (d *Daemon) Poll(ctx context.Context) {
+	if d.Me().Dropbox {
+		return // a dropbox takes no deliveries for itself
+	}
 	for _, s := range d.ros.Storers() {
 		if err := d.fetchFrom(ctx, s); err != nil {
 			d.cfg.logf("clowder: fetching from storer %s: %v", s.Name, err)
@@ -402,6 +422,15 @@ func (d *Daemon) handleOffer(pc *protocol.Conn, from *protocol.Hello, o *protoco
 // receiveDirect decrypts a sealed stream into the inbox and acks
 // delivery.
 func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *protocol.Offer) bool {
+	if d.Me().Dropbox {
+		// A dropbox relays files for others; it takes none for itself.
+		if err := pc.WriteMsg(&protocol.Message{Answer: &protocol.Answer{
+			ID: o.ID, OK: false, Reason: "dropbox cat: no personal deliveries",
+		}}); err != nil {
+			return false
+		}
+		return true
+	}
 	if err := pc.WriteMsg(&protocol.Message{Answer: &protocol.Answer{ID: o.ID, OK: true}}); err != nil {
 		return false
 	}
@@ -781,6 +810,7 @@ func (d *Daemon) helloMsg() *protocol.Hello {
 		ClientKey: me.ClientKey,
 		Addr:      me.Addr,
 		Storer:    me.Storer,
+		Dropbox:   me.Dropbox,
 	}
 }
 

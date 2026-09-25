@@ -60,39 +60,38 @@ path must be exercised by a daemon integration test.
 Ordered; do not reorder without a reason. Update this list and the
 README when something ships.
 
-1. **Dropbox storer** — a third cat mode (`clow storer dropbox`): accepts
-   deposits and serves fetches for third parties only; refuses direct
-   sends to itself; cannot originate sends. Flag propagates via roster
-   entries like Storer. No protocol changes needed.
-2. **Leave with signed forget-me gossip** — derive an Ed25519 keypair
+1. **Leave with signed forget-me gossip** — derive an Ed25519 keypair
    from the node key seed (ed25519.NewKeyFromSeed(nodeRaw32)); announce
    the sign-public in Hello/roster entries; `clow leave` broadcasts a
    signed {leaver, timestamp} to all reachable peers; recipients drop
    the leaver (roster, allowlist, spool) and re-broadcast once. Roster
    sync must carry signed tombstones that always outrank later unsigned
    re-adds (offline peers catch up on next sync).
-3. **Multiple clowders** — named clowders: per-clowder roster files,
+2. **Multiple clowders** — named clowders: per-clowder roster files,
    `--clowder` on invite/join/send, Hello carries the clowder name so a
    connection routes to the right roster. One identity, one daemon,
    clowders stay disjoint (flat sync would otherwise merge them).
    Largest refactor; do last, design tombstones against the final
    roster shape.
-4. **Android app client** — a clowder client for Android. tailcat has
+3. **Android app client** — a clowder client for Android. tailcat has
    Android support (see its android_linux.go and INSTALL.md), so the
    shape is: the daemon packages as an Android library (aar) or runs in
    a foreground service, with a thin UI for init/invite/join/send/
    inbox. Decide the UI approach (plainCompose/gomobile) before
    starting; the daemon package itself must not grow Android deps.
 
-Shipped recently (context for a fresh session): storer push sweep (a
-storer delivers held files as soon as their target is online and known,
-plus a sweep on the poll tick — `clow fetch` remains as a manual pull),
-`clow rotate` (new pre-shared key/address under the same identity,
-announced via roster sync, fails unless one peer acknowledged; the
-daemon restart serves the new address), passive liveness
-("online / seen Xm ago" in `clow status`, updated on every successful
-handshake), `clow forget` (roster entry plus outbox), dash-numbered
-inbox collisions, transfer stats, the two-keypair fix (see invariants).
+Shipped recently (context for a fresh session): dropbox storer mode
+(`clow storer dropbox`: third-party storage only — refuses deliveries
+to itself, cannot send or fetch for itself; flag propagates via roster),
+storer push sweep (a storer delivers held files as soon as their target
+is online and known, plus a sweep on the poll tick — `clow fetch`
+remains as a manual pull), `clow rotate` (new pre-shared key/address
+under the same identity, announced via roster sync, fails unless one
+peer acknowledged; the daemon restart serves the new address), passive
+liveness ("online / seen Xm ago" in `clow status`, updated on every
+successful handshake), `clow forget` (roster entry plus outbox),
+dash-numbered inbox collisions, transfer stats, the two-keypair fix
+(see invariants).
 
 Known caveats: the golangci-lint-action version in CI (v7 + v2.13.2) is
 unverified until a green run is observed; storer spools have TTL but no

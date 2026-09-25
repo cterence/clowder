@@ -92,7 +92,7 @@ usage:
   clow cats                               list the clowder
   clow inbox [--set DIR]                  list received files (full paths) or
                                            change where they land
-  clow storer on|off                      declare or retract storer duty
+  clow storer on|off|dropbox              storer duty; dropbox = third parties only
   clow outbox clear                       drop all pending sends
   clow forget <CAT>                      drop a cat from the roster
   clow rotate                            new address, announced to the clowder
@@ -355,10 +355,19 @@ func cmdFetch() error {
 }
 
 func cmdStorer(args []string) error {
-	if len(args) != 1 || (args[0] != "on" && args[0] != "off") {
-		return fmt.Errorf("usage: clow storer on|off")
+	if len(args) != 1 {
+		return fmt.Errorf("usage: clow storer on|off|dropbox")
 	}
-	return printResp(call(daemon.Request{Op: "storer", On: args[0] == "on"}))
+	switch args[0] {
+	case "on", "off", "dropbox":
+		return printResp(call(daemon.Request{
+			Op:      "storer",
+			On:      args[0] != "off",
+			Dropbox: args[0] == "dropbox",
+		}))
+	default:
+		return fmt.Errorf("usage: clow storer on|off|dropbox")
+	}
 }
 
 func cmdStatus() error {

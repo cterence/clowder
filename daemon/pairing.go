@@ -301,6 +301,7 @@ func (d *Daemon) addPeerCat(p *protocol.PairIntro) error {
 	}
 	c.ClientKey = p.ClientKey
 	c.Storer = p.Storer
+	c.Dropbox = p.Dropbox
 	if err := d.ros.Add(c); err != nil {
 		return err
 	}
@@ -359,6 +360,7 @@ func pairIntroOf(pc *protocol.Conn, me roster.Cat) (*protocol.PairIntro, error) 
 		Addr:      me.Addr,
 		ClientKey: me.ClientKey,
 		Storer:    me.Storer,
+		Dropbox:   me.Dropbox,
 	}}); err != nil {
 		return nil, err
 	}

@@ -41,6 +41,7 @@ type Hello struct {
 	ClientKey string `cbor:"c,omitempty"`
 	Addr      string `cbor:"a"`
 	Storer    bool   `cbor:"s,omitempty"`
+	Dropbox   bool   `cbor:"d,omitempty"`
 }
 
 // RosterSync carries the sender's full roster (including its own entry)
@@ -110,6 +111,7 @@ type PairIntro struct {
 	Addr      string `cbor:"a"`
 	ClientKey string `cbor:"c,omitempty"`
 	Storer    bool   `cbor:"s,omitempty"`
+	Dropbox   bool   `cbor:"d,omitempty"`
 }
 
 // Message is the union of all protocol messages. Exactly one field is

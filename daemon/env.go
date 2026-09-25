@@ -17,6 +17,9 @@ import (
 type Me struct {
 	Name   string `json:"name"`
 	Storer bool   `json:"storer"`
+	// Dropbox marks a storer that only serves third parties: no
+	// deliveries to itself, no originating sends. Implies Storer.
+	Dropbox bool `json:"dropbox,omitempty"`
 	// Inbox is the absolute directory received files land in. Empty
 	// means the default (see DefaultInbox).
 	Inbox string `json:"inbox,omitempty"`

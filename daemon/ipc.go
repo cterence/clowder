@@ -16,11 +16,12 @@ import (
 // Request is one command from the clow CLI to the daemon. Ops: send,
 // fetch, cats, storer, status, setinbox, invite, join, outbox.
 type Request struct {
-	Op     string `json:"op"`
-	Target string `json:"target,omitempty"`
-	Path   string `json:"path,omitempty"`
-	On     bool   `json:"on,omitempty"`
-	Words  string `json:"words,omitempty"` // pairing code for join
+	Op      string `json:"op"`
+	Target  string `json:"target,omitempty"`
+	Path    string `json:"path,omitempty"`
+	On      bool   `json:"on,omitempty"`
+	Dropbox bool   `json:"dropbox,omitempty"`
+	Words   string `json:"words,omitempty"` // pairing code for join
 }
 
 // Response is the daemon's reply.
@@ -97,13 +98,26 @@ func (d *Daemon) handleIPC(req Request) Response {
 		return Response{OK: true, Me: &me, Cats: d.ros.All()}
 
 	case "storer":
-		if err := d.SetStorer(req.On); err != nil {
+		var err error
+		switch {
+		case req.Dropbox && req.On:
+			err = d.SetDropbox(true)
+		case req.On:
+			err = d.SetStorer(true)
+		default:
+			err = d.SetStorer(false)
+		}
+		if err != nil {
 			return fail(err)
 		}
-		if req.On {
+		switch {
+		case d.Me().Dropbox:
+			return okMsg("dropbox role on (storer, third-party only)")
+		case d.Me().Storer:
 			return okMsg("storer role on")
+		default:
+			return okMsg("storer role off")
 		}
-		return okMsg("storer role off")
 
 	case "setinbox":
 		if req.Path == "" {
