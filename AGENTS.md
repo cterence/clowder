@@ -86,7 +86,10 @@ README when something ships.
 5. **HTTP health endpoint** for container probes (currently exec
    `clow status`).
 
-Shipped recently (context for a fresh session): container support
+Shipped recently (context for a fresh session): in-flight transfer
+progress in `clow status` (percent per queued send, plus receiving
+rows; counted per 64 KiB chunk on the sealed stream, both directions),
+container support
 (Dockerfile; daemon auto-initializes on first start; CLOWDER_NAME and
 CLOWDER_STORER env vars; k8s guidance in the README), dropbox storer
 mode (`clow storer dropbox`: third-party storage only — refuses

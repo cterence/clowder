@@ -37,6 +37,8 @@ type Response struct {
 	// Liveness maps cat keys to the unix time they were last seen on a
 	// successful connection (status op).
 	Liveness map[string]int64 `json:"liveness,omitempty"`
+	// Progress lists the in-flight transfers (status op).
+	Progress []Progress `json:"progress,omitempty"`
 }
 
 func fail(err error) Response { return Response{OK: false, Error: err.Error()} }
@@ -182,6 +184,7 @@ func (d *Daemon) handleIPC(req Request) Response {
 			Spool:    d.spool.Count(),
 			Stats:    &st,
 			Liveness: d.livenessSnapshot(),
+			Progress: d.prog.snapshot(),
 		}
 
 	default:

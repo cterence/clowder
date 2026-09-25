@@ -77,6 +77,13 @@ func startDaemon(t *testing.T, name string) *Daemon {
 // offline cat) already prepared.
 func startDaemonAt(t *testing.T, dir string) *Daemon {
 	t.Helper()
+	return runDaemon(t, dir, &LocalTransport{})
+}
+
+// runDaemon starts a daemon on a prepared config dir with a custom
+// transport.
+func runDaemon(t *testing.T, dir string, tr Transport) *Daemon {
+	t.Helper()
 	// Keep the default inbox (under $HOME/Downloads/clowder) inside the
 	// test sandbox.
 	t.Setenv("HOME", t.TempDir())
@@ -86,7 +93,7 @@ func startDaemonAt(t *testing.T, dir string) *Daemon {
 		PollEvery:  150 * time.Millisecond,
 		Logf:       t.Logf,
 	}
-	d, err := New(cfg, &LocalTransport{})
+	d, err := New(cfg, tr)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

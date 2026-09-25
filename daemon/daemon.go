@@ -74,6 +74,7 @@ type Daemon struct {
 	spool *store.Spool
 	ob    *outbox
 	stats *statsKeeper
+	prog  *progressKeeper
 	inbox string
 
 	syncSeq atomic.Int64 // round-robin cursor for peer sync
@@ -120,6 +121,7 @@ func New(cfg Config, tr Transport) (*Daemon, error) {
 		spool:    store.New(filepath.Join(cfg.Dir, "spool"), 0),
 		ob:       newOutbox(filepath.Join(cfg.Dir, "outbox")),
 		stats:    newStatsKeeper(cfg.Dir),
+		prog:     newProgressKeeper(),
 		liveness: map[string]int64{},
 		inbox:    inbox,
 	}
@@ -435,7 +437,16 @@ func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *proto
 		return false
 	}
 	_ = pc.SetDeadline(time.Now().Add(streamTimeout))
-	plainSize, err := d.saveIncoming(o, io.LimitReader(pc.Reader(), o.Size), d.env.Identity.Private)
+	d.prog.start(Progress{
+		ID:        o.ID,
+		FileName:  o.FileName,
+		Peer:      from.Name,
+		Receiving: true,
+		Total:     o.Size,
+		Started:   time.Now().Unix(),
+	})
+	defer d.prog.end(o.ID)
+	plainSize, err := d.saveIncoming(o, countingReader{k: d.prog, id: o.ID, r: io.LimitReader(pc.Reader(), o.Size)}, d.env.Identity.Private)
 	if err != nil {
 		d.cfg.logf("clowder: receiving %s from %s: %v", o.FileName, from.Name, err)
 		return false
@@ -710,7 +721,16 @@ func (d *Daemon) deliverStream(ctx context.Context, peer roster.Cat, e Entry, ta
 	if err != nil {
 		return err
 	}
-	_, sealedSha, err := envelope.SealStream(d.env.Identity.Private, targetPub, pc.Writer(), src)
+	total := envelope.SealedSize(size)
+	d.prog.start(Progress{
+		ID:       e.ID,
+		FileName: e.FileName,
+		Peer:     targetName,
+		Total:    total,
+		Started:  time.Now().Unix(),
+	})
+	defer d.prog.end(e.ID)
+	_, sealedSha, err := envelope.SealStream(d.env.Identity.Private, targetPub, countingWriter{k: d.prog, id: e.ID, w: pc.Writer()}, src)
 	if err != nil {
 		return err
 	}
@@ -774,7 +794,16 @@ func (d *Daemon) fetchOne(pc *protocol.Conn, f protocol.PendingFile) error {
 		return err
 	}
 	_ = pc.SetDeadline(time.Now().Add(streamTimeout))
-	if _, err := d.saveIncoming(o, io.LimitReader(pc.Reader(), o.Size), d.env.Identity.Private); err != nil {
+	d.prog.start(Progress{
+		ID:        o.ID,
+		FileName:  o.FileName,
+		Peer:      o.From,
+		Receiving: true,
+		Total:     o.Size,
+		Started:   time.Now().Unix(),
+	})
+	defer d.prog.end(o.ID)
+	if _, err := d.saveIncoming(o, countingReader{k: d.prog, id: o.ID, r: io.LimitReader(pc.Reader(), o.Size)}, d.env.Identity.Private); err != nil {
 		return err
 	}
 	_ = pc.SetDeadline(time.Now().Add(msgTimeout))

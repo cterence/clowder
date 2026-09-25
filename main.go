@@ -433,7 +433,19 @@ func cmdStatus() error {
 	}
 	fmt.Printf("outbox: %d pending\n", len(resp.Outbox))
 	for _, e := range resp.Outbox {
-		fmt.Printf("  %s -> %s (%s)\n", e.FileName, e.TargetName, age(e.AddedAt))
+		inFlight := ""
+		for _, p := range resp.Progress {
+			if p.ID == e.ID && !p.Receiving {
+				inFlight = fmt.Sprintf(", sending %.0f%%", p.Percent()*100)
+			}
+		}
+		fmt.Printf("  %s -> %s (%s%s)\n", e.FileName, e.TargetName, age(e.AddedAt), inFlight)
+	}
+	for _, p := range resp.Progress {
+		if p.Receiving {
+			fmt.Printf("receiving %-24s from %-16s %3.0f%% of %s\n",
+				p.FileName, p.Peer, p.Percent()*100, daemon.HumanBytes(p.Total))
+		}
 	}
 	fmt.Printf("spool:  %d held\n", resp.Spool)
 	if resp.Stats != nil {
