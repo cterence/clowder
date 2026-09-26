@@ -82,10 +82,20 @@
         }
       );
 
+      # Merge the per-system shell sets INSIDE each system, never
+      # with a top-level `//`: that merge is shallow, the android set
+      # once replaced devShells.<system>.default wholesale, and
+      # `nix develop` then silently fell back to
+      # packages.<system>.default — the buildGoModule clow
+      # derivation — as the "environment", whose go-module setup hook
+      # exports GOFLAGS="-mod=vendor -trimpath" and
+      # GOTOOLCHAIN=local, breaking every go command in a repo that
+      # does not vendor.
       devShells =
-        (forEachSupportedSystem (
-          { pkgs }:
-          {
+        let
+          goShells = forEachSupportedSystem (
+            { pkgs }:
+            {
             default = pkgs.mkShell {
               # GOTOOLCHAIN=auto lets go fetch a newer toolchain than
               # the shell's on first use, should go.mod ever demand one.
@@ -106,14 +116,14 @@
               '';
             };
           }
-        ))
-        // (forEachAndroidSystem (
-          {
-            pkgs,
-            android-sdk,
-            system,
-          }:
-          {
+          );
+          androidShells = forEachAndroidSystem (
+            {
+              pkgs,
+              android-sdk,
+              system,
+            }:
+            {
           # The Android app shell: nix develop .#android. The SDK
           # matches android/app/build.gradle.kts (compileSdk 34,
           # build-tools 34.0.0, AGP 8.5.2, JDK 17) — bump them
@@ -177,6 +187,10 @@
               JAVA_HOME = pkgs.jdk17.home;
             };
           }
-        ));
+          );
+        in
+        nixpkgs.lib.mapAttrs (
+          system: go: go // (androidShells.${system} or { })
+        ) goShells;
     };
 }
