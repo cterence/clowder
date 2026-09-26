@@ -89,6 +89,13 @@ type Daemon struct {
 	// successful connection, either direction. Guarded by mu.
 	liveness map[string]int64
 
+	// blocked holds the keys of forgotten (and, later, distrusted)
+	// cats. Tailcat's AllowedClients is add-only, so removal at the
+	// transport layer is impossible; serveConn refuses these peers at
+	// the protocol level instead. Guarded by mu, persisted in
+	// blocked.json.
+	blocked map[string]bool
+
 	// inflightDelivery guards outbox entries against concurrent
 	// delivery attempts (the retry ticker must not start a second
 	// transfer while a big one is still streaming).
@@ -137,6 +144,7 @@ func New(cfg Config, tr Transport) (*Daemon, error) {
 		stats:            newStatsKeeper(cfg.Dir),
 		prog:             newProgressKeeper(),
 		liveness:         map[string]int64{},
+		blocked:          loadBlocked(cfg.Dir),
 		inflightDelivery: map[string]bool{},
 		inflightReceive:  map[string]bool{},
 		inbox:            inbox,
@@ -195,6 +203,11 @@ func (d *Daemon) Forget(name string) (roster.Cat, bool) {
 	c, ok := d.ros.RemoveName(name)
 	if !ok {
 		return c, false
+	}
+	// The allowlist cannot drop the cat's key (tailcat is add-only),
+	// so block it at the protocol level.
+	if err := d.blockCat(c); err != nil {
+		d.cfg.logf("clowder: persisting blocklist after forgetting %s: %v", name, err)
 	}
 	for _, e := range d.ob.All() {
 		if e.TargetKey == c.Key {
@@ -426,10 +439,18 @@ func (d *Daemon) serveConn(pc *protocol.Conn, authKey key.NodePublic, authed boo
 		return
 	}
 	peer := m.Hello
+	if d.isBlockedKey(peer.Key) || d.isBlockedKey(peer.ClientKey) {
+		d.cfg.logf("clowder: refusing connection from blocked cat %s", peer.Name)
+		return
+	}
 	if authed {
 		claimed, err := parseKey(peer.ClientKey)
 		if err != nil || claimed != authKey {
 			d.cfg.logf("clowder: closing conn from %s: claimed client key %q does not match authenticated %s", peer.Name, peer.ClientKey, authKey)
+			return
+		}
+		if d.isBlockedKey(authKey.String()) {
+			d.cfg.logf("clowder: refusing connection from blocked cat %s", peer.Name)
 			return
 		}
 	}

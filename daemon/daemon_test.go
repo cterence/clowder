@@ -362,6 +362,14 @@ func TestIPCRoundTrip(t *testing.T) {
 		return true
 	}, "IPC socket to exist")
 
+	// The socket must be user-only: any local process could otherwise
+	// drive the daemon (including rotating its identity).
+	if fi, err := os.Stat(sock); err == nil {
+		if perm := fi.Mode().Perm(); perm != 0o600 {
+			t.Fatalf("IPC socket permissions are %o, want 0600", perm)
+		}
+	}
+
 	resp, err := CallIPC(sock, Request{Op: "cats"})
 	if err != nil {
 		t.Fatalf("CallIPC: %v", err)

@@ -202,11 +202,20 @@ func (r *Roster) Add(c Cat) error {
 // converge). Entries with an empty Key are skipped. It returns the entries
 // that changed local state, so callers can react (e.g. allowing the new
 // keys). The roster is persisted if anything changed.
+// MaxClockSkew bounds how far an incoming entry's timestamp may lie in
+// the future: a malicious or broken-clocked cat must not win every
+// future merge with a far-future timestamp.
+const MaxClockSkew = 5 * time.Minute
+
 func (r *Roster) Merge(cats []Cat) (changed []Cat, err error) {
 	r.mu.Lock()
+	limit := now() + int64(MaxClockSkew/time.Second)
 	for _, c := range cats {
 		if c.Key == "" {
 			continue
+		}
+		if c.Updated > limit {
+			continue // impossible timestamp: never let it win
 		}
 		old, ok := r.cats[c.Key]
 		if ok && !newerWins(c, old) {

@@ -61,13 +61,23 @@ func shortAddr(a string) string {
 func IPCPath(dir string) string { return filepath.Join(dir, "clow.sock") }
 
 // listenIPC listens on a unix socket, or a TCP address if path contains a
-// colon (useful for tests).
+// colon (useful for tests). The unix socket is user-only: any local
+// process could otherwise drive the daemon, including rotating its
+// identity.
 func listenIPC(path string) (net.Listener, error) {
 	if strings.Contains(path, ":") {
 		return net.Listen("tcp", path)
 	}
 	_ = os.Remove(path)
-	return net.Listen("unix", path)
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		_ = ln.Close()
+		return nil, err
+	}
+	return ln, nil
 }
 
 // serveIPCConn handles one CLI connection: one request, one response.

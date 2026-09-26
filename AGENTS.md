@@ -60,19 +60,26 @@ path must be exercised by a daemon integration test.
 Ordered; do not reorder without a reason. Update this list and the
 README when something ships.
 
-1. **Leave with signed forget-me gossip** — derive an Ed25519 keypair
-   from the node key seed (ed25519.NewKeyFromSeed(nodeRaw32)); announce
-   the sign-public in Hello/roster entries; `clow leave` broadcasts a
-   signed {leaver, timestamp} to all reachable peers; recipients drop
-   the leaver (roster, allowlist, spool) and re-broadcast once. Roster
-   sync must carry signed tombstones that always outrank later unsigned
-   re-adds (offline peers catch up on next sync).
+1. **Leave with signed forget-me gossip + roster entry signing** —
+   derive an Ed25519 keypair from the node key seed
+   (ed25519.NewKeyFromSeed(nodeRaw32)); announce the sign-public in
+   Hello/roster entries; `clow leave` broadcasts a signed {leaver,
+   timestamp} to all reachable peers; recipients drop the leaver
+   (roster, allowlist, spool) and re-broadcast once. Roster sync must
+   carry signed tombstones that always outrank later unsigned re-adds
+   (offline peers catch up on next sync). The SAME sign key must
+   authenticate roster entries: today any trusted cat can inject or
+   override entries via LWW (brick an entry with a broken address, or
+   duplicate a name to capture sends). Merge should require a valid
+   signature on entries for keys already known.
 2. **Multiple clowders** — named clowders: per-clowder roster files,
    `--clowder` on invite/join/send, Hello carries the clowder name so a
    connection routes to the right roster. One identity, one daemon,
    clowders stay disjoint (flat sync would otherwise merge them).
    Largest refactor; do last, design tombstones against the final
-   roster shape.
+   roster shape. Revisit sync scaling here too (full-roster sync is
+   O(N²) bytes per cycle; one-peer-per-tick means propagation latency
+   grows linearly).
 3. **Android app client** — a clowder client for Android. tailcat has
    Android support (see its android_linux.go and INSTALL.md), so the
    shape is: the daemon packages as an Android library (aar) or runs in
@@ -97,7 +104,7 @@ README when something ships.
    sends that left the outbox while the sender was offline.
 8. **Distrust a cat (local, one-directional)** — `clow distrust <CAT>`
    / `clow trust <CAT>` to undo: a persisted blocklist (keys, in
-   distrusted.json, NOT propagated — one cat's decision, unlike the
+   blocked.json, NOT propagated — one cat's decision, unlike the
    planned signed-leave gossip). A distrusted cat is refused both
    ways: Send and storer-relay selection skip it locally; serveConn
    closes immediately from distrusted peers; incoming Offers whose
@@ -107,6 +114,22 @@ README when something ships.
    add-only (no RemoveAllowedClient) — so forget today leaves the
    cat's key able to connect; the serveConn-level check must back
    both features (or upstream tailcat grows a removal API).
+9. **Hardening batch** (from the 2026-09-26 design review):
+   - Inbox quota / free-space check on receive (a trusted cat can
+     fill the receiver's disk today; storers have capacity, direct
+     receivers do not).
+   - Offer metadata is visible to storers (file name, size, digest,
+     sender, target): document explicitly, or seal the offer payload
+     on the storer path.
+   - Wire protocol version field in Hello before the protocol
+     ossifies (no version negotiation today).
+   - Duplicate roster names: Get(name) is map-iteration order; prefer
+     newest Updated and flag duplicates in `clow cats`.
+   - Idle tailcat-client eviction (engines accumulate per peer; the
+     close machinery exists).
+   - Global transfer concurrency cap (claims are per-ID only).
+   - Fuzz targets for ReadMsg/parsePairCode/inboxPath (untrusted
+     input decode paths).
 
 Shipped recently (context for a fresh session): storer capacity
 (`clow storer on --max 10G`, required to enable; deposits are refused
