@@ -79,6 +79,8 @@ path if lost — except the identity.
     clow outbox clear                                   drop pending sends
     clow rotate                                         new address, announced to the clowder
     clow forget <CAT>                                   drop a cat from the roster
+    clow distrust <CAT>                                 block a cat locally (both ways, no gossip)
+    clow trust <CAT>                                    undo distrust
     clow status                                         config, stats, outbox, spool, roster
     clow reset [--yes]                                  wipe this cat (identity, rosters)
 

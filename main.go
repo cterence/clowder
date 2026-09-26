@@ -43,6 +43,10 @@ func run(args []string) error {
 		return cmdOutbox(rest)
 	case "forget":
 		return cmdForget(rest)
+	case "distrust":
+		return cmdDistrust(rest)
+	case "trust":
+		return cmdTrust(rest)
 	case "rotate":
 		return printResp(call(daemon.Request{Op: "rotate"}))
 	case "reset":
@@ -95,6 +99,8 @@ usage:
   clow inbox [--set DIR]                   list received files, or move the inbox
   clow storer on|off|dropbox               storer duty; dropbox = third parties only
   clow outbox clear                        drop all pending sends
+  clow distrust <CAT>                     block a cat locally, both ways (no gossip)
+  clow trust <CAT>                         undo distrust
   clow forget <CAT>                        drop a cat from the roster
   clow rotate                              new address, announced to the clowder
   clow reset [--yes]                       wipe this cat's identity and rosters
@@ -278,6 +284,30 @@ func cmdForget(args []string) error {
 	return printResp(call(daemon.Request{Op: "forget", Target: fs.Arg(0)}))
 }
 
+// cmdDistrust blocks a cat locally, both ways, without gossip.
+func cmdDistrust(args []string) error {
+	fs := flag.NewFlagSet("distrust", flag.ContinueOnError)
+	if err := fs.Parse(flagsFirst(fs, args)); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: clow distrust <CAT>")
+	}
+	return printResp(call(daemon.Request{Op: "distrust", Target: fs.Arg(0)}))
+}
+
+// cmdTrust undoes cmdDistrust.
+func cmdTrust(args []string) error {
+	fs := flag.NewFlagSet("trust", flag.ContinueOnError)
+	if err := fs.Parse(flagsFirst(fs, args)); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: clow trust <CAT>")
+	}
+	return printResp(call(daemon.Request{Op: "trust", Target: fs.Arg(0)}))
+}
+
 // cmdReset wipes the cat's config dir: identity, rosters, spool and
 // outbox. Received files in the inbox dir are outside the config dir and
 // are kept. Refuses while the daemon is running.
@@ -354,15 +384,27 @@ func cmdCats() error {
 	if !resp.OK {
 		return fmt.Errorf("%s", resp.Error)
 	}
+	distrusted := map[string]bool{}
+	for _, n := range resp.Distrusted {
+		distrusted[n] = true
+	}
 	if resp.Me != nil {
 		fmt.Printf("%s (me)%s\n", resp.Me.Name, storerTag(resp.Me.Storer, resp.Me.Dropbox))
 		fmt.Printf("  address: %s\n", resp.Me.Addr)
 	}
 	for _, c := range resp.Cats {
-		fmt.Printf("%s%s\n", c.Name, storerTag(c.Storer, c.Dropbox))
+		fmt.Printf("%s%s%s\n", c.Name, storerTag(c.Storer, c.Dropbox), distrustTag(distrusted[c.Name]))
 		fmt.Printf("  address: %s\n", c.Addr)
 	}
 	return nil
+}
+
+// distrustTag marks cats on the local blocklist.
+func distrustTag(on bool) string {
+	if on {
+		return " [distrusted]"
+	}
+	return ""
 }
 
 func storerTag(storer, dropbox bool) string {
@@ -438,6 +480,10 @@ func cmdStatus() error {
 	fmt.Printf("inbox:   %s\n", inboxDir())
 
 	// The clowder: one row per cat with liveness and route.
+	distrusted := map[string]bool{}
+	for _, n := range resp.Distrusted {
+		distrusted[n] = true
+	}
 	fmt.Printf("\nclowder: %d %s\n", len(resp.Cats), plural(len(resp.Cats), "cat", "cats"))
 	for _, c := range resp.Cats {
 		name := c.Name + storerTag(c.Storer, c.Dropbox)
@@ -462,7 +508,7 @@ func cmdStatus() error {
 				route = "relayed via DERP"
 			}
 		}
-		fmt.Printf("  %-22s %-24s %s\n", name, life, route)
+		fmt.Printf("  %-22s %-24s %s%s\n", name, life, route, distrustTag(distrusted[c.Name]))
 	}
 
 	// In-flight transfers, both directions.

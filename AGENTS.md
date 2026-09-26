@@ -85,26 +85,14 @@ have grown the same private helper, hoist it there.
 Ordered by complexity, easiest first; do not reorder without a
 reason. Update this list and the README when something ships.
 
-1. **Distrust a cat (local, one-directional)** — `clow distrust <CAT>`
-   / `clow trust <CAT>` to undo: a persisted blocklist (keys, in
-   blocked.json, NOT propagated — one cat's decision, unlike the
-   planned signed-leave gossip). A distrusted cat is refused both
-   ways: Send and storer-relay selection skip it locally; serveConn
-   closes immediately from distrusted peers; incoming Offers whose
-   From names a distrusted cat are refused (best-effort: relayed
-   offers carry a name, not a key). Kept visible in `clow cats` with a
-   [distrusted] tag, unlike forget. NOTE: tailcat's AllowedClients is
-   add-only (no RemoveAllowedClient) — so forget today leaves the
-   cat's key able to connect; the serveConn-level check must back
-   both features (or upstream tailcat grows a removal API).
-2. **Delivery receipts** — approved design, not yet built: when a
+1. **Delivery receipts** — approved design, not yet built: when a
    target receives a file (direct or via storer) it seals a tiny
    receipt {transferID, fileName, deliveredAt} to the sender's node key
    with its own (sealed-box authenticated, storer-opaque) and relays it
    direct-or-via-storer like any small message; the sender keeps a
    receipts.json ledger shown in `clow status`, closing the loop for
    sends that left the outbox while the sender was offline.
-3. **Hardening batch** (from the 2026-09-26 design review):
+2. **Hardening batch** (from the 2026-09-26 design review):
    - Inbox quota / free-space check on receive (a trusted cat can
      fill the receiver's disk today; storers have capacity, direct
      receivers do not).
@@ -120,7 +108,7 @@ reason. Update this list and the README when something ships.
    - Global transfer concurrency cap (claims are per-ID only).
    - Fuzz targets for ReadMsg/parsePairCode/inboxPath (untrusted
      input decode paths).
-4. **Pairing hardening: offline guessability + PAKE** — the pairing
+3. **Pairing hardening: offline guessability + PAKE** — the pairing
    words currently derive the WireGuard static keys and PSK directly
    (derivePairing, daemon/pairing.go), and the file comment claims
    guessing is "active-only, nothing verifiable offline". That claim
@@ -144,7 +132,7 @@ reason. Update this list and the README when something ships.
    on the joiner's ack and the joiner returning only on the
    inviter's confirmation (committing optimistically if that
    confirmation is lost after its own ack was written).
-5. **Leave with signed forget-me gossip + roster entry signing** —
+4. **Leave with signed forget-me gossip + roster entry signing** —
    derive an Ed25519 keypair from the node key seed
    (ed25519.NewKeyFromSeed(nodeRaw32)); announce the sign-public in
    Hello/roster entries; `clow leave` broadcasts a signed {leaver,
@@ -156,7 +144,7 @@ reason. Update this list and the README when something ships.
    override entries via LWW (brick an entry with a broken address, or
    duplicate a name to capture sends). Merge should require a valid
    signature on entries for keys already known.
-6. **Android app client** — a clowder client for Android. tailcat has
+5. **Android app client** — a clowder client for Android. tailcat has
    Android support (see its android_linux.go and INSTALL.md), so the
    shape is: the daemon packages as an Android library (aar) or runs in
    a foreground service, with a thin UI for init/invite/join/send/
@@ -170,7 +158,7 @@ reason. Update this list and the README when something ships.
    tailcat); Android kills the daemon without a wake lock. Running
    the CLI in Termux is explicitly NOT a goal — the foreground-service
    app is the answer to both the lifecycle and the daemon+client UX.
-7. **Multiple clowders** — named clowders: per-clowder roster files,
+6. **Multiple clowders** — named clowders: per-clowder roster files,
    `--clowder` on invite/join/send, Hello carries the clowder name so a
    connection routes to the right roster. One identity, one daemon,
    clowders stay disjoint (flat sync would otherwise merge them).
@@ -179,7 +167,14 @@ reason. Update this list and the README when something ships.
    O(N²) bytes per cycle; one-peer-per-tick means propagation latency
    grows linearly).
 
-Shipped recently (context for a fresh session): a nix flake
+Shipped recently (context for a fresh session): `clow distrust` /
+`clow trust` (local, one-directional blocklist in blocked.json, the
+same ledger forget uses — never propagated: Send, deliver and
+storer-relay selection skip the cat locally, serveConn refuses its
+connections, relayed offers whose From names it are refused
+(best-effort: relayed offers carry a name, not a key), Poll skips it
+as a storer, and it stays visible in `clow cats`/`clow status` with a
+[distrusted] tag), a nix flake
 `packages.default` building the clow binary (buildGoModule pinned to
 nixpkgs' go_1_27 — go.mod requires 1.27.1 and the deps own the floor,
 so the default `go` alias is not enough; vendorHash pinned in the

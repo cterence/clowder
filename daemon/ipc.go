@@ -41,6 +41,9 @@ type Response struct {
 	Liveness map[string]int64 `json:"liveness,omitempty"`
 	// Progress lists the in-flight transfers (status op).
 	Progress []Progress `json:"progress,omitempty"`
+	// Distrusted names the roster cats whose keys are on the local
+	// blocklist (distrust, and forgotten cats), for cats/status tags.
+	Distrusted []string `json:"distrusted,omitempty"`
 	// Paths maps cat keys to their probed route (status op); cats
 	// that did not answer the probe have no entry.
 	Paths map[string]*PathInfo `json:"paths,omitempty"`
@@ -112,7 +115,7 @@ func (d *Daemon) handleIPC(req Request) Response {
 
 	case "cats":
 		me := d.Me()
-		return Response{OK: true, Me: &me, Cats: d.ros.All()}
+		return Response{OK: true, Me: &me, Cats: d.ros.All(), Distrusted: d.distrustedNames()}
 
 	case "storer":
 		capacity, err := ParseSize(req.Max)
@@ -157,6 +160,24 @@ func (d *Daemon) handleIPC(req Request) Response {
 		}
 		return okMsg(fmt.Sprintf("address rotated to %s; restart the daemon to use it", shortAddr(newAddr)))
 
+	case "distrust":
+		if req.Target == "" {
+			return fail(fmt.Errorf("distrust needs a cat name"))
+		}
+		if _, err := d.Distrust(req.Target); err != nil {
+			return fail(err)
+		}
+		return okMsg(fmt.Sprintf("distrusted %s (local only; roster entry kept; undo with: clow trust %s)", req.Target, req.Target))
+
+	case "trust":
+		if req.Target == "" {
+			return fail(fmt.Errorf("trust needs a cat name"))
+		}
+		if _, err := d.Trust(req.Target); err != nil {
+			return fail(err)
+		}
+		return okMsg(fmt.Sprintf("trusted %s again", req.Target))
+
 	case "forget":
 		if req.Target == "" {
 			return fail(fmt.Errorf("forget needs a cat name"))
@@ -200,6 +221,7 @@ func (d *Daemon) handleIPC(req Request) Response {
 			OK:         true,
 			Me:         &me,
 			Cats:       d.ros.All(),
+			Distrusted: d.distrustedNames(),
 			Outbox:     d.ob.All(),
 			Spool:      d.spool.Count(),
 			SpoolBytes: d.spool.Usage(),

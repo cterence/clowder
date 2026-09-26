@@ -432,6 +432,9 @@ func (d *Daemon) Send(targetName, path string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("unknown cat %q (known: add it first)", targetName)
 	}
+	if d.isBlockedKey(cat.Key) {
+		return "", fmt.Errorf("distrusted cat %q (run: clow trust %s)", targetName, targetName)
+	}
 	if _, err := os.Stat(path); err != nil {
 		return "", fmt.Errorf("reading file: %w", err)
 	}
@@ -458,6 +461,9 @@ func (d *Daemon) Poll(ctx context.Context) {
 		return // a dropbox takes no deliveries for itself
 	}
 	for _, s := range d.ros.Storers() {
+		if d.isBlockedKey(s.Key) {
+			continue // never pull from a cat we distrust
+		}
 		if err := d.fetchFrom(ctx, s); err != nil {
 			d.cfg.logf("clowder: fetching from storer %s: %v", s.Name, err)
 		}
@@ -546,6 +552,11 @@ func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *proto
 	if d.Me().Dropbox {
 		// A dropbox relays files for others; it takes none for itself.
 		return refuse("dropbox cat: no personal deliveries")
+	}
+	if d.isBlockedName(o.From) {
+		// The connection itself is fine (this is a storer relaying),
+		// but the sender named in the offer is distrusted.
+		return refuse("sender is distrusted")
 	}
 	if !d.claimReceive(o.ID) {
 		// A duplicate stream for a transfer already in flight (the
@@ -816,6 +827,10 @@ func (d *Daemon) deliver(e Entry) {
 	ctx, cancel := context.WithTimeout(context.Background(), streamTimeout)
 	defer cancel()
 
+	if d.isBlockedKey(e.TargetKey) {
+		d.cfg.logf("clowder: %s to %s skipped: target is distrusted", e.FileName, e.TargetName)
+		return
+	}
 	if cat, ok := d.ros.GetByKey(e.TargetKey); ok {
 		if err := d.deliverDirect(ctx, cat, e); err == nil {
 			_ = d.ob.Delete(e.ID)
@@ -825,8 +840,8 @@ func (d *Daemon) deliver(e Entry) {
 		}
 	}
 	for _, s := range d.ros.Storers() {
-		if s.Key == e.TargetKey {
-			continue
+		if s.Key == e.TargetKey || d.isBlockedKey(s.Key) {
+			continue // never relay through a cat we distrust
 		}
 		if err := d.deliverViaStorer(ctx, s, e); err == nil {
 			_ = d.ob.Delete(e.ID)
@@ -965,6 +980,12 @@ func (d *Daemon) fetchOne(pc *protocol.Conn, f protocol.PendingFile) error {
 		return errors.New("storer did not offer the file")
 	}
 	o := m.Offer
+	if d.isBlockedName(o.From) {
+		if err := pc.Answer(o.ID, false, "sender is distrusted"); err != nil {
+			return err
+		}
+		return nil
+	}
 	if err := pc.Answer(o.ID, true, ""); err != nil {
 		return err
 	}
