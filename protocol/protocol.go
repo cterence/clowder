@@ -4,8 +4,8 @@
 // Each connection starts with both sides sending a Hello (self
 // introduction), then both sides sending a Roster (full-roster sync).
 // After the handshake, a connection carries one request/response exchange
-// at a time: an Offer/Answer/stream/Ack file transfer, a Pending query, or
-// a Fetch request. The sealed stream itself is not framed as a message:
+// at a time: an Offer/Answer/stream/Ack file transfer. The sealed stream
+// itself is not framed as a message:
 // after an accepted Offer, exactly Size raw bytes follow on the stream.
 package protocol
 
@@ -105,28 +105,6 @@ type Ack struct {
 	Kind string `cbor:"k"`
 }
 
-// Pending is both a query ("what are you holding for me?") and the
-// storer's response listing held files.
-type Pending struct {
-	Query bool          `cbor:"q,omitempty"`
-	Files []PendingFile `cbor:"f,omitempty"`
-}
-
-// PendingFile describes one file a storer holds for the requester.
-type PendingFile struct {
-	ID       string `cbor:"i"`
-	FileName string `cbor:"f"`
-	Size     int64  `cbor:"z"`
-	From     string `cbor:"o"`
-	SHA256   string `cbor:"h"`
-	StoredAt int64  `cbor:"s"`
-}
-
-// Fetch asks a storer to send a held file now.
-type Fetch struct {
-	ID string `cbor:"i"`
-}
-
 // PairIntro is exchanged over a pairing channel (clow invite / clow
 // join) so two cats can learn each other's real identities without
 // copying full tailcat addresses. Addr is the sender's real address,
@@ -153,8 +131,6 @@ type Message struct {
 	Offer   *Offer      `cbor:"o,omitempty"`
 	Answer  *Answer     `cbor:"a,omitempty"`
 	Ack     *Ack        `cbor:"k,omitempty"`
-	Pending *Pending    `cbor:"p,omitempty"`
-	Fetch   *Fetch      `cbor:"t,omitempty"`
 	Pair    *PairIntro  `cbor:"j,omitempty"`
 	PairAck *PairAck    `cbor:"g,omitempty"`
 }
@@ -172,10 +148,6 @@ func (m *Message) Kind() string {
 		return "answer"
 	case m.Ack != nil:
 		return "ack"
-	case m.Pending != nil:
-		return "pending"
-	case m.Fetch != nil:
-		return "fetch"
 	case m.Pair != nil:
 		return "pair"
 	case m.PairAck != nil:

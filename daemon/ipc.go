@@ -14,7 +14,7 @@ import (
 )
 
 // Request is one command from the clow CLI to the daemon. Ops: send,
-// fetch, cats, storer, status, setinbox, invite, join, outbox.
+// cats, storer, status, setinbox, invite, join, outbox.
 type Request struct {
 	Op      string `json:"op"`
 	Target  string `json:"target,omitempty"`
@@ -115,10 +115,6 @@ func (d *Daemon) handleIPC(req Request) Response {
 			return fail(err)
 		}
 		return okMsg(fmt.Sprintf("queued %s for %s (id %s)", filepath.Base(req.Path), req.Target, id))
-
-	case "fetch":
-		d.Poll(ctx)
-		return okMsg("fetch pass complete")
 
 	case "cats":
 		me := d.Me()

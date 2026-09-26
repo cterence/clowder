@@ -4,6 +4,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"clowder/daemon"
@@ -121,5 +122,35 @@ func TestInboxSetWithoutDaemon(t *testing.T) {
 	}
 	if _, err := os.Stat(inbox); err != nil {
 		t.Fatalf("inbox dir not created: %v", err)
+	}
+}
+
+// TestRemovedCommands pins the fetch and cats removals: fetch's job is
+// done by the storer push sweep, and cats folded into `status
+// --addresses`.
+func TestRemovedCommands(t *testing.T) {
+	for _, cmd := range []string{"fetch", "cats"} {
+		err := run([]string{cmd})
+		if err == nil {
+			t.Errorf("%s succeeded, want unknown-command error", cmd)
+			continue
+		}
+		if !strings.Contains(err.Error(), "unknown command") {
+			t.Errorf("%s: %v, want unknown-command error", cmd, err)
+		}
+	}
+}
+
+// TestStatusAddressesFlagParses proves --addresses gets past flag
+// parsing: without a daemon the command must fail on the IPC dial,
+// not on the flag set.
+func TestStatusAddressesFlagParses(t *testing.T) {
+	t.Setenv("CLOWDER_DIR", t.TempDir())
+	err := run([]string{"status", "--addresses"})
+	if err == nil {
+		t.Fatal("status succeeded without a daemon, want IPC error")
+	}
+	if strings.Contains(err.Error(), "flag provided but not defined") {
+		t.Fatalf("--addresses no longer parses: %v", err)
 	}
 }

@@ -58,11 +58,12 @@ func TestDeliveryReceipts(t *testing.T) {
 	trust(t, nikoD, box)
 	addCat(t, nikoD, milo.Me()) // niko knows milo, so the receipt can target him
 	trust(t, box, nikoD)
-	nikoD.Poll(context.Background())
+	// The storer's sweep pushes the held file to the waking target.
+	box.sweepSpoolFor(context.Background(), nikoD.Me().Key)
 	waitFor(t, func() bool {
 		_, ok := inboxFile(t, nikoD, "nap.txt")
 		return ok
-	}, "niko to pull the held file")
+	}, "the storer to push the held file to niko")
 	waitFor(t, func() bool { return box.Spool().Count() >= 1 },
 		"niko's receipt to be held at the storer (milo is offline)")
 
@@ -70,7 +71,8 @@ func TestDeliveryReceipts(t *testing.T) {
 	// ledger closes the loop.
 	milo2 := startDaemonAt(t, milo.cfg.Dir)
 	trust(t, milo2, box)
-	milo2.Poll(context.Background())
+	// The storer's sweep pushes the held receipt to the returning sender.
+	box.sweepSpoolFor(context.Background(), milo2.Me().Key)
 	waitFor(t, func() bool { return box.Spool().Count() == 0 },
 		"the storer to hand over the held receipt (spool %d)", box.Spool().Count())
 	t.Logf("milo2 inbox: %v", inboxFiles(t, milo2))

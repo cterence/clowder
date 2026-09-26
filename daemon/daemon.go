@@ -461,9 +461,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 		case <-retry.C:
 			d.goBg(d.retryOutbox)
 		case <-poll.C:
-			// No periodic storer polling: the push sweep delivers
-			// held files to online targets on its own, and `clow
-			// fetch` remains as a manual pull. Each tick syncs every
+			// The push sweep delivers held files to online
+			// targets on its own; there is no pull path. Each
+			// tick syncs every
 			// peer in parallel (a few KB at homelab scale) and
 			// refreshes every path, plus spool pushes only while
 			// files are held.
@@ -564,22 +564,6 @@ func (d *Daemon) closeLiveConns() {
 	}
 }
 
-// Poll asks every known storer for files held for this cat and fetches
-// them. It runs periodically from Run and on demand over IPC.
-func (d *Daemon) Poll(ctx context.Context) {
-	if d.Me().Dropbox {
-		return // a dropbox takes no deliveries for itself
-	}
-	for _, s := range d.ros.Storers() {
-		if d.isBlockedKey(s.Key) {
-			continue // never pull from a cat we distrust
-		}
-		if err := d.fetchFrom(ctx, s); err != nil {
-			d.cfg.logf("clowder: fetching from storer %s: %v", s.Name, err)
-		}
-	}
-}
-
 // ---- serving ----
 
 // serveConn runs the protocol on one accepted connection.
@@ -636,12 +620,6 @@ func (d *Daemon) serveConn(pc *protocol.Conn, authKey key.NodePublic, authed boo
 			// Post-handshake roster push (e.g. an address rotation
 			// announcement). Merged; no reply, to avoid sync ping-pong.
 			d.mergeRemote(m.Roster.Cats)
-		case m.Pending != nil && m.Pending.Query:
-			d.handlePending(pc, peer)
-		case m.Fetch != nil:
-			if !d.handleFetch(pc, peer, m.Fetch) {
-				return
-			}
 		default:
 			d.cfg.logf("clowder: unexpected %s message from %s", m.Kind(), peer.Name)
 			return
@@ -845,97 +823,6 @@ func (d *Daemon) heldBytes() int64 {
 	d.resMu.Lock()
 	defer d.resMu.Unlock()
 	return d.spool.Usage() + d.reserved
-}
-
-// handlePending answers a "what are you holding for me?" query from the
-// peer identified by hello.
-func (d *Daemon) handlePending(pc *protocol.Conn, hello *protocol.Hello) {
-	files := d.spool.List(hello.Key)
-	pf := make([]protocol.PendingFile, 0, len(files))
-	for _, f := range files {
-		pf = append(pf, protocol.PendingFile{
-			ID:       f.ID,
-			FileName: f.FileName,
-			Size:     f.Size,
-			From:     f.From,
-			SHA256:   f.SHA256,
-			StoredAt: f.StoredAt,
-		})
-	}
-	if err := pc.WriteMsg(&protocol.Message{Pending: &protocol.Pending{Files: pf}}); err != nil {
-		return
-	}
-}
-
-// handleFetch replays one held sealed stream to its target and deletes it
-// once delivery is acked. The requester (hello) must be the file's
-// target. It reports whether the connection may continue.
-func (d *Daemon) handleFetch(pc *protocol.Conn, hello *protocol.Hello, f *protocol.Fetch) bool {
-	meta, r, err := d.spool.Open(f.ID)
-	if err != nil {
-		return false
-	}
-	defer r.Close()
-	if meta.TargetKey != hello.Key {
-		d.cfg.logf("clowder: refusing fetch of %s by %s (held for %s)", f.ID, hello.Name, meta.TargetName)
-		return false
-	}
-	offer := &protocol.Offer{
-		ID:         meta.ID,
-		FileName:   meta.FileName,
-		Size:       meta.Size,
-		From:       meta.From,
-		SHA256:     meta.SHA256,
-		TargetKey:  meta.TargetKey,
-		TargetName: meta.TargetName,
-		Receipt:    meta.Receipt,
-		Resumable:  meta.Resumable,
-	}
-	if err := pc.WriteMsg(&protocol.Message{Offer: offer}); err != nil {
-		return false
-	}
-	m, err := pc.ReadMsg()
-	if err != nil || m.Answer == nil || !m.Answer.OK {
-		// ReadMsg returns a nil message on error: the fetcher is
-		// gone (conn cut mid-exchange), so the connection cannot
-		// continue. A refusal is a valid exchange, so the
-		// connection survives any Answer, OK or not.
-		return m != nil && m.Answer != nil
-	}
-	_ = pc.SetDeadline(time.Now().Add(streamTimeout))
-	// A resumable fetch names the sealed offset the target already
-	// holds: replay the stored header plus the stream from that
-	// offset onward (a pure byte skip — the stream stays opaque),
-	// the same contract a resuming sender honors.
-	resume := m.Answer.Resume
-	if resume > 0 {
-		if _, err := io.CopyN(pc.Writer(), r, envelope.HeaderLen); err != nil {
-			d.cfg.logf("clowder: replaying %s: %v", meta.ID, err)
-			return false
-		}
-		if _, err := r.Seek(resume, io.SeekStart); err != nil {
-			d.cfg.logf("clowder: replaying %s: %v", meta.ID, err)
-			return false
-		}
-		if _, err := io.CopyN(pc.Writer(), r, meta.Size-resume); err != nil {
-			d.cfg.logf("clowder: replaying %s: %v", meta.ID, err)
-			return false
-		}
-	} else if _, err := io.CopyN(pc.Writer(), r, meta.Size); err != nil {
-		d.cfg.logf("clowder: replaying %s: %v", meta.ID, err)
-		return false
-	}
-	_ = pc.SetDeadline(time.Now().Add(msgTimeout))
-	m, err = pc.ReadMsg()
-	if err != nil || m.Ack == nil || m.Ack.Kind != protocol.AckDelivered {
-		return false
-	}
-	if err := d.spool.Delete(meta.ID); err != nil {
-		d.cfg.logf("clowder: deleting delivered %s: %v", meta.ID, err)
-	}
-	d.stats.add(func(s *Stats) { s.Fetched++ })
-	d.cfg.logf("clowder: delivered held %s to %s", meta.FileName, d.Me().Name)
-	return true
 }
 
 // saveIncoming decrypts a sealed stream from src into the inbox under a
@@ -1237,117 +1124,6 @@ func sealAttempt(sender key.NodePrivate, recipient key.NodePublic, secret []byte
 		return envelope.SealStream(sender, recipient, dst, src)
 	}
 	return envelope.SealStreamAt(sender, recipient, secret, resume, dst, src)
-}
-
-// fetchFrom asks one storer what it holds for us and fetches everything.
-func (d *Daemon) fetchFrom(ctx context.Context, s roster.Cat) error {
-	pc, err := d.connect(ctx, s)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = pc.Close() }()
-
-	if err := pc.WriteMsg(&protocol.Message{Pending: &protocol.Pending{Query: true}}); err != nil {
-		return err
-	}
-	m, err := pc.ReadMsg()
-	if err != nil {
-		return err
-	}
-	if m.Pending == nil {
-		return errors.New("storer did not answer pending query")
-	}
-	for _, f := range m.Pending.Files {
-		if err := d.fetchOne(pc, f); err != nil {
-			d.cfg.logf("clowder: fetching %s from %s: %v", f.FileName, s.Name, err)
-			return err
-		}
-	}
-	return nil
-}
-
-// fetchOne fetches a single held file over an established storer conn.
-func (d *Daemon) fetchOne(pc *protocol.Conn, f protocol.PendingFile) error {
-	if err := pc.WriteMsg(&protocol.Message{Fetch: &protocol.Fetch{ID: f.ID}}); err != nil {
-		return err
-	}
-	m, err := pc.ReadMsg()
-	if err != nil {
-		return err
-	}
-	if m.Offer == nil {
-		return errors.New("storer did not offer the file")
-	}
-	o := m.Offer
-	if d.isBlockedName(o.From) {
-		if err := pc.Answer(o.ID, false, "sender is distrusted"); err != nil {
-			return err
-		}
-		return nil
-	}
-	// A storer may hand us a delivery receipt rather than a file
-	// (fetch of the pending list includes receipts held for us).
-	if o.Receipt {
-		if !d.receiveReceipt(pc, o) {
-			return errors.New("receipt exchange failed")
-		}
-		return nil
-	}
-	if !d.claimReceive(o.ID) {
-		return errors.New("transfer already in progress")
-	}
-	defer d.releaseReceive(o.ID)
-	if o.Resumable {
-		// The pull path is the mirror of the push path: resume from
-		// whatever a previous attempt (direct or via this storer)
-		// already landed. Progress accounts the whole transfer,
-		// starting at the resume point.
-		resume := d.resumePoint(o)
-		d.prog.start(Progress{
-			ID:        o.ID,
-			FileName:  o.FileName,
-			Peer:      o.From,
-			Receiving: true,
-			Total:     o.Size,
-			Done:      resume,
-			Started:   time.Now().Unix(),
-		})
-		defer d.prog.end(o.ID)
-		_, ok := d.receiveResumable(pc, o, resume)
-		if !ok {
-			return errors.New("resumable receive failed")
-		}
-		_ = pc.SetDeadline(time.Now().Add(msgTimeout))
-		if err := pc.Ack(o.ID, protocol.AckDelivered); err != nil {
-			return err
-		}
-		d.cfg.logf("clowder: fetched %s from storer", o.FileName)
-		d.goBg(func() { d.sendReceipt(o.From, o.ID, o.FileName) })
-		return nil
-	}
-	if err := pc.Answer(o.ID, true, ""); err != nil {
-		return err
-	}
-	_ = pc.SetDeadline(time.Now().Add(streamTimeout))
-	d.prog.start(Progress{
-		ID:        o.ID,
-		FileName:  o.FileName,
-		Peer:      o.From,
-		Receiving: true,
-		Total:     o.Size,
-		Started:   time.Now().Unix(),
-	})
-	defer d.prog.end(o.ID)
-	if _, err := d.saveIncoming(o, countingReader{k: d.prog, id: o.ID, r: io.LimitReader(pc.Reader(), o.Size)}, d.env.Identity.Private); err != nil {
-		return err
-	}
-	_ = pc.SetDeadline(time.Now().Add(msgTimeout))
-	if err := pc.Ack(o.ID, protocol.AckDelivered); err != nil {
-		return err
-	}
-	d.cfg.logf("clowder: fetched %s from storer", o.FileName)
-	d.goBg(func() { d.sendReceipt(o.From, o.ID, o.FileName) })
-	return nil
 }
 
 // syncPeers connects to every roster peer in parallel, exchanging

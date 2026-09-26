@@ -11,7 +11,7 @@ NAT-traversing, no accounts).
   other once.
 - **Asynchronous sends.** If the target is online the file goes straight
   there; if not, any cat that declared itself a **storer** holds the
-  encrypted file until the target fetches it. Storers can't read what
+  encrypted file until the target is online again. Storers can't read what
   they hold: every file is end-to-end sealed to its recipient, in
   memory-bounded 64 KiB chunks.
 - **Resumable transfers.** A transfer cut mid-stream (network drop,
@@ -71,12 +71,10 @@ path if lost — except the identity.
                                                         create the identity
     clow daemon [--port N] [--health ADDR] [--derp-map URL]
                                                         run the mesh daemon
-    clow invite                                         5-word pairing code (5 min, one join)
+    clow invite                                         8-word pairing code (5 min, one join)
     clow join <CODE>                                    pair with the inviter
     clow send <CAT> <FILE>                              async send (queues if offline)
-    clow fetch                                          pull files storers hold for me
     clow inbox [--set DIR]                              list received files / change inbox
-    clow cats                                           list the clowder
     clow storer on|off|dropbox                          volunteer to hold files for others
                                                         (dropbox: third parties only)
     clow outbox clear                                   drop pending sends
@@ -84,8 +82,9 @@ path if lost — except the identity.
     clow forget <CAT>                                   drop a cat from the roster
     clow distrust <CAT>                                 block a cat locally (both ways, no gossip)
     clow trust <CAT>                                    undo distrust
-    clow status                                         config, stats, outbox, spool,
-                                                        receipts, roster
+    clow status [--addresses]                           config, stats, outbox, spool,
+                                                        receipts, roster (--addresses
+                                                        also prints tailcat addresses)
     clow reset [--yes]                                  wipe this cat (identity, rosters)
 
 ## Running in a container
@@ -178,7 +177,7 @@ the target is offline and delivers on the next retry):
 
 A storer is just a paired cat with the role enabled: it holds sealed
 files for offline targets and pushes them as soon as the target is
-online (targets can also `clow fetch` manually). Pair the third
+online. Pair the third
 machine as above, then:
 
     server$  clow storer on --max 10G

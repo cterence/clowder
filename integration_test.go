@@ -234,7 +234,7 @@ func (c *cat) waitHealthy() error {
 // processes and the real DERP network: three cats pair with real
 // pairing codes, a file is sent directly, then a second file rides a
 // storer while the target is offline, and the target pulls it with
-// `clow fetch` after coming back. Asserts the files' contents, not
+// the storer's push sweep after coming back. Asserts the files' contents, not
 // internal state.
 func TestIntegrationEndToEnd(t *testing.T) {
 	if os.Getenv("CLOWDER_INTEGRATION") != "1" {
@@ -279,11 +279,11 @@ func TestIntegrationEndToEnd(t *testing.T) {
 		return err == nil && len(des) > 0
 	}, "the storer to hold the offline cat's file")
 
-	// Back online, the target pulls the held file with one fetch.
+	// Back online, the storer's push sweep delivers the held file on
+	// its next poll tick.
 	if err := puma.start(); err != nil {
 		t.Fatalf("restarting puma: %v", err)
 	}
-	puma.clow("fetch")
 	waitForFile(t, puma, "nap2.txt", src2)
 
 	// The sender's outbox drained: status reports nothing pending.

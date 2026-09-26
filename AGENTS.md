@@ -30,7 +30,7 @@ path must be exercised by a daemon integration test.
     roster/          cats, LWW merge, persistence; identity = node key
     protocol/        CBOR messages, 4-byte framing; sealed streams are raw bytes
     store/           storer spool: atomic writes, TTL, delete-on-ack
-    daemon/          the runtime: serve/send/fetch/sync, pairing, IPC, stats,
+    daemon/          the runtime: serve/send/sync, pairing, IPC, stats,
                      TailcatTransport (production) + LocalTransport (tests)
     docs/specs/      the design doc (protocol, envelope, roster rules)
 
@@ -185,6 +185,23 @@ reason. Update this list and the README when something ships.
 
 One line each; the pinning tests carry the details.
 
+- **Resumable transfers**: an interrupted transfer resumes from the
+  chunks already on disk instead of restarting — every send carries a
+  fixed per-stream seal secret persisted in its outbox entry, so every
+  attempt seals to the same stream bytes (Offer.Resumable; a receiver
+  holding a partial answers with the sealed-stream offset of its last
+  chunk checkpoint; SealStreamAt re-hashes the skipped prefix so the
+  whole-file digest check still passes). Receivers checkpoint per
+  64 KiB chunk into parts/ with a sidecar and move atomically into the
+  inbox; all legs covered — direct, storer push, storer deposit
+  (spool.PutResume parses only frame lengths, stream stays opaque).
+  Receivers clamp their checkpoint through envelope.LastResumeBoundary
+  — a checkpoint after the final short chunk is not a boundary
+  SealedToPlain accepts, and answering with it verbatim wedges the
+  transfer — and receiveResumable truncates the part to the boundary's
+  plaintext before appending. Pinned by TestDirectSendResumesAfterCut,
+  TestDirectSendResumesAcrossRestart, TestStorerPushResumesAfterCut,
+  TestDepositResumeRoundTrip, TestDirectSendResumesFromFinalChunkCheckpoint.
 - **Delivery receipts**: receivers seal {transferID, fileName,
   deliveredAt} to the ORIGINAL sender's node key and relay it like any
   small transfer; Offer.Receipt / store.Meta carry the flag across
@@ -198,8 +215,8 @@ One line each; the pinning tests carry the details.
   announced size exactly).
 - **Storers**: capacity (`clow storer on --max`, atomic reservations,
   refused sends retry), push sweep (deliver held files as soon as the
-  target is online; `clow fetch` remains the manual pull), and
-  dropbox mode (third-party storage only).
+  target is online — the manual `clow fetch` pull was removed, the
+  sweep replaced it), and dropbox mode (third-party storage only).
 - **Liveness and sync**: all-peers roster sync on every poll tick and
   at start (pinned by TestSyncPeersDialsEveryPeer, TestStartupSyncBurst);
   symmetric liveness marking (TestDialerMarksTargetSeenOnHelloReply); a
@@ -209,7 +226,7 @@ One line each; the pinning tests carry the details.
   blocked.json, never propagated), `clow forget` (roster entry plus
   outbox), `clow rotate` (new PSK/address under the same identity),
   and duplicate-name hardening (LWW is per-key, so collisions persist;
-  `clow cats`/`status` tag them and resolution is social).
+  `clow status` tags them and resolution is social).
 - **Daemon lifecycle**: a single-instance lock on the config dir — a
   second Run refuses rather than wedging the two-keypair invariant
   (TestSecondDaemonOnSameDirRefuses) — and drain at shutdown: cancel

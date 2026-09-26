@@ -54,16 +54,12 @@ func run(args []string) error {
 		return cmdReset(rest)
 	case "help":
 		return longUsage()
-	case "cats":
-		return cmdCats()
 	case "send":
 		return cmdSend(rest)
-	case "fetch":
-		return cmdFetch()
 	case "storer":
 		return cmdStorer(rest)
 	case "status":
-		return cmdStatus()
+		return cmdStatus(rest)
 	case "inbox":
 		return cmdInbox(rest)
 	default:
@@ -75,8 +71,8 @@ func run(args []string) error {
 func shortUsage() error {
 	fmt.Fprint(os.Stderr, `usage: clow <command> [args]
 
-  init, daemon, invite, join, send, fetch, inbox, cats, storer,
-  outbox, forget, rotate, reset, status, help
+  init, daemon, invite, join, send, inbox, storer, outbox,
+  forget, rotate, reset, status, help
 
 run "clow help" for details.
 `)
@@ -95,8 +91,6 @@ usage:
   clow invite                              print a pairing code (8 words, 5 min)
   clow join <CODE>                         pair with the cat that invited
   clow send <CAT> <FILE>                   send a file asynchronously
-  clow fetch                               pull files storers hold for me
-  clow cats                                list the clowder
   clow inbox [--set DIR]                   list received files, or move the inbox
   clow storer on|off|dropbox               storer duty; dropbox = third parties only
   clow outbox clear                        drop all pending sends
@@ -105,7 +99,9 @@ usage:
   clow forget <CAT>                        drop a cat from the roster
   clow rotate                              new address, announced to the clowder
   clow reset [--yes]                       wipe this cat's identity and rosters
-  clow status                              config, outbox, spool and roster summary
+  clow status [--addresses]               config, outbox, spool and roster summary
+                                           (--addresses also prints each cat's
+                                           tailcat address)
 
 config dir:  $CLOWDER_DIR, else the OS user config home (~/.config/clowder
              on Linux, ~/Library/Application Support/clowder on macOS)
@@ -377,30 +373,6 @@ func isBoolFlag(fl *flag.Flag) bool {
 	return ok && bv.IsBoolFlag()
 }
 
-func cmdCats() error {
-	resp, err := call(daemon.Request{Op: "cats"})
-	if err != nil {
-		return err
-	}
-	if !resp.OK {
-		return fmt.Errorf("%s", resp.Error)
-	}
-	distrusted := map[string]bool{}
-	for _, n := range resp.Distrusted {
-		distrusted[n] = true
-	}
-	dups := nameCounts(resp.Cats)
-	if resp.Me != nil {
-		fmt.Printf("%s (me)%s\n", resp.Me.Name, storerTag(resp.Me.Storer, resp.Me.Dropbox))
-		fmt.Printf("  address: %s\n", resp.Me.Addr)
-	}
-	for _, c := range resp.Cats {
-		fmt.Printf("%s%s%s%s\n", c.Name, storerTag(c.Storer, c.Dropbox), distrustTag(distrusted[c.Name]), dupTag(dups[c.Name] > 1))
-		fmt.Printf("  address: %s\n", c.Addr)
-	}
-	return nil
-}
-
 // dupTag marks names claimed by more than one cat.
 func dupTag(dup bool) string {
 	if dup {
@@ -451,10 +423,6 @@ func cmdSend(args []string) error {
 	return printResp(call(daemon.Request{Op: "send", Target: fs.Arg(0), Path: path}))
 }
 
-func cmdFetch() error {
-	return printResp(call(daemon.Request{Op: "fetch"}))
-}
-
 func cmdStorer(args []string) error {
 	fs := flag.NewFlagSet("storer", flag.ContinueOnError)
 	max := fs.String("max", "", "spool capacity, e.g. 500M or 10G (required to enable)")
@@ -482,7 +450,12 @@ func cmdStorer(args []string) error {
 	}))
 }
 
-func cmdStatus() error {
+func cmdStatus(args []string) error {
+	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	addresses := fs.Bool("addresses", false, "also print each cat's tailcat address")
+	if err := fs.Parse(flagsFirst(fs, args)); err != nil {
+		return err
+	}
 	resp, err := call(daemon.Request{Op: "status"})
 	if err != nil {
 		return err
@@ -494,6 +467,9 @@ func cmdStatus() error {
 	// Me and directories.
 	if resp.Me != nil {
 		fmt.Printf("me:      %s%s\n", resp.Me.Name, storerTag(resp.Me.Storer, resp.Me.Dropbox))
+		if *addresses {
+			fmt.Printf("         address: %s\n", resp.Me.Addr)
+		}
 	}
 	fmt.Printf("config:  %s\n", configDir())
 	fmt.Printf("inbox:   %s\n", inboxDir())
@@ -529,6 +505,9 @@ func cmdStatus() error {
 			}
 		}
 		fmt.Printf("  %-22s %-24s %s%s%s\n", name, life, route, distrustTag(distrusted[c.Name]), dupTag(dups[c.Name] > 1))
+		if *addresses {
+			fmt.Printf("    address: %s\n", c.Addr)
+		}
 	}
 
 	// In-flight transfers, both directions.
@@ -582,7 +561,7 @@ func cmdStatus() error {
 		fmt.Printf("\nstats:  sent %d %s (%s), received %d %s (%s)\n",
 			st.Sent, plural(int(st.Sent), "file", "files"), daemon.HumanBytes(st.SentBytes),
 			st.Received, plural(int(st.Received), "file", "files"), daemon.HumanBytes(st.ReceivedBytes))
-		fmt.Printf("        spooled %d, fetched %d\n", st.Spooled, st.Fetched)
+		fmt.Printf("        spooled %d, pushed %d\n", st.Spooled, st.Pushed)
 	}
 	return nil
 }

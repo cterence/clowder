@@ -14,7 +14,8 @@ on tailcat. Binary name: `clow`.
 - **Storer**: a cat that declared itself willing to hold encrypted files for
   offline recipients.
 - **Outbox**: sender-side queue of sealed, not-yet-delivered files.
-- **Spool**: storer-side store of sealed files awaiting the target's fetch.
+- **Spool**: storer-side store of sealed files awaiting the storer's
+  push sweep.
 - **Inbox**: receiver-side directory where decrypted files land.
 
 ## Tailcat mapping
@@ -44,13 +45,12 @@ on a fixed port (default 2569).
 3. **Storer send**: target down → sender dials a storer, same `Offer`
    (target is the third cat) → storer copies the opaque sealed stream to
    its spool, `Ack{Kind: stored}`.
-4. **Fetch**: a cat periodically (and on daemon start) asks every known
-   storer `Pending{Query}` → `Pending{Files}` → for each: `Fetch{ID}` →
-   storer replays the sealed stream → recipient decrypts, saves, `Ack{Kind:
-   delivered}` → storer deletes from spool. Additionally the storer runs a
-   **push sweep** on its poll tick and right after each deposit: any held
-   file whose target is in the storer's roster is offered directly over a
-   fresh connection, so an online target receives its files without polling.
+4. **Push sweep**: the storer delivers any held file whose target is in
+   its roster — on its poll tick and right after each deposit — by
+   offering it directly over a fresh connection: `Offer` → `Answer{OK}` →
+   sealed stream → recipient decrypts, saves, `Ack{Kind: delivered}` →
+   storer deletes from spool. (The old target-driven pull — `Pending`
+   query, `Fetch{ID}` — was removed once the sweep covered it.)
 5. Sealed streams are chunked (64 KiB XChaCha20-Poly1305 chunks under a
    per-stream file key sealed to the recipient's node key, age's STREAM
    construction), so arbitrarily large files transfer without either side
@@ -69,23 +69,21 @@ sender's outbox (referencing the source file) and the daemon retries
   chunks; the sealed stream is self-contained and storer-opaque.
 - `roster/` — `Cat`, LWW merge, JSON persistence, name lookup.
 - `protocol/` — message types, CBOR framing, read/write helpers.
-- `store/` — storer spool: put/pending/fetch/delete/TTL sweep. Atomic writes.
+- `store/` — storer spool: put/delete/TTL sweep. Atomic writes.
 - `daemon/` — the mesh runtime: connection serving, outbox retry loop,
-  fetch loop, roster sync, IPC socket. Depends on a `Transport` interface so
+  spool push sweep, roster sync, IPC socket. Depends on a `Transport` interface so
   tests run over loopback TCP while production uses tailcat.
-- `main.go` — `clow` CLI: `init`, `add`, `send`, `fetch`, `cats`, `storer`,
-  `daemon`. Thin IPC client for everything except `init`.
+- `main.go` — `clow` CLI: `init`, `send`, `storer`, `daemon`, and the rest
+  of the command set. Thin IPC client for everything except `init`.
 
 ## CLI surface
 
     clow init [--name NAME] [--dir DIR]      # create identity, print key info
     clow daemon [--port N]                   # run the mesh daemon
     clow add <ADDR> --name NAME              # trust a cat (out of band)
-    clow cats                                # list roster + me
     clow send <CAT> <FILE>                   # async send
-    clow fetch                               # poll storers now
     clow storer on|off                       # declare storer role
-    clow status                              # outbox, spool and roster summary
+    clow status [--addresses]                # outbox, spool and roster summary
 
 Config dir default: `$XDG_CONFIG_HOME/clowder` or `~/.config/clowder`.
 Files: `identity.json`, `roster.json`, `outbox/`, `spool/`, `inbox/`, `clow.sock`.

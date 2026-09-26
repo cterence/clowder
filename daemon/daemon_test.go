@@ -16,7 +16,6 @@ import (
 
 	"clowder/protocol"
 	"clowder/roster"
-	"clowder/store"
 )
 
 // TestMain points t.TempDir() at a short-path root. Every daemon test
@@ -299,82 +298,6 @@ func TestStorerRelayForOfflineCat(t *testing.T) {
 	}, "the push-path receipt to reach milo, not the storer")
 	if _, ok := storer.receipts.get(id); ok {
 		t.Fatal("storer recorded a receipt meant for the original sender")
-	}
-}
-
-// TestStorerPullByFetch covers the explicit pull path: a target that
-// asks the storer directly receives the file even if the sweep has not
-// fired.
-func TestStorerPullByFetch(t *testing.T) {
-	milo := startDaemon(t, "milo")
-	storer := startDaemon(t, "storer")
-	if err := storer.SetStorer(true, 1<<30); err != nil {
-		t.Fatal(err)
-	}
-	trust(t, milo, storer)
-	trust(t, storer, milo)
-
-	niko, nikoDir := offlineCat(t)
-	addCat(t, milo, niko)
-	// The storer never learns niko (no roster entry), so its sweep
-	// cannot push: only niko's explicit fetch can retrieve the file.
-
-	src := writeSource(t, "pulled nap")
-	if _, err := milo.Send("niko", src); err != nil {
-		t.Fatal(err)
-	}
-	waitFor(t, func() bool { return storer.Spool().Count() == 1 }, "storer to hold the file")
-
-	// Wake the target; only its explicit fetch can reach the file,
-	// since the storer cannot sweep to a cat it never learned.
-	nikoD := startDaemonAt(t, nikoDir)
-	trust(t, nikoD, storer)
-	nikoD.Poll(context.Background())
-
-	waitFor(t, func() bool {
-		got, ok := inboxFile(t, nikoD, "nap.txt")
-		return ok && got == "pulled nap"
-	}, "niko to pull the held file with a direct fetch")
-	waitFor(t, func() bool { return storer.Spool().Count() == 0 }, "storer to drop the delivered file")
-}
-
-// TestHandleFetchClientVanishes pins the fetch path against a fetcher
-// that reads the offer and then drops the connection without answering
-// (a conn closed mid-exchange — teardown's closeLiveConns, a killed
-// client, a network cut). ReadMsg then returns a nil message, which
-// handleFetch must not dereference.
-func TestHandleFetchClientVanishes(t *testing.T) {
-	storer := startDaemon(t, "storer")
-	meta := store.Meta{
-		ID:         "transfer-vanish",
-		FileName:   "nap.txt",
-		Size:       4,
-		SHA256:     "0000",
-		From:       "milo",
-		TargetKey:  "nodekey:vanisher",
-		TargetName: "vanisher",
-	}
-	if err := storer.Spool().Put(meta, strings.NewReader("abcd")); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-
-	server, client := net.Pipe()
-	defer func() { _ = server.Close() }()
-	pc := protocol.NewConn(server)
-	fetcher := protocol.NewConn(client)
-	go func() {
-		// Read the offer, then vanish: no Answer, no stream.
-		if _, err := fetcher.ReadMsg(); err == nil {
-			_ = fetcher.Close()
-		}
-	}()
-
-	hello := &protocol.Hello{Name: "vanisher", Key: "nodekey:vanisher"}
-	if storer.handleFetch(pc, hello, &protocol.Fetch{ID: meta.ID}) {
-		t.Fatal("handleFetch reports the connection may continue after the fetcher vanished")
-	}
-	if storer.Spool().Count() != 1 {
-		t.Fatalf("spool holds %d files, want 1 (no delete without a delivery ack)", storer.Spool().Count())
 	}
 }
 

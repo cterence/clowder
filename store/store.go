@@ -21,7 +21,7 @@ import (
 	"clowder/persist"
 )
 
-// DefaultTTL is how long a spooled file survives without being fetched.
+// DefaultTTL is how long a spooled file survives undelivered.
 const DefaultTTL = 7 * 24 * time.Hour
 
 // ErrNotFound is returned when no spooled file matches the request.

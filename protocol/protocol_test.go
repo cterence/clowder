@@ -23,10 +23,6 @@ func TestMessageRoundTrip(t *testing.T) {
 		{Answer: &Answer{ID: "id1", OK: true}},
 		{Answer: &Answer{ID: "id1", OK: false, Reason: "not a storer"}},
 		{Ack: &Ack{ID: "id1", Kind: AckStored}},
-		{Pending: &Pending{Query: true}},
-		{Pending: &Pending{Files: []PendingFile{{ID: "id1", FileName: "nap.txt",
-			Size: 77, From: "fluff", SHA256: "aa11", StoredAt: 100}}}},
-		{Fetch: &Fetch{ID: "id1"}},
 		{PairAck: &PairAck{}},
 	}
 

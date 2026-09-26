@@ -120,7 +120,7 @@ func (d *Daemon) deliverHeld(ctx context.Context, cat roster.Cat, m store.Meta) 
 	if err := d.spool.Delete(m.ID); err != nil {
 		d.cfg.logf("clowder: deleting delivered %s: %v", m.ID, err)
 	}
-	d.stats.add(func(s *Stats) { s.Fetched++ })
+	d.stats.add(func(s *Stats) { s.Pushed++ })
 	d.cfg.logf("clowder: pushed held %s to %s", m.FileName, cat.Name)
 	return nil
 }

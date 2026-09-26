@@ -17,7 +17,7 @@ type Stats struct {
 	Received      int64 `json:"received"`   // files accepted into the inbox
 	ReceivedBytes int64 `json:"received_bytes"`
 	Spooled       int64 `json:"spooled"` // files parked for offline cats
-	Fetched       int64 `json:"fetched"` // held files replayed to their target
+	Pushed        int64 `json:"pushed"`  // held files pushed to their target by the sweep
 }
 
 // loadStats reads the counters from a config dir, starting at zero for a

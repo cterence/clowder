@@ -225,7 +225,9 @@ func TestRelayedOfferFromDistrustedSenderRefused(t *testing.T) {
 	if _, err := nikoD.Distrust("milo"); err != nil {
 		t.Fatalf("Distrust: %v", err)
 	}
-	nikoD.Poll(context.Background())
+	// The storer's sweep pushes; the offer names a distrusted sender
+	// and must be refused — the file stays held, the inbox stays empty.
+	box.sweepSpoolFor(context.Background(), nikoD.Me().Key)
 	waitFor(t, func() bool { return box.Spool().Count() == 1 },
 		"the refused file to stay held")
 	des, err := os.ReadDir(nikoD.InboxDir())
