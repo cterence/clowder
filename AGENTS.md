@@ -119,23 +119,45 @@ module; a signed lease beats leader election at this scale.
 Ordered by complexity, easiest first; do not reorder without a
 reason. Update this list and the README when something ships.
 
-1. **Pairing hardening: offline guessability + PAKE** — the pairing
-   words currently derive the WireGuard static keys and PSK directly
-   (derivePairing, daemon/pairing.go), and the file comment claims
-   guessing is "active-only, nothing verifiable offline". That claim
-   is doubtful: WireGuard's handshake MAC1 is keyed by the
-   responder's static public key, which is itself derived from the
-   words, so anyone who records one pairing handshake on the
-   invite's DERP region can test candidate word codes offline —
-   the 50-bit code is weaker than designed, and this is exactly the
-   attack a PAKE exists to prevent (see magic-wormhole's SPAKE2).
-   Phase 1 (cheap): verify the MAC1 brute-force reasoning against a
-   captured tailcat pairing handshake, and rate-limit/alert on join
-   failures meanwhile. Phase 2, if confirmed: run a real PAKE
-   (SPAKE2 or OPAQUE) over the pairing channel and derive the
-   tunnel keys from its output instead of from the words, or grow
-   the code length as a stopgap. Touches pairing + transport: full
-   CLOWDER_INTEGRATION run required after. The one-round no-ack
+1. **Pairing hardening: offline guessability + PAKE** — Phase 1
+   (verify the offline-guess reasoning) is CLOSED as of 2026-09-26:
+   CONFIRMED. The old file comment claimed guessing was
+   "active-only, nothing verifiable offline" — false. wireguard-go
+   keys every handshake's MAC1 with blake2s("mac1----" ||
+   responderStaticPub), and derivePairing derives the inviter's
+   pairing-server static public key from the five words, so a
+   recorded pairing handshake (the DERP relay operator, or whoever
+   compromises a relay, can record one) is an offline oracle for
+   candidate word codes. Pinned in-repo by
+   TestPairingMAC1OfflineVerifiable (candidate tester reproduces the
+   captured MAC from the words alone) and
+   BenchmarkPairingCandidateTest (~66µs per candidate through the
+   full derive; an attacker's inviter-only pipeline keeps the X25519
+   at tens of µs). Exploit window math: the words are one-off and
+   expire in ~5 minutes, so a from-scratch 50-bit search cannot
+   finish inside the window — but the pub key table is PRECOMPUTABLE
+   once and universal against any future capture, after which each
+   candidate test is two blake2s and a large farm fits 2^50 tests
+   inside the TTL. Borderline-feasible for a well-resourced
+   adversary: weaker than designed, exactly the attack a PAKE
+   exists to prevent. Rate-limiting/alerting on join failures was
+   evaluated and rejected: a wrong-word join dies in the WireGuard
+   handshake, invisible to the daemon layer, so there is nothing to
+   rate-limit or alert on — active guessing is already cost-
+   hopeless and the only real surface is the offline oracle. What
+   remains is Phase 2, a product decision between: (a) stopgap —
+   grow pairWordCount 5 → 8 (80 bits makes even the precompute
+   absurd; trivial change, UX cost: typing three more words), or
+   (b) the principled fix — pairing v2: the pairing server's key
+   becomes random per invite and rides IN the code (the routing
+   part is public, ~52 chars; the words stay secret), the tunnel it
+   describes is unauthenticated, and a PAKE (SPAKE2) over that
+   tunnel authenticates the words and derives the PairIntro channel
+   keys — removing the oracle entirely (no offline test exists
+   because no key material is word-derived). (b) changes the
+   invite/join UX and the pairing protocol shape; touches pairing +
+   transport: full CLOWDER_INTEGRATION run required after either.
+   The one-round no-ack
    exchange split-brain (inviter paired and invite retired while the
    joiner was stranded, seen on CI) is CLOSED as of 2026-09-26: the
    exchange is now intro / intro / ack / commit-confirm (see

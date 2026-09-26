@@ -7,9 +7,15 @@ package daemon
 // the same words, derives the same material, and the two daemons meet on
 // a fixed DERP region. Over that throwaway WireGuard tunnel each sends
 // a PairIntro carrying its real name and address, and both add each
-// other to their rosters. The words never travel, no private key is
-// ever derived by the "wrong" side, and guessing is active-only: wrong
-// words fail the meow handshake, with nothing verifiable offline.
+// other to their rosters. The words never travel, and no private key is
+// ever derived by the "wrong" side. Active guessing is hopeless (a
+// wrong-word join dies in the WireGuard handshake, invisible to the
+// daemon layer, before any protocol byte is exchangeable). But guessing
+// is NOT purely active: the handshake's MAC1 is keyed by the inviter's
+// word-derived static public key, so a recorded pairing handshake is
+// an offline oracle for candidate word codes — see
+// pairing_mac1_test.go and AGENTS pending item 1 for the finding,
+// the window math, and the pairing-v2 fix.
 
 import (
 	"context"
