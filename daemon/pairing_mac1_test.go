@@ -14,7 +14,7 @@ package daemon
 // its static public key from the code words. So a candidate word code
 // can be tested entirely offline: derive, hash, MAC, compare.
 //
-// Mitigations (see AGENTS pending item 1): the invite's TTL and
+// Mitigations (see the "Why 8 words" invariant in AGENTS.md): the invite's TTL and
 // one-off-ness bound the exploit window — the words must be cracked
 // before the pairing completes or expires (~5 minutes). The naive
 // per-candidate cost is one X25519 plus two blake2s (the benchmark

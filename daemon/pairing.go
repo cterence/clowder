@@ -14,8 +14,8 @@ package daemon
 // is NOT purely active: the handshake's MAC1 is keyed by the inviter's
 // word-derived static public key, so a recorded pairing handshake is
 // an offline oracle for candidate word codes — see
-// pairing_mac1_test.go and AGENTS pending item 1 for the finding,
-// the window math, and the pairing-v2 fix.
+// pairing_mac1_test.go and the "Why 8 words" invariant in AGENTS.md
+// for the finding, the window math, and the pairing-v2 fix.
 
 import (
 	"context"

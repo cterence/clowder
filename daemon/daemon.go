@@ -1360,7 +1360,7 @@ func (d *Daemon) fetchOne(pc *protocol.Conn, f protocol.PendingFile) error {
 // KB per tick at homelab scale, while the round-robin's O(N)-tick
 // cadence left even an always-online peer unseen for minutes (the
 // wake-gap incidents). The per-cycle bytes are O(N²) across the
-// clowder; revisit if rosters ever grow large (pending item 4).
+// clowder; revisit if rosters ever grow large (pending item 3).
 // No extra timeout here: the transport bounds its own dial (its 10s
 // dead-peer probe) and the protocol bounds its messages (msgTimeout),
 // so an offline peer costs one bounded dial, in parallel — not a
