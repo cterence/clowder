@@ -228,7 +228,7 @@ inboxPath (FuzzInboxPath found a real infinite loop: a NUL byte in a
 file name made os.Stat fail EINVAL, not IsNotExist, spinning the
 collision loop forever — names are now control-stripped and the loop
 bounded), the storer-visible offer metadata documented in the README
-(sealing it remains future work), and instant status paths (status
+(sealing it remains future work), instant status paths (status
 never probes — it answers from a daemon-side path cache that
 refreshPaths maintains in the background: every roster cat pinged in
 parallel once at daemon start and on every poll tick, 1s deadline per
@@ -241,7 +241,17 @@ cut that skipped probing cats not seen within 10 minutes lost route
 lines for the first minutes after a daemon restart, when liveness is
 still empty; pinned by TestRefreshPathsProbesEveryCat,
 TestPathSnapshotNeverProbes and TestRefreshPathsProbeTimeoutIsBounded
-via a fake Pinger). Also shipped
+via a fake Pinger), and the startup sync burst (syncBurst dials every
+roster peer in parallel once at Run start, 10s per dial, so a cat
+that wakes up converges in seconds instead of waiting for the
+one-peer-per-tick round-robin to reach the one online peer that
+knows what changed — the homelab2 incident's 3.5-minute gap was
+exactly this: it woke, but needed macbook's round-robin tick to
+learn the newly deployed storer before the storer's pushes stopped
+being rejected as unknown keys; the burst rides the drain WaitGroup
+and an offline peer costs one bounded dial in parallel, not a tick;
+pinned by TestStartupSyncBurst with a waker whose poll tick is a
+minute out, so only the burst can deliver). Also shipped
 earlier today:
 duplicate-name
 hardening (pairing refuses a join whose name another key already

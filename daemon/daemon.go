@@ -43,6 +43,10 @@ const (
 	// msgTimeout bounds reads of a single protocol message; long enough
 	// for a slow peer's handshake, short enough to reclaim dead conns.
 	msgTimeout = 2 * time.Minute
+	// syncBurstTimeout bounds one startup-burst dial: the transport's
+	// own dead-peer probe is 10s, so an offline peer costs one bounded
+	// dial, never a wedged one.
+	syncBurstTimeout = 10 * time.Second
 	// streamTimeout bounds a whole sealed-stream transfer.
 	streamTimeout = 30 * time.Minute
 	// maxConcurrentTransfers bounds daemon-wide streaming transfers.
@@ -428,6 +432,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// Warm the path cache immediately instead of waiting for the
 	// first poll tick, so an early `clow status` shows routes.
 	d.goBg(func() { d.refreshPaths(context.WithoutCancel(ctx)) })
+	// A cat that just started — woke up, restarted — converges now:
+	// dial every peer once instead of waiting for the round-robin.
+	d.goBg(func() { d.syncBurst(context.WithoutCancel(ctx)) })
 
 	for {
 		select {
@@ -1220,6 +1227,30 @@ func (d *Daemon) syncPeers(ctx context.Context) {
 		return
 	}
 	_ = pc.Close()
+}
+
+// syncBurst connects to every roster peer in parallel, exchanging
+// rosters with each one that answers. It runs once at Run start: a
+// cat that wakes up cannot learn anything until it talks to someone,
+// and the steady-state one-peer-per-tick sync takes minutes to reach
+// the one online peer that knows what changed while it was out. An
+// offline peer costs one bounded dial, in parallel — not a tick each.
+func (d *Daemon) syncBurst(ctx context.Context) {
+	var wg sync.WaitGroup
+	for _, c := range d.ros.All() {
+		wg.Add(1)
+		go func(c roster.Cat) {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(ctx, syncBurstTimeout)
+			defer cancel()
+			pc, err := d.connect(ctx, c)
+			if err != nil {
+				return
+			}
+			_ = pc.Close()
+		}(c)
+	}
+	wg.Wait()
 }
 
 // ---- handshake helpers ----

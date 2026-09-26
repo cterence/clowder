@@ -388,6 +388,63 @@ func TestRosterPropagation(t *testing.T) {
 	}
 }
 
+// TestStartupSyncBurst pins the wake path: a cat that starts cold
+// (woke up, daemon restarted) must learn what changed while it was
+// out within seconds, by dialing every roster peer at Run start —
+// not by waiting for the one-peer-per-tick round-robin to reach the
+// one online peer that knows. The waker's poll tick is a minute out,
+// so only the startup burst can deliver the third cat.
+func TestStartupSyncBurst(t *testing.T) {
+	macbook := startDaemon(t, "macbook")
+	niko, _ := offlineCat(t)
+	addCat(t, macbook, niko)
+
+	wakerDir := t.TempDir()
+	if err := Init(wakerDir, "waker"); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seed := roster.New()
+	if err := seed.SetPath(filepath.Join(wakerDir, "roster.json")); err != nil {
+		t.Fatalf("SetPath: %v", err)
+	}
+	if err := seed.Add(macbook.Me()); err != nil {
+		t.Fatalf("seeding waker's roster with macbook: %v", err)
+	}
+
+	// The steady-state sync (one peer per poll tick) cannot fire for a
+	// minute: anything the waker learns during the test comes from the
+	// startup burst.
+	waker, err := New(Config{
+		Dir:        wakerDir,
+		RetryEvery: 150 * time.Millisecond,
+		PollEvery:  time.Minute,
+		Logf:       t.Logf,
+	}, &LocalTransport{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// macbook must allow the waker's client key for the burst's
+	// handshake to complete (they were paired before the waker slept).
+	addCat(t, macbook, waker.Me())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	t.Cleanup(func() {
+		cancel()
+		<-runDone // Run drained its background work before returning
+	})
+	go func() {
+		_ = waker.Run(ctx)
+		close(runDone)
+	}()
+	waitFor(t, func() bool { return waker.Me().Addr != "" }, "waker to listen")
+
+	waitFor(t, func() bool {
+		_, ok := waker.Roster().GetByKey(niko.Key)
+		return ok
+	}, "waker to learn niko via the startup sync burst")
+}
+
 func TestForgetClearsOutbox(t *testing.T) {
 	milo := startDaemon(t, "milo")
 	niko, _ := offlineCat(t)
