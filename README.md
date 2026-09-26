@@ -38,17 +38,21 @@ default; change with `clow inbox --set DIR`). Config lives under
 
 ## Commands
 
-    clow init [--name NAME] [--dir DIR] [--inbox DIR]   create the identity
-    clow daemon [--port N]                              run the mesh daemon
+    clow init [--name NAME] [--dir CONFIG_DIR] [--inbox INBOX_DIR]
+                                                        create the identity
+    clow daemon [--port N] [--health ADDR] [--derp-map URL]
+                                                        run the mesh daemon
     clow invite                                         5-word pairing code (5 min, one join)
     clow join <CODE>                                    pair with the inviter
     clow send <CAT> <FILE>                              async send (queues if offline)
-    clow fetch                                         pull files storers hold for me
-    clow inbox [--set DIR]                             list received files / change inbox
+    clow fetch                                          pull files storers hold for me
+    clow inbox [--set DIR]                              list received files / change inbox
     clow cats                                           list the clowder
     clow storer on|off|dropbox                          volunteer to hold files for others
                                                         (dropbox: third parties only)
     clow outbox clear                                   drop pending sends
+    clow rotate                                         new address, announced to the clowder
+    clow forget <CAT>                                   drop a cat from the roster
     clow status                                         config, stats, outbox, spool, roster
     clow reset [--yes]                                  wipe this cat (identity, rosters)
 
@@ -71,7 +75,10 @@ runs through the CLI inside the container:
 
 Environment: `CLOWDER_DIR` (config path), `CLOWDER_NAME` (cat name;
 defaults to the hostname, i.e. the pod name), `CLOWDER_STORER`
-(`on`/`off`/`dropbox`, applied on every start).
+(`on`/`off`/`dropbox`, applied on every start), `CLOWDER_HEALTH_ADDR`
+(optional HTTP probe address, e.g. `:8080`; also `clow daemon --health`),
+`CLOWDER_DERPMAP_URL` (URL of a JSON DERP map to use instead of
+tailcat's default; also `clow daemon --derp-map`).
 
 Things to know before running it on Kubernetes:
 
@@ -83,15 +90,17 @@ Things to know before running it on Kubernetes:
   not a horizontally-scaled service.
 - **DERP reachability**: the default DERP map is fetched from
   tailcat.dev at startup. In an air-gapped or egress-restricted
-  cluster you need a self-hosted DERP server and a way to point
-  clowder at it (not yet configurable — tracked in AGENTS.md).
+  cluster, run your own DERP relays and point the daemon at your map
+  with `CLOWDER_DERPMAP_URL` (or `clow daemon --derp-map`).
 - **Clocks matter**: roster merges are last-write-wins on timestamps,
   so keep node clocks sane (NTP).
 - **NAT**: outbound UDP enables direct peer-to-peer paths when the CNI
   allows it; otherwise everything relays over DERP, which always
   works but is slower.
-- **Probes**: there is no HTTP health endpoint yet; an exec probe on
-  `clow status` works.
+- **Probes**: set `CLOWDER_HEALTH_ADDR` (e.g. `:8080`) and point
+  liveness/readiness probes at `http://<pod>:8080/healthz` — it answers
+  `200 ok` while the daemon runs. The address needs a `containerPort`
+  but no Service; without it, an exec probe on `clow status` works.
 
 ## Design
 

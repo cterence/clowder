@@ -176,6 +176,15 @@ func deriveCheckWords(words []string) ([]string, error) {
 // Daemon pairing state is in pair.go fields: pairMu, pairSrv, pairLn,
 // pairDone.
 
+// fetchDERPMap fetches the DERP map from url, or from tailcat's
+// default map URL when url is empty.
+func fetchDERPMap(ctx context.Context, url string) (*tailcfg.DERPMap, error) {
+	if url == "" {
+		return tailcat.FetchDERPMap(ctx)
+	}
+	return tailcat.FetchDERPMap(ctx, tailcat.DERPMapURL(url))
+}
+
 // StartInvite creates a pairing code, starts listening for one joiner
 // on the pairing identity, and returns the code. The invite expires
 // after [pairTTL] or the first successful join, and a new invite
@@ -195,7 +204,7 @@ func (d *Daemon) StartInvite(ctx context.Context) (string, error) {
 	// Pick our nearest DERP region explicitly: the joiner must be told
 	// which region to meet on, and a resolved tailcat address does not
 	// carry its region ID (the wire format zeroes it).
-	dm, err := tailcat.FetchDERPMap(ctx)
+	dm, err := fetchDERPMap(ctx, d.cfg.DERPMapURL)
 	if err != nil {
 		return "", fmt.Errorf("daemon: fetching DERP map: %w", err)
 	}
@@ -333,9 +342,10 @@ func (d *Daemon) Join(ctx context.Context, code string) error {
 		RegionID:          tailcfg.DERPRegionID(region),
 	}
 	c := &tailcat.Client{
-		Server: ci.Addr(),
-		Key:    keys.joinerPriv,
-		Logf:   d.cfg.Logf,
+		Server:     ci.Addr(),
+		Key:        keys.joinerPriv,
+		DERPMapURL: d.cfg.DERPMapURL,
+		Logf:       d.cfg.Logf,
 	}
 	conn, err := c.DialTCPPort(ctx, DefaultPort)
 	if err != nil {

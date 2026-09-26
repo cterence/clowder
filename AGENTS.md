@@ -26,12 +26,24 @@ path must be exercised by a daemon integration test.
 
     main.go          CLI (thin IPC client; init/reset are local file ops)
     envelope/        chunked e2e sealing (age-style STREAM over the node keypair)
+    persist/         durable local files: atomic writes + JSON ledger load/save
     roster/          cats, LWW merge, persistence; identity = node key
     protocol/        CBOR messages, 4-byte framing; sealed streams are raw bytes
     store/           storer spool: atomic writes, TTL, delete-on-ack
     daemon/          the runtime: serve/send/fetch/sync, pairing, IPC, stats,
                      TailcatTransport (production) + LocalTransport (tests)
     docs/specs/      the design doc (protocol, envelope, roster rules)
+
+## Shared code — check before you write
+
+Before writing any file-persistence, JSON-ledger or atomic-write
+helper, check `persist/` (WriteFunc, WriteStream, LoadJSON, SaveJSON)
+and extend it rather than re-rolling a per-package copy — identity,
+me.json, stats, blocklist, outbox, roster and spool all go through it.
+Likewise for protocol replies: use `protocol.Conn.Answer` and `.Ack`
+instead of hand-assembling Messages. Shared helpers live in the
+package that owns the concern (never a utils/ dump); if two packages
+have grown the same private helper, hoist it there.
 
 ## Key invariants
 
@@ -57,52 +69,25 @@ path must be exercised by a daemon integration test.
 
 ## Pending work
 
-Ordered; do not reorder without a reason. Update this list and the
-README when something ships.
+Ordered by complexity, easiest first; do not reorder without a
+reason. Update this list and the README when something ships.
 
-1. **Leave with signed forget-me gossip + roster entry signing** —
-   derive an Ed25519 keypair from the node key seed
-   (ed25519.NewKeyFromSeed(nodeRaw32)); announce the sign-public in
-   Hello/roster entries; `clow leave` broadcasts a signed {leaver,
-   timestamp} to all reachable peers; recipients drop the leaver
-   (roster, allowlist, spool) and re-broadcast once. Roster sync must
-   carry signed tombstones that always outrank later unsigned re-adds
-   (offline peers catch up on next sync). The SAME sign key must
-   authenticate roster entries: today any trusted cat can inject or
-   override entries via LWW (brick an entry with a broken address, or
-   duplicate a name to capture sends). Merge should require a valid
-   signature on entries for keys already known.
-2. **Multiple clowders** — named clowders: per-clowder roster files,
-   `--clowder` on invite/join/send, Hello carries the clowder name so a
-   connection routes to the right roster. One identity, one daemon,
-   clowders stay disjoint (flat sync would otherwise merge them).
-   Largest refactor; do last, design tombstones against the final
-   roster shape. Revisit sync scaling here too (full-roster sync is
-   O(N²) bytes per cycle; one-peer-per-tick means propagation latency
-   grows linearly).
-3. **Android app client** — a clowder client for Android. tailcat has
-   Android support (see its android_linux.go and INSTALL.md), so the
-   shape is: the daemon packages as an Android library (aar) or runs in
-   a foreground service, with a thin UI for init/invite/join/send/
-   inbox. Decide the UI approach (plainCompose/gomobile) before
-   starting; the daemon package itself must not grow Android deps.
-4. **Self-hosted DERP map config** — an env/flag (e.g.
-   CLOWDER_DERPMAP_URL) plumbed into the tailcat Server/Clients
-   (DERPMapURL) so air-gapped clusters can run their own DERP relays.
-   Needed for serious Kubernetes use; see the README container section.
-5. **HTTP health endpoint** for container probes (currently exec
-   `clow status`).
-6. **Nix packaging** — a flake `packages.default` building the clow
+1. **Nix packaging** — a flake `packages.default` building the clow
    binary (buildGoModule; needs a vendorHash — compute with a first
    `nix build`, then pin). Keep the devShell as the default output.
-7. **Delivery receipts** — approved design, not yet built: when a
-   target receives a file (direct or via storer) it seals a tiny
-   receipt {transferID, fileName, deliveredAt} to the sender's node key
-   with its own (sealed-box authenticated, storer-opaque) and relays it
-   direct-or-via-storer like any small message; the sender keeps a
-   receipts.json ledger shown in `clow status`, closing the loop for
-   sends that left the outbox while the sender was offline.
-8. **Distrust a cat (local, one-directional)** — `clow distrust <CAT>`
+2. **pprof pass** — expose net/http/pprof on the health endpoint
+   (CLOWDER_HEALTH_ADDR already serves HTTP; gate /debug/pprof behind
+   an opt-in flag or env, never on by default — profiling endpoints
+   leak internals and must not ride along on every health port).
+   Profile the hot paths and record findings: CPU and heap during the
+   64 MiB CLOWDER_INTEGRATION transfer plus a loopback load test, and
+   goroutine/mutex/block profiles of a busy multi-peer daemon. Look
+   for per-chunk allocations on the sealed-stream path (streaming is a
+   core invariant, so large or frequent buffers are a smell), spool
+   read/write buffer sizes, goroutine leaks (per-dial engines are
+   related to the idle-eviction item below), and roster-sync byte
+   churn. Land the cheap wins as follow-ups with before/after numbers.
+3. **Distrust a cat (local, one-directional)** — `clow distrust <CAT>`
    / `clow trust <CAT>` to undo: a persisted blocklist (keys, in
    blocked.json, NOT propagated — one cat's decision, unlike the
    planned signed-leave gossip). A distrusted cat is refused both
@@ -114,7 +99,14 @@ README when something ships.
    add-only (no RemoveAllowedClient) — so forget today leaves the
    cat's key able to connect; the serveConn-level check must back
    both features (or upstream tailcat grows a removal API).
-9. **Hardening batch** (from the 2026-09-26 design review):
+4. **Delivery receipts** — approved design, not yet built: when a
+   target receives a file (direct or via storer) it seals a tiny
+   receipt {transferID, fileName, deliveredAt} to the sender's node key
+   with its own (sealed-box authenticated, storer-opaque) and relays it
+   direct-or-via-storer like any small message; the sender keeps a
+   receipts.json ledger shown in `clow status`, closing the loop for
+   sends that left the outbox while the sender was offline.
+5. **Hardening batch** (from the 2026-09-26 design review):
    - Inbox quota / free-space check on receive (a trusted cat can
      fill the receiver's disk today; storers have capacity, direct
      receivers do not).
@@ -130,8 +122,76 @@ README when something ships.
    - Global transfer concurrency cap (claims are per-ID only).
    - Fuzz targets for ReadMsg/parsePairCode/inboxPath (untrusted
      input decode paths).
+6. **Pairing hardening: offline guessability + PAKE** — the pairing
+   words currently derive the WireGuard static keys and PSK directly
+   (derivePairing, daemon/pairing.go), and the file comment claims
+   guessing is "active-only, nothing verifiable offline". That claim
+   is doubtful: WireGuard's handshake MAC1 is keyed by the
+   responder's static public key, which is itself derived from the
+   words, so anyone who records one pairing handshake on the
+   invite's DERP region can test candidate word codes offline —
+   the 50-bit code is weaker than designed, and this is exactly the
+   attack a PAKE exists to prevent (see magic-wormhole's SPAKE2).
+   Phase 1 (cheap): verify the MAC1 brute-force reasoning against a
+   captured tailcat pairing handshake, and rate-limit/alert on join
+   failures meanwhile. Phase 2, if confirmed: run a real PAKE
+   (SPAKE2 or OPAQUE) over the pairing channel and derive the
+   tunnel keys from its output instead of from the words, or grow
+   the code length as a stopgap. Touches pairing + transport: full
+   CLOWDER_INTEGRATION run required after.
+7. **Leave with signed forget-me gossip + roster entry signing** —
+   derive an Ed25519 keypair from the node key seed
+   (ed25519.NewKeyFromSeed(nodeRaw32)); announce the sign-public in
+   Hello/roster entries; `clow leave` broadcasts a signed {leaver,
+   timestamp} to all reachable peers; recipients drop the leaver
+   (roster, allowlist, spool) and re-broadcast once. Roster sync must
+   carry signed tombstones that always outrank later unsigned re-adds
+   (offline peers catch up on next sync). The SAME sign key must
+   authenticate roster entries: today any trusted cat can inject or
+   override entries via LWW (brick an entry with a broken address, or
+   duplicate a name to capture sends). Merge should require a valid
+   signature on entries for keys already known.
+8. **Android app client** — a clowder client for Android. tailcat has
+   Android support (see its android_linux.go and INSTALL.md), so the
+   shape is: the daemon packages as an Android library (aar) or runs in
+   a foreground service, with a thin UI for init/invite/join/send/
+   inbox. Decide the UI approach (plainCompose/gomobile) before
+   starting; the daemon package itself must not grow Android deps.
+9. **Multiple clowders** — named clowders: per-clowder roster files,
+   `--clowder` on invite/join/send, Hello carries the clowder name so a
+   connection routes to the right roster. One identity, one daemon,
+   clowders stay disjoint (flat sync would otherwise merge them).
+   Largest refactor; do last, design tombstones against the final
+   roster shape. Revisit sync scaling here too (full-roster sync is
+   O(N²) bytes per cycle; one-peer-per-tick means propagation latency
+   grows linearly).
 
-Shipped recently (context for a fresh session): storer capacity
+Shipped recently (context for a fresh session): a self-hosted DERP map
+config (CLOWDER_DERPMAP_URL / `clow daemon --derp-map`, plumbed into the
+server, dials and both pairing sides; loopback-tested against an
+httptest-served map), a dead-peer dial fix (tailcat's meow Ping is
+one-shot per client, so a cached client reported a just-offline peer
+alive and the dial wedged in netstack SYN retries for the whole
+delivery context, starving the storer fallback; Dial now probes with a
+real disco ping and bounds the tunnel dial), a black-box end-to-end
+integration test (integration_test.go at the repo root: the test
+binary re-execs itself as the real clow binary, three real daemon
+processes pair with real codes, send direct, relay via a storer while
+the target is offline and pull it back with `clow fetch`; run with
+CLOWDER_INTEGRATION=1 like the daemon package's Integration tests),
+the engine-leak integration test redesigned to count wireguard
+goroutines and poll for them to drain (the old one-shot global
+NumGoroutine sample measured in-flight churn, not leaks), a `persist/`
+package consolidating every durable-file write (atomic temp+rename,
+LoadJSON/SaveJSON ledger helpers; roster, blocklist and me/identity
+saves are now atomic, where the roster and blocklist were
+torn-write-vulnerable before), protocol.Conn Answer/Ack helpers
+replacing hand-built Messages, an HTTP health endpoint
+for container probes (`clow daemon --health` / CLOWDER_HEALTH_ADDR,
+serving 200 "ok" on / and /healthz, closed with the daemon), a
+daemon-test harness fix (TestMain points TMPDIR at a short /tmp path;
+the default macOS TMPDIR overflowed the unix socket path limit, so
+long-named tests died at the IPC listen), storer capacity
 (`clow storer on --max 10G`, required to enable; deposits are refused
 when they would overflow, with an atomic first-come-first-served
 reservation so concurrent deposits never oversubscribe; delivery

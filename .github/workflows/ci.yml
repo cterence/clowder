@@ -39,3 +39,19 @@ jobs:
         with:
           # Keep in sync with the nix devshell's golangci-lint.
           version: v2.13.2
+
+  # Real-DERP integration: pairing, transfer, storer relay and the full
+  # binary against tailcat.dev's public relays. Needs outbound network,
+  # which the loopback suite deliberately does not. These are also the
+  # transport tests loopback cannot authenticate (PeerKey paths).
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: CLOWDER_INTEGRATION=1 go test ./daemon/ -run Integration -count=1 -timeout 10m -v
+      - run: CLOWDER_INTEGRATION=1 go test . -run TestIntegrationEndToEnd -count=1 -timeout 10m -v

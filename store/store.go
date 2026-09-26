@@ -6,7 +6,6 @@
 package store
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +14,8 @@ import (
 	"path/filepath"
 	"slices"
 	"time"
+
+	"clowder/persist"
 )
 
 // DefaultTTL is how long a spooled file survives without being fetched.
@@ -74,15 +75,11 @@ func (s *Spool) Put(meta Meta, r io.Reader) error {
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return fmt.Errorf("store: creating spool dir: %w", err)
 	}
-	if err := writeStreamAtomic(s.blobPath(meta.ID), r, meta.Size); err != nil {
-		return err
+	if err := persist.WriteStream(s.blobPath(meta.ID), r, meta.Size); err != nil {
+		return fmt.Errorf("store: writing blob: %w", err)
 	}
-	metaJSON, err := json.Marshal(meta)
-	if err != nil {
-		return fmt.Errorf("store: encoding meta: %w", err)
-	}
-	if err := writeFileAtomic(s.metaPath(meta.ID), metaJSON); err != nil {
-		return err
+	if err := persist.SaveJSON(s.metaPath(meta.ID), meta); err != nil {
+		return fmt.Errorf("store: writing meta: %w", err)
 	}
 	return nil
 }
@@ -217,32 +214,3 @@ func (s *Spool) all() []Meta {
 
 func (s *Spool) blobPath(id string) string { return filepath.Join(s.dir, id+".blob") }
 func (s *Spool) metaPath(id string) string { return filepath.Join(s.dir, id+".meta.json") }
-
-// writeFileAtomic writes data to path via a temp file and rename.
-func writeFileAtomic(path string, data []byte) error {
-	return writeStreamAtomic(path, bytes.NewReader(data), int64(len(data)))
-}
-
-// writeStreamAtomic copies exactly size bytes from r to path via a temp
-// file and rename, so a crash never leaves a half-written stream visible.
-func writeStreamAtomic(path string, r io.Reader, size int64) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
-	if err != nil {
-		return fmt.Errorf("store: creating temp file: %w", err)
-	}
-	defer func() { _ = os.Remove(tmp.Name()) }() // no-op after a successful rename
-	if _, err := io.CopyN(tmp, r, size); err != nil {
-		tmp.Close()
-		return fmt.Errorf("store: writing temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("store: closing temp file: %w", err)
-	}
-	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
-		return fmt.Errorf("store: chmod temp file: %w", err)
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		return fmt.Errorf("store: renaming into place: %w", err)
-	}
-	return nil
-}

@@ -1,11 +1,11 @@
 package daemon
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sync"
+
+	"clowder/persist"
 )
 
 // Stats are a cat's lifetime counters, persisted in stats.json so they
@@ -24,11 +24,7 @@ type Stats struct {
 // fresh cat.
 func loadStats(dir string) Stats {
 	var s Stats
-	b, err := os.ReadFile(filepath.Join(dir, "stats.json"))
-	if err != nil {
-		return s
-	}
-	_ = json.Unmarshal(b, &s)
+	_, _ = persist.LoadJSON(filepath.Join(dir, "stats.json"), &s)
 	return s
 }
 
@@ -49,22 +45,9 @@ func (k *statsKeeper) add(fn func(*Stats)) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	fn(&k.s)
-	b, err := json.Marshal(k.s)
-	if err != nil {
-		return // counters keep running in memory; persisted next time
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(k.path), ".tmp-*")
-	if err != nil {
-		return
-	}
-	if _, err := tmp.Write(b); err == nil {
-		_ = tmp.Chmod(0o600)
-		_ = tmp.Close()
-		_ = os.Rename(tmp.Name(), k.path)
-	} else {
-		_ = tmp.Close()
-		_ = os.Remove(tmp.Name())
-	}
+	// Persist failures are ignored: the counters keep running in
+	// memory and persist on the next add.
+	_ = persist.SaveJSON(k.path, k.s)
 }
 
 // snapshot returns the current counters.

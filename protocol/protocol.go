@@ -209,6 +209,17 @@ func NewConn(c io.ReadWriteCloser) *Conn {
 // WriteMsg sends m. See the package-level function.
 func (c *Conn) WriteMsg(m *Message) error { return WriteMsg(c.c, m) }
 
+// Answer sends an Answer for a transfer ID: ok accepts it, otherwise
+// reason explains the refusal to the peer.
+func (c *Conn) Answer(id string, ok bool, reason string) error {
+	return c.WriteMsg(&Message{Answer: &Answer{ID: id, OK: ok, Reason: reason}})
+}
+
+// Ack sends an Ack of the given kind for a transfer ID.
+func (c *Conn) Ack(id, kind string) error {
+	return c.WriteMsg(&Message{Ack: &Ack{ID: id, Kind: kind}})
+}
+
 // ReadMsg receives one message. See the package-level function.
 func (c *Conn) ReadMsg() (*Message, error) { return ReadMsg(c.r) }
 

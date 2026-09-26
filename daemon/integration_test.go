@@ -1,25 +1,40 @@
 package daemon
 
 // Real-DERP integration tests. These hit the network (tailcat.dev's
-// DERP map and relays), so they never run in CI: set CLOWDER_INTEGRATION=1
-// to run them, e.g.
+// DERP map and relays): set CLOWDER_INTEGRATION=1 to run them locally,
+// e.g.
 //
 //	CLOWDER_INTEGRATION=1 go test ./daemon/ -run Integration -v -count=1 -timeout 10m
 //
-// They exercise what the loopback transport cannot: real pairing over
-// DERP, the transport-level PeerKey authentication against the claimed
-// hello client key, and a file transfer between two real tailcat
-// stacks.
+// The CI workflow runs them in the integration job on every push and
+// PR. They exercise what the loopback transport cannot: real pairing
+// over DERP, the transport-level PeerKey authentication against the
+// claimed hello client key, and a file transfer between two real
+// tailcat stacks.
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"os"
 	"path/filepath"
-	"runtime"
+	"runtime/pprof"
+	"strings"
 	"testing"
 	"time"
 )
+
+// engineGoroutines counts goroutines belonging to tailcat WireGuard
+// engines: they exist only while an engine is alive, so an engine that
+// is never closed (or never finishes closing) shows up as growth.
+func engineGoroutines(t *testing.T) int {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := pprof.Lookup("goroutine").WriteTo(&buf, 1); err != nil {
+		t.Fatalf("goroutine profile: %v", err)
+	}
+	return strings.Count(buf.String(), "created by github.com/tailscale/wireguard-go/device.NewDevice")
+}
 
 func integrationEnabled(t *testing.T) {
 	t.Helper()
@@ -146,22 +161,39 @@ func TestIntegrationFailedDialDropsClient(t *testing.T) {
 
 	// Kill hostB, then keep sending for a while: every dial fails, and
 	// each failure must close the client's WireGuard engine. A leak
-	// would accumulate goroutines; closing keeps the count flat.
+	// would accumulate engines; closing keeps the count bounded.
 	stopB()
 	time.Sleep(20 * time.Second) // let the first failures settle
-	baseline := runtime.NumGoroutine()
+	baseline := engineGoroutines(t)
+	t.Logf("engine goroutines at baseline: %d", baseline)
 	deadline := time.Now().Add(45 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := a.Send("hostB", src); err != nil {
 			t.Fatalf("send: %v", err)
 		}
 		time.Sleep(3 * time.Second)
+		if g := engineGoroutines(t); g > baseline+40 {
+			t.Logf("engine goroutines mid-loop: %d", g)
+			break
+		}
 	}
-	// In-flight retries hold a couple of engines at once; a leak would
-	// hold one per failed attempt, ever-growing.
-	if g := runtime.NumGoroutine(); g > baseline+40 {
-		t.Fatalf("goroutines grew from %d to %d during failed dials: engines are leaking", baseline, g)
+	// Attempts still in flight hold engines briefly; poll for the
+	// count to drain. A leak never drains — the dump then names what
+	// is stuck.
+	drain := time.Now().Add(30 * time.Second)
+	for time.Now().Before(drain) {
+		if g := engineGoroutines(t); g <= baseline+10 {
+			t.Logf("engine goroutines drained to %d (baseline %d): no leak", g, baseline)
+			return
+		}
+		time.Sleep(time.Second)
 	}
+	var dump bytes.Buffer
+	if err := pprof.Lookup("goroutine").WriteTo(&dump, 1); err != nil {
+		t.Fatalf("goroutine profile: %v", err)
+	}
+	t.Fatalf("engine goroutines never drained (baseline %d, now %d); wireguard goroutines stuck:\n%s",
+		baseline, engineGoroutines(t), dump.String())
 }
 
 func TestIntegrationPairSend(t *testing.T) {

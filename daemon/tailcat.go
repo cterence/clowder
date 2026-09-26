@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/tailscale/tailcat"
 	"tailscale.com/types/key"
@@ -22,7 +23,10 @@ type TailcatTransport struct {
 	// ClientKey is the identity all outbound dials use. Peers must
 	// allowlist its public form.
 	ClientKey key.NodePrivate
-	Logf      func(format string, args ...any)
+	// DERPMapURL, if set, is where the server and dialed clients
+	// fetch the DERP map from instead of tailcat's default.
+	DERPMapURL string
+	Logf       func(format string, args ...any)
 
 	mu      sync.Mutex
 	pending []key.NodePublic           // allows before Listen
@@ -43,6 +47,7 @@ func (t *TailcatTransport) Listen(ctx context.Context) (net.Listener, error) {
 	s := &tailcat.Server{
 		Key:          t.Key.Private,
 		PresharedKey: t.Key.Public.PresharedKey,
+		DERPMapURL:   t.DERPMapURL,
 		Logf:         t.Logf,
 	}
 	s.AllowedClients = append([]key.NodePublic(nil), t.pending...)
@@ -95,9 +100,10 @@ func (t *TailcatTransport) clientFor(addr string) *tailcat.Client {
 	c, ok := t.clients[addr]
 	if !ok {
 		c = &tailcat.Client{
-			Server: tailcat.Addr(addr),
-			Key:    t.ClientKey,
-			Logf:   t.Logf,
+			Server:     tailcat.Addr(addr),
+			Key:        t.ClientKey,
+			DERPMapURL: t.DERPMapURL,
+			Logf:       t.Logf,
 		}
 		t.clients[addr] = c
 	}
@@ -106,16 +112,26 @@ func (t *TailcatTransport) clientFor(addr string) *tailcat.Client {
 
 func (t *TailcatTransport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	c := t.clientFor(addr)
-	// Meow first: a cached client's one-shot handshake state can't
-	// tell a dead peer from a quiet one, and dialing into a dead
-	// session hangs in netstack SYN retries (handshake spam) for
-	// minutes. One ping is a cheap round trip for a live peer and a
-	// bounded (10s) failure for a dead one.
-	if _, err := c.Ping(ctx); err != nil {
+	// Liveness first, with a real round trip: tailcat's meow Ping is
+	// one-shot per client (a cached client that has ever talked to the
+	// peer reports success instantly, dead or not), so probing with it
+	// lets a just-went-offline peer pass and the dial below wedges in
+	// netstack SYN retries for the caller's whole context. A disco ping
+	// has no such one-shot state: one ping is a cheap round trip for a
+	// live peer and a bounded failure for a dead one, and it also
+	// triggers direct-path discovery.
+	pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if _, err := c.DiscoPing(pingCtx); err != nil {
 		t.dropClient(addr, c)
 		return nil, err
 	}
-	conn, err := c.DialTCPPort(ctx, t.Port)
+	// Bound the tunnel dial as well: a peer that pongs but has a dead
+	// tunnel session must fail in seconds, not starve the storer
+	// fallback until the (multi-minute) delivery context ends.
+	dialCtx, cancelDial := context.WithTimeout(ctx, 30*time.Second)
+	defer cancelDial()
+	conn, err := c.DialTCPPort(dialCtx, t.Port)
 	if err != nil {
 		t.dropClient(addr, c)
 		return nil, err

@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +10,8 @@ import (
 
 	"github.com/tailscale/tailcat"
 	"tailscale.com/types/key"
+
+	"clowder/persist"
 )
 
 // Me is the local cat's declared state: its name, whether it volunteers
@@ -114,25 +115,19 @@ func clientKeyPath(dir string) string { return filepath.Join(dir, "clientkey.jso
 // saveIdentity writes the identity (node key, pre-shared key, region
 // hint) atomically.
 func saveIdentity(dir string, k *tailcat.PrivateKey) error {
-	b, err := json.MarshalIndent(k, "", "  ")
-	if err != nil {
-		return fmt.Errorf("daemon: encoding identity: %w", err)
-	}
-	return os.WriteFile(filepath.Join(dir, "identity.json"), b, 0o600)
+	return persist.SaveJSON(filepath.Join(dir, "identity.json"), k)
 }
 
 // UpdatePresharedKey persists a new pre-shared key into the identity,
 // changing the cat's tailcat address from the next daemon start. The
 // running daemon keeps serving under the old address until restarted.
 func UpdatePresharedKey(dir string, psk tailcat.PresharedKey) error {
-	idPath := filepath.Join(dir, "identity.json")
-	b, err := os.ReadFile(idPath)
-	if err != nil {
+	var k *tailcat.PrivateKey
+	if _, err := persist.LoadJSON(filepath.Join(dir, "identity.json"), &k); err != nil {
 		return fmt.Errorf("daemon: reading identity: %w", err)
 	}
-	var k *tailcat.PrivateKey
-	if err := json.Unmarshal(b, &k); err != nil {
-		return fmt.Errorf("daemon: parsing identity: %w", err)
+	if k == nil {
+		return errors.New("daemon: no identity to rotate")
 	}
 	k.Public.PresharedKey = psk
 	return saveIdentity(dir, k)
@@ -171,17 +166,12 @@ func Init(dir, name string) error {
 // Open loads the identity and declared state from a config dir created by
 // Init.
 func Open(dir string) (*Env, error) {
-	idPath := filepath.Join(dir, "identity.json")
-	b, err := os.ReadFile(idPath)
-	if os.IsNotExist(err) {
-		return nil, fmt.Errorf("daemon: %s has no identity (run: clow init)", dir)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("daemon: reading identity: %w", err)
-	}
 	var k *tailcat.PrivateKey
-	if err := json.Unmarshal(b, &k); err != nil {
-		return nil, fmt.Errorf("daemon: parsing %s: %w", idPath, err)
+	if _, err := persist.LoadJSON(filepath.Join(dir, "identity.json"), &k); err != nil {
+		return nil, fmt.Errorf("daemon: opening %s: %w", dir, err)
+	}
+	if k == nil {
+		return nil, fmt.Errorf("daemon: %s has no identity (run: clow init)", dir)
 	}
 	me, err := loadMe(dir)
 	if err != nil {
@@ -200,30 +190,23 @@ func writeClientKey(dir string, priv key.NodePrivate) error {
 	if err != nil {
 		return fmt.Errorf("daemon: encoding client key: %w", err)
 	}
-	b, err := json.Marshal(string(text))
-	if err != nil {
-		return fmt.Errorf("daemon: encoding client key: %w", err)
-	}
-	return os.WriteFile(clientKeyPath(dir), b, 0o600)
+	return persist.SaveJSON(clientKeyPath(dir), string(text))
 }
 
 // loadClientKey loads the outbound client identity, generating one for
 // identities created before client keys existed.
 func loadClientKey(dir string) (key.NodePrivate, error) {
-	b, err := os.ReadFile(clientKeyPath(dir))
-	if os.IsNotExist(err) {
+	var text string
+	ok, err := persist.LoadJSON(clientKeyPath(dir), &text)
+	if err != nil {
+		return key.NodePrivate{}, fmt.Errorf("daemon: parsing client key: %w", err)
+	}
+	if !ok {
 		priv := key.NewNode()
 		if err := writeClientKey(dir, priv); err != nil {
 			return key.NodePrivate{}, err
 		}
 		return priv, nil
-	}
-	if err != nil {
-		return key.NodePrivate{}, fmt.Errorf("daemon: reading client key: %w", err)
-	}
-	var text string
-	if err := json.Unmarshal(b, &text); err != nil {
-		return key.NodePrivate{}, fmt.Errorf("daemon: parsing client key: %w", err)
 	}
 	var priv key.NodePrivate
 	if err := priv.UnmarshalText([]byte(text)); err != nil {
@@ -233,27 +216,13 @@ func loadClientKey(dir string) (key.NodePrivate, error) {
 }
 
 func saveMe(dir string, me Me) error {
-	b, err := json.MarshalIndent(me, "", "  ")
-	if err != nil {
-		return fmt.Errorf("daemon: encoding me: %w", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "me.json"), b, 0o600); err != nil {
-		return fmt.Errorf("daemon: writing me: %w", err)
-	}
-	return nil
+	return persist.SaveJSON(filepath.Join(dir, "me.json"), me)
 }
 
 func loadMe(dir string) (Me, error) {
-	b, err := os.ReadFile(filepath.Join(dir, "me.json"))
-	if os.IsNotExist(err) {
-		return Me{}, nil
-	}
-	if err != nil {
-		return Me{}, fmt.Errorf("daemon: reading me: %w", err)
-	}
 	var me Me
-	if err := json.Unmarshal(b, &me); err != nil {
-		return Me{}, fmt.Errorf("daemon: parsing me.json: %w", err)
+	if _, err := persist.LoadJSON(filepath.Join(dir, "me.json"), &me); err != nil {
+		return Me{}, err
 	}
 	return me, nil
 }

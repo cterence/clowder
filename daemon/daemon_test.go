@@ -17,6 +17,22 @@ import (
 	"clowder/roster"
 )
 
+// TestMain points t.TempDir() at a short-path root. Every daemon test
+// config dir hosts the daemon's unix IPC socket, and macOS rejects
+// socket paths over ~103 bytes — the default TMPDIR (/var/folders/...)
+// plus a long test name overflows that, Run dies at the IPC listen
+// and peers see "connection refused". If /tmp is unusable the tests
+// keep the default TMPDIR.
+func TestMain(m *testing.M) {
+	if root, err := os.MkdirTemp("/tmp", "clowder-test-"); err == nil {
+		_ = os.Setenv("TMPDIR", root)
+		code := m.Run()
+		_ = os.RemoveAll(root)
+		os.Exit(code)
+	}
+	os.Exit(m.Run())
+}
+
 // LocalTransport runs the clowder protocol over loopback TCP for tests.
 type LocalTransport struct {
 	mu   sync.Mutex

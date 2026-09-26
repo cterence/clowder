@@ -83,29 +83,29 @@ func longUsage() error {
 	fmt.Print(`clow - a member of a clowder, an async file-transfer mesh over tailcat
 
 usage:
-  clow init [--name NAME] [--dir DIR] [--inbox DIR]  create this cat's identity
-  clow daemon [--port N]                  run the mesh daemon
-  clow invite                             print a pairing code (5 words, 5 min)
-  clow join <CODE>                        pair with the cat that invited
-  clow send <CAT> <FILE>                  send a file asynchronously
-  clow fetch                              pull files storers hold for me
-  clow cats                               list the clowder
-  clow inbox [--set DIR]                  list received files (full paths) or
-                                           change where they land
-  clow storer on|off|dropbox              storer duty; dropbox = third parties only
-  clow outbox clear                       drop all pending sends
-  clow forget <CAT>                      drop a cat from the roster
-  clow rotate                            new address, announced to the clowder
-  clow reset [--yes]                      wipe this cat's identity and rosters
-  clow status                             config, outbox, spool and roster summary
+  clow init [--name NAME] [--dir CONFIG_DIR] [--inbox INBOX_DIR]
+                                           create this cat's identity
+  clow daemon [--port N] [--health ADDR] [--derp-map URL]
+                                           run the mesh daemon
+  clow invite                              print a pairing code (5 words, 5 min)
+  clow join <CODE>                         pair with the cat that invited
+  clow send <CAT> <FILE>                   send a file asynchronously
+  clow fetch                               pull files storers hold for me
+  clow cats                                list the clowder
+  clow inbox [--set DIR]                   list received files, or move the inbox
+  clow storer on|off|dropbox               storer duty; dropbox = third parties only
+  clow outbox clear                        drop all pending sends
+  clow forget <CAT>                        drop a cat from the roster
+  clow rotate                              new address, announced to the clowder
+  clow reset [--yes]                       wipe this cat's identity and rosters
+  clow status                              config, outbox, spool and roster summary
 
-The config dir defaults to $CLOWDER_DIR, else <user config home>/clowder
-(~/.config/clowder on Linux, ~/Library/Application Support/clowder on
-macOS). Received files land in a distinct inbox dir, defaulting to
-~/Downloads/clowder, changeable with "clow inbox --set". Cats trust each
-other via "clow invite" / "clow join" pairing codes; tailcat addresses
-are never exchanged by hand. Everything but init and inbox needs the
-daemon running.
+config dir:  $CLOWDER_DIR, else the OS user config home (~/.config/clowder
+             on Linux, ~/Library/Application Support/clowder on macOS)
+inbox:       ~/Downloads/clowder by default; "clow inbox --set DIR" moves it
+pairing:     trust comes only from "clow invite" / "clow join" pairing
+             codes, never from exchanging addresses
+daemon:      every command except init and inbox needs it running
 `)
 	return nil
 }
@@ -174,6 +174,8 @@ func cmdDaemon(args []string) error {
 	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
 	port := fs.Uint("port", daemon.DefaultPort, "clowder protocol port")
 	name := fs.String("name", defaultName(), "cat name, used to auto-initialize a fresh cat")
+	health := fs.String("health", os.Getenv("CLOWDER_HEALTH_ADDR"), "HTTP health endpoint for container probes, e.g. :8080 (empty disables)")
+	derpMap := fs.String("derp-map", os.Getenv("CLOWDER_DERPMAP_URL"), "URL of a JSON DERP map to use instead of tailcat's default (for self-hosted relays)")
 	if err := fs.Parse(flagsFirst(fs, args)); err != nil {
 		return err
 	}
@@ -191,8 +193,9 @@ func cmdDaemon(args []string) error {
 		return err
 	}
 	logf := func(format string, args ...any) { log.Printf(format, args...) }
-	cfg := daemon.Config{Dir: dir, Logf: logf}
+	cfg := daemon.Config{Dir: dir, Logf: logf, HealthAddr: *health, DERPMapURL: *derpMap}
 	tr := daemon.NewTailcatTransport(env.Identity, env.ClientIdentity, uint16(*port), logf)
+	tr.DERPMapURL = *derpMap
 	d, err := daemon.New(cfg, tr)
 	if err != nil {
 		return err

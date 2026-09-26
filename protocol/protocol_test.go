@@ -91,3 +91,32 @@ func newPipe(t *testing.T) (*Conn, *Conn) {
 	p1, p2 := net.Pipe()
 	return NewConn(p1), NewConn(p2)
 }
+
+func TestConnAnswerAck(t *testing.T) {
+	c1, c2 := newPipe(t)
+	defer func() { _ = c1.Close() }()
+	defer func() { _ = c2.Close() }()
+
+	go func() {
+		if err := c1.Answer("t1", false, "storer full"); err != nil {
+			t.Errorf("Answer: %v", err)
+		}
+		if err := c1.Ack("t2", AckStored); err != nil {
+			t.Errorf("Ack: %v", err)
+		}
+	}()
+	m, err := c2.ReadMsg()
+	if err != nil {
+		t.Fatalf("ReadMsg answer: %v", err)
+	}
+	if m.Answer == nil || m.Answer.ID != "t1" || m.Answer.OK || m.Answer.Reason != "storer full" {
+		t.Fatalf("Answer round trip: %+v", m.Answer)
+	}
+	m, err = c2.ReadMsg()
+	if err != nil {
+		t.Fatalf("ReadMsg ack: %v", err)
+	}
+	if m.Ack == nil || m.Ack.ID != "t2" || m.Ack.Kind != AckStored {
+		t.Fatalf("Ack round trip: %+v", m.Ack)
+	}
+}

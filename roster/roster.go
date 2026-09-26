@@ -5,15 +5,15 @@
 package roster
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"slices"
 	"sync"
 	"time"
 
 	"github.com/tailscale/tailcat"
+
+	"clowder/persist"
 )
 
 // Cat is one member of the clowder. Key is the cat's node public key in
@@ -86,16 +86,9 @@ func (r *Roster) Load() error {
 	if r.path == "" {
 		return errors.New("roster: no path set")
 	}
-	b, err := os.ReadFile(r.path)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("roster: reading %s: %w", r.path, err)
-	}
 	var cats []Cat
-	if err := json.Unmarshal(b, &cats); err != nil {
-		return fmt.Errorf("roster: parsing %s: %w", r.path, err)
+	if _, err := persist.LoadJSON(r.path, &cats); err != nil {
+		return fmt.Errorf("roster: loading: %w", err)
 	}
 	m := map[string]Cat{}
 	for _, c := range cats {
@@ -124,12 +117,8 @@ func (r *Roster) saveLocked() error {
 		cats = append(cats, c)
 	}
 	sortCats(cats)
-	b, err := json.MarshalIndent(cats, "", "  ")
-	if err != nil {
-		return fmt.Errorf("roster: encoding: %w", err)
-	}
-	if err := os.WriteFile(r.path, b, 0o600); err != nil {
-		return fmt.Errorf("roster: writing %s: %w", r.path, err)
+	if err := persist.SaveJSON(r.path, cats); err != nil {
+		return fmt.Errorf("roster: saving: %w", err)
 	}
 	return nil
 }

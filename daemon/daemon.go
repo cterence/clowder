@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	"tailscale.com/types/key"
 
 	"clowder/envelope"
+	"clowder/persist"
 	"clowder/protocol"
 	"clowder/roster"
 	"clowder/store"
@@ -49,6 +51,13 @@ const (
 type Config struct {
 	Dir  string
 	Port uint16 // clowder protocol port; used by the tailcat transport
+	// HealthAddr optionally serves HTTP container probes on / and
+	// /healthz (e.g. ":8080"); empty disables the endpoint.
+	HealthAddr string
+	// DERPMapURL overrides where tailcat fetches its DERP map from
+	// (server, dials and pairing): a self-hosted map for air-gapped
+	// clusters. Empty means tailcat's default.
+	DERPMapURL string
 	RetryEvery,
 	PollEvery time.Duration
 	Logf func(format string, args ...any)
@@ -359,6 +368,20 @@ func (d *Daemon) Run(ctx context.Context) error {
 		}
 	}()
 
+	var healthLn net.Listener
+	var healthSrv *http.Server
+	if d.cfg.HealthAddr != "" {
+		healthLn, healthSrv, err = listenHealth(d.cfg.HealthAddr)
+		if err != nil {
+			_ = ln.Close()
+			_ = ipcLn.Close()
+			_ = d.tr.Close()
+			return err
+		}
+		go func() { _ = healthSrv.Serve(healthLn) }()
+		d.cfg.logf("clowder: health endpoint on %s", healthLn.Addr().String())
+	}
+
 	retry := time.NewTicker(d.cfg.RetryEvery)
 	defer retry.Stop()
 	poll := time.NewTicker(d.cfg.PollEvery)
@@ -369,6 +392,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			_ = ln.Close()
 			_ = ipcLn.Close()
+			if healthSrv != nil {
+				_ = healthSrv.Close()
+			}
 			_ = d.tr.Close()
 			return nil
 		case <-retry.C:
@@ -449,10 +475,6 @@ func (d *Daemon) serveConn(pc *protocol.Conn, authKey key.NodePublic, authed boo
 			d.cfg.logf("clowder: closing conn from %s: claimed client key %q does not match authenticated %s", peer.Name, peer.ClientKey, authKey)
 			return
 		}
-		if d.isBlockedKey(authKey.String()) {
-			d.cfg.logf("clowder: refusing connection from blocked cat %s", peer.Name)
-			return
-		}
 	}
 	d.markSeen(peer.Key)
 	if err := pc.WriteMsg(&protocol.Message{Hello: d.helloMsg()}); err != nil {
@@ -510,12 +532,7 @@ func (d *Daemon) handleOffer(pc *protocol.Conn, from *protocol.Hello, o *protoco
 // delivery.
 func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *protocol.Offer) bool {
 	refuse := func(reason string) bool {
-		if err := pc.WriteMsg(&protocol.Message{Answer: &protocol.Answer{
-			ID: o.ID, OK: false, Reason: reason,
-		}}); err != nil {
-			return false
-		}
-		return true
+		return pc.Answer(o.ID, false, reason) == nil
 	}
 	if d.Me().Dropbox {
 		// A dropbox relays files for others; it takes none for itself.
@@ -527,7 +544,7 @@ func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *proto
 		return refuse("transfer already in progress")
 	}
 	defer d.releaseReceive(o.ID)
-	if err := pc.WriteMsg(&protocol.Message{Answer: &protocol.Answer{ID: o.ID, OK: true}}); err != nil {
+	if err := pc.Answer(o.ID, true, ""); err != nil {
 		return false
 	}
 	_ = pc.SetDeadline(time.Now().Add(streamTimeout))
@@ -547,7 +564,7 @@ func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *proto
 	}
 	d.stats.add(func(s *Stats) { s.Received++; s.ReceivedBytes += plainSize })
 	_ = pc.SetDeadline(time.Now().Add(msgTimeout))
-	if err := pc.WriteMsg(&protocol.Message{Ack: &protocol.Ack{ID: o.ID, Kind: protocol.AckDelivered}}); err != nil {
+	if err := pc.Ack(o.ID, protocol.AckDelivered); err != nil {
 		return false
 	}
 	d.cfg.logf("clowder: received %s (%s) from %s", o.FileName, HumanBytes(plainSize), from.Name)
@@ -559,32 +576,17 @@ func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *proto
 func (d *Daemon) receiveAsStorer(pc *protocol.Conn, o *protocol.Offer) bool {
 	me := d.Me()
 	if !me.Storer {
-		if err := pc.WriteMsg(&protocol.Message{Answer: &protocol.Answer{
-			ID: o.ID, OK: false, Reason: "not a storer",
-		}}); err != nil {
-			return false
-		}
-		return true
+		return pc.Answer(o.ID, false, "not a storer") == nil
 	}
 	if me.Capacity <= 0 {
-		if err := pc.WriteMsg(&protocol.Message{Answer: &protocol.Answer{
-			ID: o.ID, OK: false, Reason: "storer has no capacity set",
-		}}); err != nil {
-			return false
-		}
-		return true
+		return pc.Answer(o.ID, false, "storer has no capacity set") == nil
 	}
 	if !d.tryReserve(me.Capacity, o.Size) {
-		if err := pc.WriteMsg(&protocol.Message{Answer: &protocol.Answer{
-			ID: o.ID, OK: false,
-			Reason: fmt.Sprintf("storer full (%s of %s held)", HumanBytes(d.heldBytes()), HumanBytes(me.Capacity)),
-		}}); err != nil {
-			return false
-		}
-		return true
+		reason := fmt.Sprintf("storer full (%s of %s held)", HumanBytes(d.heldBytes()), HumanBytes(me.Capacity))
+		return pc.Answer(o.ID, false, reason) == nil
 	}
 	defer d.releaseReserve(o.Size)
-	if err := pc.WriteMsg(&protocol.Message{Answer: &protocol.Answer{ID: o.ID, OK: true}}); err != nil {
+	if err := pc.Answer(o.ID, true, ""); err != nil {
 		return false
 	}
 	_ = pc.SetDeadline(time.Now().Add(streamTimeout))
@@ -602,7 +604,7 @@ func (d *Daemon) receiveAsStorer(pc *protocol.Conn, o *protocol.Offer) bool {
 		return false
 	}
 	_ = pc.SetDeadline(time.Now().Add(msgTimeout))
-	if err := pc.WriteMsg(&protocol.Message{Ack: &protocol.Ack{ID: o.ID, Kind: protocol.AckStored}}); err != nil {
+	if err := pc.Ack(o.ID, protocol.AckStored); err != nil {
 		return false
 	}
 	d.stats.add(func(s *Stats) { s.Spooled++ })
@@ -722,34 +724,28 @@ func (d *Daemon) saveIncoming(o *protocol.Offer, src io.Reader, recipient key.No
 		return 0, fmt.Errorf("creating inbox: %w", err)
 	}
 	name := inboxPath(inbox, o.FileName)
-	tmp, err := os.CreateTemp(inbox, ".recv-*")
-	if err != nil {
-		return 0, fmt.Errorf("creating temp file: %w", err)
-	}
-	defer func() { _ = os.Remove(tmp.Name()) }()
 	ex := &exactReader{r: src}
-	gotSize, gotSha, err := envelope.OpenStream(recipient, ex, tmp)
-	if err != nil {
-		tmp.Close()
+	var gotSize int64
+	if err := persist.WriteFunc(name, func(w io.Writer) error {
+		var gotSha string
+		var err error
+		gotSize, gotSha, err = envelope.OpenStream(recipient, ex, w)
+		if err != nil {
+			return err
+		}
+		// The sealed stream must be exactly as long as announced: a
+		// sender lying about the size (a modified client) gets the
+		// connection killed and no delivery ack. Nothing lands in
+		// the inbox unless every check passes.
+		if ex.n != o.Size {
+			return fmt.Errorf("protocol violation: sealed stream was %d bytes, %d announced", ex.n, o.Size)
+		}
+		if gotSha != o.SHA256 {
+			return fmt.Errorf("digest mismatch: got %s, announced %s", gotSha, o.SHA256)
+		}
+		return nil
+	}); err != nil {
 		return 0, err
-	}
-	if err := tmp.Close(); err != nil {
-		return 0, fmt.Errorf("closing temp file: %w", err)
-	}
-	// The sealed stream must be exactly as long as announced: a sender
-	// lying about the size (a modified client) gets the connection
-	// killed and no delivery ack.
-	if ex.n != o.Size {
-		return 0, fmt.Errorf("protocol violation: sealed stream was %d bytes, %d announced", ex.n, o.Size)
-	}
-	if gotSha != o.SHA256 {
-		return 0, fmt.Errorf("digest mismatch: got %s, announced %s", gotSha, o.SHA256)
-	}
-	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
-		return 0, fmt.Errorf("chmod temp file: %w", err)
-	}
-	if err := os.Rename(tmp.Name(), name); err != nil {
-		return 0, fmt.Errorf("moving into inbox: %w", err)
 	}
 	return gotSize, nil
 }
@@ -960,7 +956,7 @@ func (d *Daemon) fetchOne(pc *protocol.Conn, f protocol.PendingFile) error {
 		return errors.New("storer did not offer the file")
 	}
 	o := m.Offer
-	if err := pc.WriteMsg(&protocol.Message{Answer: &protocol.Answer{ID: o.ID, OK: true}}); err != nil {
+	if err := pc.Answer(o.ID, true, ""); err != nil {
 		return err
 	}
 	_ = pc.SetDeadline(time.Now().Add(streamTimeout))
@@ -981,7 +977,7 @@ func (d *Daemon) fetchOne(pc *protocol.Conn, f protocol.PendingFile) error {
 		return err
 	}
 	_ = pc.SetDeadline(time.Now().Add(msgTimeout))
-	if err := pc.WriteMsg(&protocol.Message{Ack: &protocol.Ack{ID: o.ID, Kind: protocol.AckDelivered}}); err != nil {
+	if err := pc.Ack(o.ID, protocol.AckDelivered); err != nil {
 		return err
 	}
 	d.cfg.logf("clowder: fetched %s from storer", o.FileName)

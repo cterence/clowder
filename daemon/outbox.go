@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+
+	"clowder/persist"
 )
 
 // Entry is one pending outbound send: a source file on this cat's disk
@@ -34,14 +36,7 @@ func (o *outbox) Put(e Entry) error {
 	if err := os.MkdirAll(o.dir, 0o700); err != nil {
 		return fmt.Errorf("outbox: creating dir: %w", err)
 	}
-	b, err := json.Marshal(e)
-	if err != nil {
-		return fmt.Errorf("outbox: encoding entry: %w", err)
-	}
-	if err := atomicWrite(filepath.Join(o.dir, e.ID+".json"), b); err != nil {
-		return err
-	}
-	return nil
+	return persist.SaveJSON(filepath.Join(o.dir, e.ID+".json"), e)
 }
 
 // All returns pending entries, oldest first.
@@ -98,27 +93,4 @@ func (o *outbox) Clear() (int, error) {
 		}
 	}
 	return len(entries), nil
-}
-
-// atomicWrite writes data to path via a temp file and rename.
-func atomicWrite(path string, data []byte) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
-	if err != nil {
-		return fmt.Errorf("outbox: creating temp file: %w", err)
-	}
-	defer func() { _ = os.Remove(tmp.Name()) }()
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return fmt.Errorf("outbox: writing temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("outbox: closing temp file: %w", err)
-	}
-	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
-		return fmt.Errorf("outbox: chmod temp file: %w", err)
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		return fmt.Errorf("outbox: renaming into place: %w", err)
-	}
-	return nil
 }

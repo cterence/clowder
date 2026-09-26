@@ -6,11 +6,9 @@ package daemon
 // peers at the protocol level instead. Persisted in blocked.json.
 
 import (
-	"encoding/json"
-	"fmt"
-	"os"
 	"path/filepath"
 
+	"clowder/persist"
 	"clowder/roster"
 )
 
@@ -18,13 +16,9 @@ func blockedPath(dir string) string { return filepath.Join(dir, "blocked.json") 
 
 // loadBlocked reads the persisted blocklist.
 func loadBlocked(dir string) map[string]bool {
-	b, err := os.ReadFile(blockedPath(dir))
-	if err != nil {
-		return map[string]bool{}
-	}
 	var keys []string
-	if json.Unmarshal(b, &keys) != nil {
-		return map[string]bool{}
+	if _, err := persist.LoadJSON(blockedPath(dir), &keys); err != nil {
+		return map[string]bool{} // unreadable blocklist: start empty
 	}
 	m := make(map[string]bool, len(keys))
 	for _, k := range keys {
@@ -39,11 +33,7 @@ func saveBlocked(dir string, m map[string]bool) error {
 	for k := range m {
 		keys = append(keys, k)
 	}
-	b, err := json.MarshalIndent(keys, "", "  ")
-	if err != nil {
-		return fmt.Errorf("daemon: encoding blocklist: %w", err)
-	}
-	return os.WriteFile(blockedPath(dir), b, 0o600)
+	return persist.SaveJSON(blockedPath(dir), keys)
 }
 
 // isBlockedKey reports whether a node key (identity or client) belongs

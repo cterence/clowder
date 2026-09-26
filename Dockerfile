@@ -22,7 +22,10 @@ COPY --from=build /out/clow /usr/local/bin/clow
 # The cat's identity, roster, spool, outbox and IPC socket live here;
 # mount a volume or the pod restarts as a brand-new cat. The cat's name
 # defaults to the hostname (the pod name under k8s) and can be set with
-# CLOWDER_NAME.
+# CLOWDER_NAME. CLOWDER_HEALTH_ADDR (e.g. ":8080") optionally serves
+# GET /healthz for container probes — the only inbound port the daemon
+# ever opens. CLOWDER_DERPMAP_URL points the daemon at a self-hosted
+# DERP map for air-gapped clusters.
 ENV CLOWDER_DIR=/config
 RUN mkdir -p /config && chown clow:clow /config
 WORKDIR /config
