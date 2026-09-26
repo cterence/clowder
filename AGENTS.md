@@ -80,6 +80,40 @@ have grown the same private helper, hoist it there.
   `CLOWDER_INTEGRATION=1 go test ./daemon/ -run Integration -v -count=1`
   (real DERP) after touching the transport, pairing, or hello paths.
 
+## Architecture: no global consensus
+
+There is no leader, no quorum, and no globally linearizable state in
+clowder — by decision, not omission. The mesh's consensus-shaped
+problems are adversarial, not coordination problems: any paired cat
+may misbehave, and quorum only decides between honest writers while
+signatures decide against dishonest ones. Every problem gets the
+smallest mechanism that suffices:
+
+- A single decision between two cats: a bounded handshake. The
+  pairing exchange's intro/ack/commit-confirm grew exactly this way,
+  after a real split-brain.
+- Shared mergeable facts (the roster): LWW under an add-only
+  invariant, signed tombstones for removal (pending), and conflicts
+  resolved by rule — newest Updated wins — never by vote.
+- Ownership and identity: signatures on entries (pending), never a
+  leader that could inject or override them.
+- One-directional decisions (distrust): local state, deliberately
+  not propagated.
+
+Why not Raft or friends: consensus needs known membership and a
+reachable quorum to make progress, while clowder's core promise is
+delivery to cats that are OFFLINE — partitions are the norm, and a
+two-cat clowder with both rarely online must still work. A leader is
+a privileged injection point, the exact threat roster signing closes.
+And end-to-end sealing means no decision needs global agreement: a
+stale roster entry costs a failed dial and a retry, never corruption.
+
+Reopen this stance only if a feature needs globally unique
+namespaces, shared mutable clowder-wide state, coordinated resource
+accounting, or exactly-one-node jobs — and even then, prefer
+per-object signed ownership or richer CRDTs before a consensus
+module; a signed lease beats leader election at this scale.
+
 ## Pending work
 
 Ordered by complexity, easiest first; do not reorder without a
