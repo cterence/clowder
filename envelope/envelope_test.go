@@ -136,3 +136,33 @@ func TestHeaderIsOpaque(t *testing.T) {
 		t.Fatal("sealed stream contains the plaintext")
 	}
 }
+
+func TestOpenStreamAllocationBound(t *testing.T) {
+	// The chunk loop must reuse its buffers: opening a stream allocates
+	// a fixed handful of pieces (header parse, sealed-box open, AEAD,
+	// digest) regardless of chunk count. A leaked per-chunk buffer adds
+	// allocations linear in the stream length, so open one chunk and
+	// sixteen and require the counts to match.
+	sender := key.NewNode()
+	recipient := key.NewNode()
+
+	allocs := func(size int) float64 {
+		plain := make([]byte, size)
+		var sealed bytes.Buffer
+		if _, _, err := SealStream(sender, recipient.Public(), &sealed, bytes.NewReader(plain)); err != nil {
+			t.Fatalf("sealing %d: %v", size, err)
+		}
+		sealedBytes := sealed.Bytes()
+		return testing.AllocsPerRun(5, func() {
+			if _, _, err := OpenStream(recipient, bytes.NewReader(sealedBytes), io.Discard); err != nil {
+				t.Errorf("OpenStream(%d): %v", size, err)
+			}
+		})
+	}
+
+	one := allocs(ChunkSize)
+	many := allocs(16 * ChunkSize)
+	if many > one+4 {
+		t.Fatalf("OpenStream allocations grow with chunk count: %d chunks = %.0f allocs, 1 chunk = %.0f (per-chunk buffers are back)", 16, many, one)
+	}
+}

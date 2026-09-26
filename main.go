@@ -176,6 +176,7 @@ func cmdDaemon(args []string) error {
 	name := fs.String("name", defaultName(), "cat name, used to auto-initialize a fresh cat")
 	health := fs.String("health", os.Getenv("CLOWDER_HEALTH_ADDR"), "HTTP health endpoint for container probes, e.g. :8080 (empty disables)")
 	derpMap := fs.String("derp-map", os.Getenv("CLOWDER_DERPMAP_URL"), "URL of a JSON DERP map to use instead of tailcat's default (for self-hosted relays)")
+	pprofOn := fs.Bool("pprof", os.Getenv("CLOWDER_PPROF") == "1", "serve net/http/pprof on the health endpoint (requires --health)")
 	if err := fs.Parse(flagsFirst(fs, args)); err != nil {
 		return err
 	}
@@ -193,7 +194,7 @@ func cmdDaemon(args []string) error {
 		return err
 	}
 	logf := func(format string, args ...any) { log.Printf(format, args...) }
-	cfg := daemon.Config{Dir: dir, Logf: logf, HealthAddr: *health, DERPMapURL: *derpMap}
+	cfg := daemon.Config{Dir: dir, Logf: logf, HealthAddr: *health, DERPMapURL: *derpMap, Pprof: *pprofOn}
 	tr := daemon.NewTailcatTransport(env.Identity, env.ClientIdentity, uint16(*port), logf)
 	tr.DERPMapURL = *derpMap
 	d, err := daemon.New(cfg, tr)

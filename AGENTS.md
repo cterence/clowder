@@ -75,19 +75,14 @@ reason. Update this list and the README when something ships.
 1. **Nix packaging** — a flake `packages.default` building the clow
    binary (buildGoModule; needs a vendorHash — compute with a first
    `nix build`, then pin). Keep the devShell as the default output.
-2. **pprof pass** — expose net/http/pprof on the health endpoint
-   (CLOWDER_HEALTH_ADDR already serves HTTP; gate /debug/pprof behind
-   an opt-in flag or env, never on by default — profiling endpoints
-   leak internals and must not ride along on every health port).
-   Profile the hot paths and record findings: CPU and heap during the
-   64 MiB CLOWDER_INTEGRATION transfer plus a loopback load test, and
-   goroutine/mutex/block profiles of a busy multi-peer daemon. Look
-   for per-chunk allocations on the sealed-stream path (streaming is a
-   core invariant, so large or frequent buffers are a smell), spool
-   read/write buffer sizes, goroutine leaks (per-dial engines are
-   related to the idle-eviction item below), and roster-sync byte
-   churn. Land the cheap wins as follow-ups with before/after numbers.
-3. **Distrust a cat (local, one-directional)** — `clow distrust <CAT>`
+   BLOCKED (2026-09-26): buildGoModule needs go >= 1.27.1 — clowder,
+   tailcat and tailscale.com all declare `go 1.27.1`, and Go refuses
+   to build a module whose go directive exceeds the running toolchain.
+   nixpkgs unstable ships go 1.26.7 (`go`) and 1.27rc2 (`go_1_27`),
+   and an rc sorts BELOW 1.27.1. Revisit when nixpkgs carries
+   go >= 1.27.1; the go.mod directive cannot be lowered (the deps own
+   the floor).
+2. **Distrust a cat (local, one-directional)** — `clow distrust <CAT>`
    / `clow trust <CAT>` to undo: a persisted blocklist (keys, in
    blocked.json, NOT propagated — one cat's decision, unlike the
    planned signed-leave gossip). A distrusted cat is refused both
@@ -99,14 +94,14 @@ reason. Update this list and the README when something ships.
    add-only (no RemoveAllowedClient) — so forget today leaves the
    cat's key able to connect; the serveConn-level check must back
    both features (or upstream tailcat grows a removal API).
-4. **Delivery receipts** — approved design, not yet built: when a
+3. **Delivery receipts** — approved design, not yet built: when a
    target receives a file (direct or via storer) it seals a tiny
    receipt {transferID, fileName, deliveredAt} to the sender's node key
    with its own (sealed-box authenticated, storer-opaque) and relays it
    direct-or-via-storer like any small message; the sender keeps a
    receipts.json ledger shown in `clow status`, closing the loop for
    sends that left the outbox while the sender was offline.
-5. **Hardening batch** (from the 2026-09-26 design review):
+4. **Hardening batch** (from the 2026-09-26 design review):
    - Inbox quota / free-space check on receive (a trusted cat can
      fill the receiver's disk today; storers have capacity, direct
      receivers do not).
@@ -122,7 +117,7 @@ reason. Update this list and the README when something ships.
    - Global transfer concurrency cap (claims are per-ID only).
    - Fuzz targets for ReadMsg/parsePairCode/inboxPath (untrusted
      input decode paths).
-6. **Pairing hardening: offline guessability + PAKE** — the pairing
+5. **Pairing hardening: offline guessability + PAKE** — the pairing
    words currently derive the WireGuard static keys and PSK directly
    (derivePairing, daemon/pairing.go), and the file comment claims
    guessing is "active-only, nothing verifiable offline". That claim
@@ -139,7 +134,7 @@ reason. Update this list and the README when something ships.
    tunnel keys from its output instead of from the words, or grow
    the code length as a stopgap. Touches pairing + transport: full
    CLOWDER_INTEGRATION run required after.
-7. **Leave with signed forget-me gossip + roster entry signing** —
+6. **Leave with signed forget-me gossip + roster entry signing** —
    derive an Ed25519 keypair from the node key seed
    (ed25519.NewKeyFromSeed(nodeRaw32)); announce the sign-public in
    Hello/roster entries; `clow leave` broadcasts a signed {leaver,
@@ -151,13 +146,13 @@ reason. Update this list and the README when something ships.
    override entries via LWW (brick an entry with a broken address, or
    duplicate a name to capture sends). Merge should require a valid
    signature on entries for keys already known.
-8. **Android app client** — a clowder client for Android. tailcat has
+7. **Android app client** — a clowder client for Android. tailcat has
    Android support (see its android_linux.go and INSTALL.md), so the
    shape is: the daemon packages as an Android library (aar) or runs in
    a foreground service, with a thin UI for init/invite/join/send/
    inbox. Decide the UI approach (plainCompose/gomobile) before
    starting; the daemon package itself must not grow Android deps.
-9. **Multiple clowders** — named clowders: per-clowder roster files,
+8. **Multiple clowders** — named clowders: per-clowder roster files,
    `--clowder` on invite/join/send, Hello carries the clowder name so a
    connection routes to the right roster. One identity, one daemon,
    clowders stay disjoint (flat sync would otherwise merge them).
@@ -166,7 +161,16 @@ reason. Update this list and the README when something ships.
    O(N²) bytes per cycle; one-peer-per-tick means propagation latency
    grows linearly).
 
-Shipped recently (context for a fresh session): a self-hosted DERP map
+Shipped recently (context for a fresh session): a pprof pass (CLOWDER_PPROF
+/ `clow daemon --pprof` serves net/http/pprof on the health endpoint,
+opt-in only; a loopback end-to-end benchmark, BenchmarkLoopbackSend1MiB,
+profiling found the receive path dominated by per-chunk allocations in
+envelope.OpenStream — fixed by reusing the ciphertext, plaintext and
+nonce buffers, pinned by TestOpenStreamAllocationBound: end-to-end
+allocations per 1 MiB transfer dropped 2.46 MB to 0.36 MB; CPU is
+file-IO-bound (75% syscalls), XChaCha20-Poly1305 is ~6%, so the cipher
+is not worth optimizing; goroutine/mutex/block profiles of a busy
+multi-peer daemon remain unprofiled), a self-hosted DERP map
 config (CLOWDER_DERPMAP_URL / `clow daemon --derp-map`, plumbed into the
 server, dials and both pairing sides; loopback-tested against an
 httptest-served map), a dead-peer dial fix (tailcat's meow Ping is

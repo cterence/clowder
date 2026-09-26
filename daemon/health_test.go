@@ -12,19 +12,23 @@ import (
 
 func TestHealthHandler(t *testing.T) {
 	tests := []struct {
-		name string
-		path string
-		code int
-		body string
+		name  string
+		pprof bool
+		path  string
+		code  int
+		body  string
 	}{
-		{"probe path", "/healthz", http.StatusOK, "ok\n"},
-		{"root", "/", http.StatusOK, "ok\n"},
-		{"unknown path", "/other", http.StatusNotFound, ""},
+		{"probe path", false, "/healthz", http.StatusOK, "ok\n"},
+		{"root", false, "/", http.StatusOK, "ok\n"},
+		{"unknown path", false, "/other", http.StatusNotFound, ""},
+		{"pprof disabled", false, "/debug/pprof/", http.StatusNotFound, ""},
+		{"pprof index", true, "/debug/pprof/", http.StatusOK, ""},
+		{"pprof heap profile", true, "/debug/pprof/heap", http.StatusOK, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			healthHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tt.path, nil))
+			healthHandler(tt.pprof).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tt.path, nil))
 			if rec.Code != tt.code {
 				t.Fatalf("GET %s: status = %d, want %d", tt.path, rec.Code, tt.code)
 			}
@@ -120,5 +124,69 @@ func TestRunHealthEndpointBindError(t *testing.T) {
 	err = d.Run(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "health") {
 		t.Fatalf("Run error = %v, want a health endpoint bind failure", err)
+	}
+}
+
+func TestRunServesPprofOnHealth(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	if err := Init(dir, "profcat"); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	addr := freeLocalAddr(t)
+	d, err := New(Config{
+		Dir:        dir,
+		HealthAddr: addr,
+		Pprof:      true,
+		RetryEvery: time.Second,
+		PollEvery:  time.Second,
+		Logf:       t.Logf,
+	}, &LocalTransport{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- d.Run(ctx) }()
+	waitFor(t, func() bool { return d.Me().Addr != "" }, "daemon to listen")
+
+	resp, err := http.Get("http://" + addr + "/debug/pprof/heap?debug=1")
+	if err != nil {
+		t.Fatalf("fetching heap profile: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /debug/pprof/heap: status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("daemon did not stop after cancel")
+	}
+}
+
+func TestRunPprofRequiresHealthAddr(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	if err := Init(dir, "pprofcat"); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	d, err := New(Config{
+		Dir:   dir,
+		Pprof: true,
+		Logf:  t.Logf,
+	}, &LocalTransport{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	err = d.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "health") {
+		t.Fatalf("Run error = %v, want a pprof-without-health-addr error", err)
 	}
 }

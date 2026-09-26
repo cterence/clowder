@@ -78,7 +78,9 @@ defaults to the hostname, i.e. the pod name), `CLOWDER_STORER`
 (`on`/`off`/`dropbox`, applied on every start), `CLOWDER_HEALTH_ADDR`
 (optional HTTP probe address, e.g. `:8080`; also `clow daemon --health`),
 `CLOWDER_DERPMAP_URL` (URL of a JSON DERP map to use instead of
-tailcat's default; also `clow daemon --derp-map`).
+tailcat's default; also `clow daemon --derp-map`), `CLOWDER_PPROF`
+(`1` serves net/http/pprof under `/debug/pprof/` on the health
+endpoint; opt-in, requires `CLOWDER_HEALTH_ADDR`).
 
 Things to know before running it on Kubernetes:
 

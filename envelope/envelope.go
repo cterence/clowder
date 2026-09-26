@@ -106,6 +106,7 @@ func SealStream(sender key.NodePrivate, recipient key.NodePublic, dst io.Writer,
 	h := sha256.New()
 	buf := make([]byte, ChunkSize)
 	ct := make([]byte, 0, ChunkSize+aead.Overhead())
+	var nonce [nonceLen]byte
 	var frame [4]byte
 	var seq uint64
 	for {
@@ -118,8 +119,7 @@ func SealStream(sender key.NodePrivate, recipient key.NodePublic, dst io.Writer,
 			if rerr != nil {
 				last = lastChunkFlag
 			}
-			nonce := chunkNonce(prefix, seq, last)
-			ct = aead.Seal(ct[:0], nonce, buf[:n], nil)
+			ct = aead.Seal(ct[:0], chunkNonce(&nonce, prefix, seq, last), buf[:n], nil)
 			binary.BigEndian.PutUint32(frame[:], uint32(len(ct)))
 			if _, err := dst.Write(frame[:]); err != nil {
 				return 0, "", fmt.Errorf("envelope: writing chunk frame: %w", err)
@@ -169,6 +169,11 @@ func OpenStream(recipient key.NodePrivate, src io.Reader, dst io.Writer) (plainS
 	copy(prefix[:], secret[fileKeyLen:])
 
 	h := sha256.New()
+	// The chunk loop reuses its buffers: opening is allocation-free
+	// per chunk (see TestOpenStreamAllocationBound).
+	ctBuf := make([]byte, ChunkSize+aead.Overhead())
+	plainBuf := make([]byte, 0, ChunkSize)
+	var nonce [nonceLen]byte
 	var frame [4]byte
 	var seq uint64
 	for {
@@ -182,16 +187,16 @@ func OpenStream(recipient key.NodePrivate, src io.Reader, dst io.Writer) (plainS
 		if n < uint32(aead.Overhead()) || n > ChunkSize+uint32(aead.Overhead()) {
 			return 0, "", fmt.Errorf("%w: chunk length %d out of range", ErrCorrupt, n)
 		}
-		ct := make([]byte, n)
+		ct := ctBuf[:n]
 		if _, err := io.ReadFull(src, ct); err != nil {
 			return 0, "", fmt.Errorf("%w: chunk cut short: %v", ErrCorrupt, err)
 		}
 		// Only the final chunk is sealed with the last-chunk flag; try
 		// the plain nonce first, then the flagged one. A chunk that
 		// opens under neither is corrupt.
-		plain, err := aead.Open(nil, chunkNonce(prefix, seq, 0), ct, nil)
+		plain, err := aead.Open(plainBuf[:0], chunkNonce(&nonce, prefix, seq, 0), ct, nil)
 		if err != nil {
-			plain, err = aead.Open(nil, chunkNonce(prefix, seq, lastChunkFlag), ct, nil)
+			plain, err = aead.Open(plainBuf[:0], chunkNonce(&nonce, prefix, seq, lastChunkFlag), ct, nil)
 			if err != nil {
 				return 0, "", ErrCorrupt
 			}
@@ -206,10 +211,11 @@ func OpenStream(recipient key.NodePrivate, src io.Reader, dst io.Writer) (plainS
 	return plainSize, hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// chunkNonce builds a per-chunk XChaCha20-Poly1305 nonce: the stream's
-// random prefix, a big-endian chunk counter, and the last-chunk flag.
-func chunkNonce(prefix [prefixLen]byte, seq uint64, last uint16) []byte {
-	var nonce [nonceLen]byte
+// chunkNonce builds a per-chunk XChaCha20-Poly1305 nonce into nonce:
+// the stream's random prefix, a big-endian chunk counter, and the
+// last-chunk flag. Callers hoist one array and refill it per chunk —
+// the seal/open loops are allocation-free.
+func chunkNonce(nonce *[nonceLen]byte, prefix [prefixLen]byte, seq uint64, last uint16) []byte {
 	copy(nonce[:prefixLen], prefix[:])
 	binary.BigEndian.PutUint64(nonce[nonceLen-flagLen-8:nonceLen-flagLen], seq)
 	binary.BigEndian.PutUint16(nonce[nonceLen-2:], last)

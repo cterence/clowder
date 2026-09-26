@@ -54,6 +54,10 @@ type Config struct {
 	// HealthAddr optionally serves HTTP container probes on / and
 	// /healthz (e.g. ":8080"); empty disables the endpoint.
 	HealthAddr string
+	// Pprof serves net/http/pprof under /debug/pprof/ on the health
+	// endpoint. Requires HealthAddr; off by default — profiling
+	// endpoints leak internals and must be an explicit opt-in.
+	Pprof bool
 	// DERPMapURL overrides where tailcat fetches its DERP map from
 	// (server, dials and pairing): a self-hosted map for air-gapped
 	// clusters. Empty means tailcat's default.
@@ -371,7 +375,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	var healthLn net.Listener
 	var healthSrv *http.Server
 	if d.cfg.HealthAddr != "" {
-		healthLn, healthSrv, err = listenHealth(d.cfg.HealthAddr)
+		healthLn, healthSrv, err = listenHealth(d.cfg.HealthAddr, d.cfg.Pprof)
 		if err != nil {
 			_ = ln.Close()
 			_ = ipcLn.Close()
@@ -380,6 +384,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 		}
 		go func() { _ = healthSrv.Serve(healthLn) }()
 		d.cfg.logf("clowder: health endpoint on %s", healthLn.Addr().String())
+	} else if d.cfg.Pprof {
+		_ = ln.Close()
+		_ = ipcLn.Close()
+		_ = d.tr.Close()
+		return errors.New("daemon: Pprof requires the health endpoint (set HealthAddr)")
 	}
 
 	retry := time.NewTicker(d.cfg.RetryEvery)
