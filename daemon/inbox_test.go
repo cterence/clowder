@@ -3,6 +3,7 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -48,4 +49,21 @@ func TestInboxPath(t *testing.T) {
 	if got := inboxPath(dir, ".."); got != filepath.Join(dir, "file") {
 		t.Fatalf("'..' = %q, want file", got)
 	}
+}
+
+func FuzzInboxPath(f *testing.F) {
+	f.Add("nap.txt")
+	f.Add("../../../etc/passwd")
+	f.Add("..")
+	f.Add(".bashrc")
+	f.Add("weird\x00name")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, name string) {
+		dir := t.TempDir()
+		got := inboxPath(dir, name)
+		// Whatever the input, the result must stay inside dir.
+		if !strings.HasPrefix(got, dir+string(filepath.Separator)) {
+			t.Fatalf("inboxPath(%q) escaped the inbox: %q", name, got)
+		}
+	})
 }

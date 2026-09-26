@@ -121,3 +121,41 @@ func TestConnAnswerAck(t *testing.T) {
 		t.Fatalf("Ack round trip: %+v", m.Ack)
 	}
 }
+
+func TestHelloVersionRoundTrip(t *testing.T) {
+	var buf bytes.Buffer
+	m := &Message{Hello: &Hello{Name: "fluff", Key: "nodekey:abc", Addr: "tcX", Version: HelloVersion}}
+	if err := WriteMsg(&buf, m); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadMsg(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Hello.Version != HelloVersion {
+		t.Fatalf("Hello version round trip = %d, want %d", got.Hello.Version, HelloVersion)
+	}
+}
+
+func FuzzReadMsg(f *testing.F) {
+	// A valid frame and its truncations, plus the rejection cases the
+	// parser documents: arbitrary bytes must error or return a
+	// message, never panic.
+	var buf bytes.Buffer
+	m := &Message{Hello: &Hello{Name: "fluff", Key: "nodekey:abc", Addr: "tcX", Version: HelloVersion}}
+	if err := WriteMsg(&buf, m); err != nil {
+		f.Fatal(err)
+	}
+	frame := buf.Bytes()
+	f.Add(frame)
+	f.Add(frame[:len(frame)-1])
+	f.Add([]byte{0x00, 0x90, 0x00, 0x00}) // header claiming an oversized frame
+	f.Add([]byte{0x00, 0x00, 0x00, 0x00}) // empty frame -> empty message
+	f.Add([]byte{})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		msg, err := ReadMsg(bytes.NewReader(data))
+		if err == nil && msg == nil {
+			t.Fatal("ReadMsg returned neither message nor error")
+		}
+	})
+}

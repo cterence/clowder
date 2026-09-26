@@ -1,0 +1,185 @@
+package daemon
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+// TestDeliveryReceipts covers the receipt loop: a direct delivery
+// confirms in the sender's ledger, and a receipt for a storer-relayed
+// delivery rides the storer while the sender is offline and lands
+// when the sender returns.
+func TestDeliveryReceipts(t *testing.T) {
+	milo := startDaemon(t, "milo")
+	fluff := startDaemon(t, "fluff")
+	trust(t, milo, fluff)
+	trust(t, fluff, milo)
+
+	// Direct: fluff's receipt for milo's send reaches milo at once.
+	src := writeSource(t, "nap first")
+	id, err := milo.Send("fluff", src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		_, ok := inboxFile(t, fluff, "nap.txt")
+		return ok
+	}, "the direct send to arrive")
+	waitFor(t, func() bool {
+		r, ok := milo.receipts.get(id)
+		return ok && r.FileName == "nap.txt" && r.From == "fluff" && r.DeliveredAt > 0
+	}, "the direct receipt to land in milo's ledger")
+
+	// Storer-relayed: milo sends to an offline niko, then goes offline
+	// himself; niko wakes, pulls the file, and his receipt cannot
+	// reach milo directly — it must ride the storer until milo
+	// returns.
+	box := startDaemon(t, "box")
+	if err := box.SetStorer(true, 10<<20); err != nil {
+		t.Fatal(err)
+	}
+	niko, nikoDir := offlineCat(t)
+	trust(t, milo, box)
+	addCat(t, milo, niko)
+	addCat(t, box, niko)
+
+	src2 := writeSource(t, "nap second")
+	id2, err := milo.Send("niko", src2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return box.Spool().Count() == 1 },
+		"the storer to hold the offline cat's file")
+	stopDaemon(milo)
+
+	nikoD := startDaemonAt(t, nikoDir)
+	trust(t, nikoD, box)
+	addCat(t, nikoD, milo.Me()) // niko knows milo, so the receipt can target him
+	trust(t, box, nikoD)
+	nikoD.Poll(context.Background())
+	waitFor(t, func() bool {
+		_, ok := inboxFile(t, nikoD, "nap.txt")
+		return ok
+	}, "niko to pull the held file")
+	waitFor(t, func() bool { return box.Spool().Count() >= 1 },
+		"niko's receipt to be held at the storer (milo is offline)")
+
+	// Milo returns: the storer's sweep pushes the receipt and the
+	// ledger closes the loop.
+	milo2 := startDaemonAt(t, milo.cfg.Dir)
+	trust(t, milo2, box)
+	milo2.Poll(context.Background())
+	waitFor(t, func() bool { return box.Spool().Count() == 0 },
+		"the storer to hand over the held receipt (spool %d)", box.Spool().Count())
+	t.Logf("milo2 inbox: %v", inboxFiles(t, milo2))
+	waitFor(t, func() bool {
+		r, ok := milo2.receipts.get(id2)
+		return ok && r.From == "niko" && r.FileName == "nap.txt"
+	}, "the relayed receipt to land in milo's ledger after his return")
+}
+
+// TestReceiptsSurviveRestart pins the ledger's persistence.
+func TestReceiptsSurviveRestart(t *testing.T) {
+	milo := startDaemon(t, "milo")
+	fluff := startDaemon(t, "fluff")
+	trust(t, milo, fluff)
+	trust(t, fluff, milo)
+	id, err := milo.Send("fluff", writeSource(t, "persist me"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		r, ok := milo.receipts.get(id)
+		return ok && r.DeliveredAt > 0
+	}, "the receipt to land")
+	stopDaemon(milo)
+	if _, ok := startDaemonAt(t, milo.cfg.Dir).receipts.get(id); !ok {
+		t.Fatal("receipts ledger did not survive restart")
+	}
+}
+
+func inboxFiles(t *testing.T, d *Daemon) []string {
+	t.Helper()
+	des, err := os.ReadDir(d.InboxDir())
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, de := range des {
+		out = append(out, filepath.Join(d.InboxDir(), de.Name()))
+	}
+	return out
+}
+
+// TestReceiveRefusedWhenDiskLow pins the free-space check: a sender
+// cannot fill the receiver's disk, and the send retries once space
+// returns.
+func TestReceiveRefusedWhenDiskLow(t *testing.T) {
+	milo := startDaemon(t, "milo")
+	fluff := startDaemon(t, "fluff")
+	trust(t, milo, fluff)
+	trust(t, fluff, milo)
+
+	saved := freeSpace
+	freeSpace = func(string) (uint64, bool) { return 100, true } // bytes, not mebibytes
+	defer func() { freeSpace = saved }()
+
+	src := writeSource(t, "too big for the disk")
+	id, err := milo.Send("fluff", src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		for _, e := range milo.ob.All() {
+			if e.ID == id {
+				return true
+			}
+		}
+		return false
+	}, "the send to stay queued while the receiver refuses")
+	if des, _ := os.ReadDir(fluff.InboxDir()); len(des) != 0 {
+		t.Fatalf("inbox has %d files, want 0", len(des))
+	}
+
+	freeSpace = func(string) (uint64, bool) { return 1 << 40, true }
+	waitFor(t, func() bool {
+		_, ok := inboxFile(t, fluff, "nap.txt")
+		return ok
+	}, "the send to deliver once space returns")
+}
+
+// TestReceiveBusyRefused pins the global transfer cap: with every slot
+// taken the receiver refuses instead of stacking another stream, and
+// the send retries once a slot frees.
+func TestReceiveBusyRefused(t *testing.T) {
+	milo := startDaemon(t, "milo")
+	fluff := startDaemon(t, "fluff")
+	trust(t, milo, fluff)
+	trust(t, fluff, milo)
+
+	fluff.gauge.max = 1
+	if !fluff.gauge.tryStart() {
+		t.Fatal("could not occupy the single transfer slot")
+	}
+	src := writeSource(t, "while busy")
+	id, err := milo.Send("fluff", src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		for _, e := range milo.ob.All() {
+			if e.ID == id {
+				return true
+			}
+		}
+		return false
+	}, "the send to stay queued while the receiver is busy")
+	fluff.gauge.done()
+
+	waitFor(t, func() bool {
+		_, ok := inboxFile(t, fluff, "nap.txt")
+		return ok
+	}, "the send to deliver once the slot frees")
+}

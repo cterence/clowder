@@ -119,28 +119,7 @@ module; a signed lease beats leader election at this scale.
 Ordered by complexity, easiest first; do not reorder without a
 reason. Update this list and the README when something ships.
 
-1. **Delivery receipts** — approved design, not yet built: when a
-   target receives a file (direct or via storer) it seals a tiny
-   receipt {transferID, fileName, deliveredAt} to the sender's node key
-   with its own (sealed-box authenticated, storer-opaque) and relays it
-   direct-or-via-storer like any small message; the sender keeps a
-   receipts.json ledger shown in `clow status`, closing the loop for
-   sends that left the outbox while the sender was offline.
-2. **Hardening batch** (from the 2026-09-26 design review):
-   - Inbox quota / free-space check on receive (a trusted cat can
-     fill the receiver's disk today; storers have capacity, direct
-     receivers do not).
-   - Offer metadata is visible to storers (file name, size, digest,
-     sender, target): document explicitly, or seal the offer payload
-     on the storer path.
-   - Wire protocol version field in Hello before the protocol
-     ossifies (no version negotiation today).
-   - Idle tailcat-client eviction (engines accumulate per peer; the
-     close machinery exists).
-   - Global transfer concurrency cap (claims are per-ID only).
-   - Fuzz targets for ReadMsg/parsePairCode/inboxPath (untrusted
-     input decode paths).
-3. **Pairing hardening: offline guessability + PAKE** — the pairing
+1. **Pairing hardening: offline guessability + PAKE** — the pairing
    words currently derive the WireGuard static keys and PSK directly
    (derivePairing, daemon/pairing.go), and the file comment claims
    guessing is "active-only, nothing verifiable offline". That claim
@@ -164,7 +143,7 @@ reason. Update this list and the README when something ships.
    on the joiner's ack and the joiner returning only on the
    inviter's confirmation (committing optimistically if that
    confirmation is lost after its own ack was written).
-4. **Leave with signed forget-me gossip + roster entry signing** —
+2. **Leave with signed forget-me gossip + roster entry signing** —
    derive an Ed25519 keypair from the node key seed
    (ed25519.NewKeyFromSeed(nodeRaw32)); announce the sign-public in
    Hello/roster entries; `clow leave` broadcasts a signed {leaver,
@@ -176,7 +155,7 @@ reason. Update this list and the README when something ships.
    override entries via LWW (brick an entry with a broken address, or
    duplicate a name to capture sends). Merge should require a valid
    signature on entries for keys already known.
-5. **Android app client** — a clowder client for Android. tailcat has
+3. **Android app client** — a clowder client for Android. tailcat has
    Android support (see its android_linux.go and INSTALL.md), so the
    shape is: the daemon packages as an Android library (aar) or runs in
    a foreground service, with a thin UI for init/invite/join/send/
@@ -190,7 +169,7 @@ reason. Update this list and the README when something ships.
    tailcat); Android kills the daemon without a wake lock. Running
    the CLI in Termux is explicitly NOT a goal — the foreground-service
    app is the answer to both the lifecycle and the daemon+client UX.
-6. **Multiple clowders** — named clowders: per-clowder roster files,
+4. **Multiple clowders** — named clowders: per-clowder roster files,
    `--clowder` on invite/join/send, Hello carries the clowder name so a
    connection routes to the right roster. One identity, one daemon,
    clowders stay disjoint (flat sync would otherwise merge them).
@@ -199,7 +178,26 @@ reason. Update this list and the README when something ships.
    O(N²) bytes per cycle; one-peer-per-tick means propagation latency
    grows linearly).
 
-Shipped recently (context for a fresh session): duplicate-name
+Shipped recently (context for a fresh session): delivery receipts
+(receivers seal {transferID, fileName, deliveredAt} to the ORIGINAL
+SENDER's node key and relay direct-or-via-storer like any small
+transfer — Offer.Receipt flags the stream, store.Meta preserves the
+flag across storer relays so the target routes it to the receipts.json
+ledger instead of the inbox; `clow status` shows the ledger; sealed
+payload bounded at 4 KiB, digest-checked), and the hardening batch:
+receive-time free-space check with a 64 MiB reserve (refused sends
+retry when space returns; storer pulls keep the file held), a
+daemon-wide transfer cap of 4 concurrent streams (busy receivers
+refuse; deferred sends retry), idle tailcat-client eviction after
+10 minutes (a cached client holds a live WireGuard engine per peer),
+a Hello wire-version field (logged, never refused — no negotiation,
+upgrades never partition), fuzz targets for ReadMsg/parsePairCode/
+inboxPath (FuzzInboxPath found a real infinite loop: a NUL byte in a
+file name made os.Stat fail EINVAL, not IsNotExist, spinning the
+collision loop forever — names are now control-stripped and the loop
+bounded), and the storer-visible offer metadata documented in the
+README (sealing it remains future work). Also shipped earlier today:
+duplicate-name
 hardening (pairing refuses a join whose name another key already
 claims, with an explicit refusal the joiner understands so it does not
 sweep or optimistically commit; roster Get picks the newest Updated

@@ -81,7 +81,8 @@ path if lost — except the identity.
     clow forget <CAT>                                   drop a cat from the roster
     clow distrust <CAT>                                 block a cat locally (both ways, no gossip)
     clow trust <CAT>                                    undo distrust
-    clow status                                         config, stats, outbox, spool, roster
+    clow status                                         config, stats, outbox, spool,
+                                                        receipts, roster
     clow reset [--yes]                                  wipe this cat (identity, rosters)
 
 ## Running in a container
@@ -131,6 +132,17 @@ Things to know before running it on Kubernetes:
   liveness/readiness probes at `http://<pod>:8080/healthz` — it answers
   `200 ok` while the daemon runs. The address needs a `containerPort`
   but no Service; without it, an exec probe on `clow status` works.
+
+## Privacy: what storers see
+
+Storers hold sealed streams they cannot open, but the Offer metadata
+relayed through them is visible to the storer by design: file name,
+size, plaintext digest, and the sender's and target's declared names.
+A storer also sees delivery receipts' existence (a tiny transfer
+flagged as a receipt) but not their contents — the receipt payload is
+sealed to the original sender. Choosing trustworthy storers (or
+running your own with `clow storer`) is the mitigation; sealing the
+offer metadata itself is tracked in AGENTS.md.
 
 ## Design
 

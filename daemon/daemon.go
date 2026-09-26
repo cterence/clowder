@@ -45,6 +45,12 @@ const (
 	msgTimeout = 2 * time.Minute
 	// streamTimeout bounds a whole sealed-stream transfer.
 	streamTimeout = 30 * time.Minute
+	// maxConcurrentTransfers bounds daemon-wide streaming transfers.
+	maxConcurrentTransfers = 4
+	// recvReserve is the free-space floor a receive insists on beyond
+	// the announced size, so a fill-the-disk sender cannot consume the
+	// last bytes of the volume.
+	recvReserve = 64 << 20
 )
 
 // Config configures a daemon. Dir is required and must have been created
@@ -84,12 +90,14 @@ type Daemon struct {
 	mu    sync.Mutex // guards meCat
 	meCat roster.Cat
 
-	ros   *roster.Roster
-	spool *store.Spool
-	ob    *outbox
-	stats *statsKeeper
-	prog  *progressKeeper
-	inbox string
+	ros      *roster.Roster
+	spool    *store.Spool
+	ob       *outbox
+	stats    *statsKeeper
+	prog     *progressKeeper
+	receipts *receiptKeeper
+	gauge    *transferGauge
+	inbox    string
 
 	syncSeq atomic.Int64 // round-robin cursor for peer sync
 
@@ -159,6 +167,8 @@ func New(cfg Config, tr Transport) (*Daemon, error) {
 		prog:             newProgressKeeper(),
 		liveness:         map[string]int64{},
 		blocked:          loadBlocked(cfg.Dir),
+		receipts:         loadReceipts(cfg.Dir),
+		gauge:            &transferGauge{max: maxConcurrentTransfers},
 		inflightDelivery: map[string]bool{},
 		inflightReceive:  map[string]bool{},
 		inbox:            inbox,
@@ -495,6 +505,12 @@ func (d *Daemon) serveConn(pc *protocol.Conn, authKey key.NodePublic, authed boo
 			return
 		}
 	}
+	if peer.Version > protocol.HelloVersion {
+		// No negotiation: serve anyway, so an upgrade never partitions
+		// the clowder — but say so, before the protocol ossifies into
+		// silent incompatibility.
+		d.cfg.logf("clowder: %s speaks protocol version %d, newer than ours (%d); serving anyway", peer.Name, peer.Version, protocol.HelloVersion)
+	}
 	d.markSeen(peer.Key)
 	if err := pc.WriteMsg(&protocol.Message{Hello: d.helloMsg()}); err != nil {
 		return
@@ -541,6 +557,9 @@ func (d *Daemon) serveConn(pc *protocol.Conn, authKey key.NodePublic, authed boo
 // storer deposit (target is a third cat). It reports whether the
 // connection may continue.
 func (d *Daemon) handleOffer(pc *protocol.Conn, from *protocol.Hello, o *protocol.Offer) bool {
+	if o.Receipt && o.TargetKey == d.Me().Key {
+		return d.receiveReceipt(pc, o)
+	}
 	if o.TargetKey == d.Me().Key {
 		return d.receiveDirect(pc, from, o)
 	}
@@ -562,12 +581,21 @@ func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *proto
 		// but the sender named in the offer is distrusted.
 		return refuse("sender is distrusted")
 	}
+	// The disk is not fillable by a sender: refuse when the announced
+	// stream plus a reserve would not fit.
+	if free, ok := freeSpace(d.InboxDir()); ok && free < uint64(o.Size)+recvReserve {
+		return refuse(fmt.Sprintf("receiver is low on disk (%s free)", HumanBytes(int64(free))))
+	}
 	if !d.claimReceive(o.ID) {
 		// A duplicate stream for a transfer already in flight (the
 		// sender retried, or the sweep raced the pull): refuse it.
 		return refuse("transfer already in progress")
 	}
 	defer d.releaseReceive(o.ID)
+	if !d.gauge.tryStart() {
+		return refuse("receiver busy, try again soon")
+	}
+	defer d.gauge.done()
 	if err := pc.Answer(o.ID, true, ""); err != nil {
 		return false
 	}
@@ -592,6 +620,7 @@ func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *proto
 		return false
 	}
 	d.cfg.logf("clowder: received %s (%s) from %s", o.FileName, HumanBytes(plainSize), from.Name)
+	go d.sendReceipt(from.Name, o.ID, o.FileName)
 	return true
 }
 
@@ -622,6 +651,7 @@ func (d *Daemon) receiveAsStorer(pc *protocol.Conn, o *protocol.Offer) bool {
 		From:       o.From,
 		TargetKey:  o.TargetKey,
 		TargetName: o.TargetName,
+		Receipt:    o.Receipt,
 	}
 	if err := d.spool.Put(meta, io.LimitReader(pc.Reader(), o.Size)); err != nil {
 		d.cfg.logf("clowder: spooling %s for %s: %v", o.FileName, o.TargetName, err)
@@ -713,6 +743,7 @@ func (d *Daemon) handleFetch(pc *protocol.Conn, hello *protocol.Hello, f *protoc
 		SHA256:     meta.SHA256,
 		TargetKey:  meta.TargetKey,
 		TargetName: meta.TargetName,
+		Receipt:    meta.Receipt,
 	}
 	if err := pc.WriteMsg(&protocol.Message{Offer: offer}); err != nil {
 		return false
@@ -791,7 +822,17 @@ func (e *exactReader) Read(p []byte) (int, error) {
 // read as an extension, which is especially confusing for files that
 // never had one. Dotfiles keep their whole name as the stem.
 func inboxPath(dir, name string) string {
-	clean := filepath.Base(filepath.Clean(name))
+	// Control characters are stripped before anything else: os.Stat
+	// fails with EINVAL (not IsNotExist) on e.g. a NUL byte, which
+	// would spin the collision loop below forever (found by
+	// FuzzInboxPath).
+	clean := strings.Map(func(r rune) rune {
+		if r < 32 {
+			return -1
+		}
+		return r
+	}, name)
+	clean = filepath.Base(filepath.Clean(clean))
 	if clean == "" || clean == "." || clean == ".." || clean == "/" {
 		clean = "file"
 	}
@@ -803,11 +844,49 @@ func inboxPath(dir, name string) string {
 	}
 	p := filepath.Join(dir, clean)
 	for i := 1; ; i++ {
-		if _, err := os.Stat(p); os.IsNotExist(err) {
+		if _, err := os.Stat(p); err == nil {
+			// taken: try the next number
+		} else if os.IsNotExist(err) {
 			return p
+		} else {
+			// Unverifiable (permissions, invalid name): fall through
+			// and keep numbering rather than spinning forever on the
+			// same broken name.
+			_ = err
+		}
+		if i > 1<<16 {
+			// Absurd collision count: pick something unique instead
+			// of looping unboundedly.
+			return filepath.Join(dir, fmt.Sprintf("clow-%d%s", time.Now().UnixNano(), ext))
 		}
 		p = filepath.Join(dir, fmt.Sprintf("%s-%d%s", stem, i, ext))
 	}
+}
+
+// transferGauge caps concurrent streaming transfers (sends and
+// receives) across the whole daemon: claims are per-ID only, so
+// without a global cap a flood of concurrent offers can pin every
+// core and exhaust memory in sealing buffers.
+type transferGauge struct {
+	mu     sync.Mutex
+	active int
+	max    int
+}
+
+func (g *transferGauge) tryStart() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.active >= g.max {
+		return false
+	}
+	g.active++
+	return true
+}
+
+func (g *transferGauge) done() {
+	g.mu.Lock()
+	g.active--
+	g.mu.Unlock()
 }
 
 // ---- outbound ----
@@ -827,6 +906,11 @@ func (d *Daemon) deliver(e Entry) {
 		return // already streaming this entry
 	}
 	defer d.releaseDelivery(e.ID)
+	if !d.gauge.tryStart() {
+		d.cfg.logf("clowder: %s to %s deferred: %d transfers already in flight", e.FileName, e.TargetName, maxConcurrentTransfers)
+		return
+	}
+	defer d.gauge.done()
 
 	ctx, cancel := context.WithTimeout(context.Background(), streamTimeout)
 	defer cancel()
@@ -881,13 +965,7 @@ func (d *Daemon) deliverStream(ctx context.Context, peer roster.Cat, e Entry, ta
 	}
 	defer src.Close()
 
-	pc, err := d.connect(ctx, peer)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = pc.Close() }()
-
-	offer := &protocol.Offer{
+	o := &protocol.Offer{
 		ID:         e.ID,
 		FileName:   e.FileName,
 		Size:       envelope.SealedSize(size),
@@ -896,7 +974,27 @@ func (d *Daemon) deliverStream(ctx context.Context, peer roster.Cat, e Entry, ta
 		TargetKey:  targetKey,
 		TargetName: targetName,
 	}
-	if err := pc.WriteMsg(&protocol.Message{Offer: offer}); err != nil {
+	if err := d.sendSealed(ctx, peer, o, digest, src, wantAck, true); err != nil {
+		return err
+	}
+	// Stats are plaintext bytes: what the user actually sent, not the
+	// sealed stream size.
+	d.stats.add(func(s *Stats) { s.Sent++; s.SentBytes += size })
+	return nil
+}
+
+// sendSealed performs one Offer/Answer/sealed-stream/Ack exchange
+// toward a peer, sealing to targetKey and streaming src. Shared by
+// file deliveries (outbox entries) and delivery receipts; track enables
+// in-status progress for the former only.
+func (d *Daemon) sendSealed(ctx context.Context, peer roster.Cat, o *protocol.Offer, digest string, src io.Reader, wantAck string, track bool) error {
+	pc, err := d.connect(ctx, peer)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = pc.Close() }()
+
+	if err := pc.WriteMsg(&protocol.Message{Offer: o}); err != nil {
 		return err
 	}
 	m, err := pc.ReadMsg()
@@ -911,25 +1009,28 @@ func (d *Daemon) deliverStream(ctx context.Context, peer roster.Cat, e Entry, ta
 		return errors.New(reason)
 	}
 	_ = pc.SetDeadline(time.Now().Add(streamTimeout))
-	targetPub, err := parseKey(targetKey)
+	targetPub, err := parseKey(o.TargetKey)
 	if err != nil {
 		return err
 	}
-	total := envelope.SealedSize(size)
-	d.prog.start(Progress{
-		ID:       e.ID,
-		FileName: e.FileName,
-		Peer:     targetName,
-		Total:    total,
-		Started:  time.Now().Unix(),
-	})
-	defer d.prog.end(e.ID)
-	_, sealedSha, err := envelope.SealStream(d.env.Identity.Private, targetPub, countingWriter{k: d.prog, id: e.ID, w: pc.Writer()}, src)
+	var w = pc.Writer()
+	if track {
+		d.prog.start(Progress{
+			ID:       o.ID,
+			FileName: o.FileName,
+			Peer:     o.TargetName,
+			Total:    o.Size,
+			Started:  time.Now().Unix(),
+		})
+		defer d.prog.end(o.ID)
+		w = countingWriter{k: d.prog, id: o.ID, w: pc.Writer()}
+	}
+	_, sealedSha, err := envelope.SealStream(d.env.Identity.Private, targetPub, w, src)
 	if err != nil {
 		return err
 	}
 	if sealedSha != digest {
-		return errors.New("file changed during send")
+		return errors.New("payload changed during send")
 	}
 	_ = pc.SetDeadline(time.Now().Add(msgTimeout))
 	m, err = pc.ReadMsg()
@@ -939,8 +1040,7 @@ func (d *Daemon) deliverStream(ctx context.Context, peer roster.Cat, e Entry, ta
 	if m.Ack == nil || m.Ack.Kind != wantAck {
 		return fmt.Errorf("wanted %s ack, got %v", wantAck, m.Ack)
 	}
-	d.stats.add(func(s *Stats) { s.Sent++; s.SentBytes += size })
-	d.cfg.logf("clowder: sent %s (%s) to %s", e.FileName, HumanBytes(size), targetName)
+	d.cfg.logf("clowder: sent %s (%s) to %s", o.FileName, HumanBytes(o.Size), o.TargetName)
 	return nil
 }
 
@@ -990,6 +1090,14 @@ func (d *Daemon) fetchOne(pc *protocol.Conn, f protocol.PendingFile) error {
 		}
 		return nil
 	}
+	// A storer may hand us a delivery receipt rather than a file
+	// (fetch of the pending list includes receipts held for us).
+	if o.Receipt {
+		if !d.receiveReceipt(pc, o) {
+			return errors.New("receipt exchange failed")
+		}
+		return nil
+	}
 	if err := pc.Answer(o.ID, true, ""); err != nil {
 		return err
 	}
@@ -1015,6 +1123,7 @@ func (d *Daemon) fetchOne(pc *protocol.Conn, f protocol.PendingFile) error {
 		return err
 	}
 	d.cfg.logf("clowder: fetched %s from storer", o.FileName)
+	go d.sendReceipt(o.From, o.ID, o.FileName)
 	return nil
 }
 
@@ -1044,6 +1153,7 @@ func (d *Daemon) helloMsg() *protocol.Hello {
 		Addr:      me.Addr,
 		Storer:    me.Storer,
 		Dropbox:   me.Dropbox,
+		Version:   protocol.HelloVersion,
 	}
 }
 

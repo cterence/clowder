@@ -35,6 +35,12 @@ const (
 // Hello is the first message on each connection, sent by both sides.
 // Key is the sender's identity (server) key; ClientKey is the separate
 // keypair all its outbound dials use, which peers allowlist.
+// HelloVersion is the wire protocol version carried in Hello. There
+// is no negotiation: a peer announcing a higher version is logged and
+// still served, so an upgrade never partitions the clowder. Version 0
+// (absent) means a pre-version peer.
+const HelloVersion = 1
+
 type Hello struct {
 	Name      string `cbor:"n"`
 	Key       string `cbor:"k"`
@@ -42,6 +48,7 @@ type Hello struct {
 	Addr      string `cbor:"a"`
 	Storer    bool   `cbor:"s,omitempty"`
 	Dropbox   bool   `cbor:"d,omitempty"`
+	Version   uint16 `cbor:"v,omitempty"`
 }
 
 // RosterSync carries the sender's full roster (including its own entry)
@@ -64,6 +71,11 @@ type Offer struct {
 	SHA256     string `cbor:"h"` // hex SHA-256 of the plaintext
 	TargetKey  string `cbor:"t"`
 	TargetName string `cbor:"m"`
+	// Receipt marks the stream as a delivery receipt for the
+	// transfer named by FileName (the original file name): a tiny
+	// sealed envelope, not an inbox delivery. Storers relay it like
+	// any other transfer and see only the receipt flag and size.
+	Receipt bool `cbor:"rc,omitempty"`
 }
 
 // Answer accepts or rejects an Offer.

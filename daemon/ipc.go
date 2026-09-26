@@ -44,6 +44,9 @@ type Response struct {
 	// Distrusted names the roster cats whose keys are on the local
 	// blocklist (distrust, and forgotten cats), for cats/status tags.
 	Distrusted []string `json:"distrusted,omitempty"`
+	// Receipts are the most recent confirmed deliveries, newest first
+	// (status op).
+	Receipts []Receipt `json:"receipts,omitempty"`
 	// Paths maps cat keys to their probed route (status op); cats
 	// that did not answer the probe have no entry.
 	Paths map[string]*PathInfo `json:"paths,omitempty"`
@@ -222,6 +225,7 @@ func (d *Daemon) handleIPC(req Request) Response {
 			Me:         &me,
 			Cats:       d.ros.All(),
 			Distrusted: d.distrustedNames(),
+			Receipts:   d.receipts.recent(10),
 			Outbox:     d.ob.All(),
 			Spool:      d.spool.Count(),
 			SpoolBytes: d.spool.Usage(),

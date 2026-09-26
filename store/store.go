@@ -34,6 +34,10 @@ type Meta struct {
 	TargetKey  string `json:"target_key"`  // recipient node public key, string form
 	TargetName string `json:"target_name"` // recipient's declared name
 	StoredAt   int64  `json:"stored_at"`   // unix seconds
+	// Receipt marks the blob as a delivery receipt rather than a
+	// file: relays must preserve the flag so the target routes it to
+	// the receipts ledger, not the inbox.
+	Receipt bool `json:"receipt,omitempty"`
 }
 
 // ExpiresAt returns when the entry expires given the spool's TTL.

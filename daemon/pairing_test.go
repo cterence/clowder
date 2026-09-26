@@ -373,3 +373,19 @@ func TestPairingRefusesDuplicateName(t *testing.T) {
 		t.Fatal("the differently-named joiner was not added")
 	}
 }
+
+func FuzzParsePairCode(f *testing.F) {
+	f.Add("hazel-meadow-quartz-amber-ember-303")
+	f.Add("hazel meadow quartz amber ember 303")
+	f.Add("short-code-1")
+	f.Add("hazel-meadow-quartz-amber-notaword-303")
+	f.Add("hazel-meadow-quartz-amber-ember-zero")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, code string) {
+		if words, region, err := parsePairCode(code); err == nil {
+			if len(words) != 5 || region <= 0 {
+				t.Fatalf("parsePairCode(%q) accepted invalid shape: %v %d", code, words, region)
+			}
+		}
+	})
+}

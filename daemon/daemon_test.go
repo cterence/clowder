@@ -89,6 +89,17 @@ func startDaemon(t *testing.T, name string) *Daemon {
 	return startDaemonAt(t, dir)
 }
 
+// daemonStops maps a running loopback daemon to its stop function, so
+// tests can take a cat offline mid-test.
+var daemonStops sync.Map
+
+// stopDaemon takes a loopback daemon offline (cancels its Run).
+func stopDaemon(d *Daemon) {
+	if f, ok := daemonStops.Load(d); ok {
+		f.(func())()
+	}
+}
+
 // startDaemonAt runs a daemon on a config dir that Init (or a sleeping
 // offline cat) already prepared.
 func startDaemonAt(t *testing.T, dir string) *Daemon {
@@ -115,6 +126,7 @@ func runDaemon(t *testing.T, dir string, tr Transport) *Daemon {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
+	daemonStops.Store(d, func() { cancel() })
 	go func() { _ = d.Run(ctx) }()
 	waitFor(t, func() bool { return d.Me().Addr != "" }, "daemon %s to listen", d.Me().Name)
 	return d

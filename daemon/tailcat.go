@@ -32,7 +32,16 @@ type TailcatTransport struct {
 	pending []key.NodePublic           // allows before Listen
 	srv     *tailcat.Server            // non-nil after Listen
 	clients map[string]*tailcat.Client // one client per peer address
+	lastUse map[string]time.Time       // per address, for idle eviction
+	evict   chan struct{}              // closes when the sweeper stops
 }
+
+// Idle-engine eviction: a cached client holds a live WireGuard engine
+// per peer, and they accumulate without a usage cap.
+const (
+	idleEvictInterval = time.Minute
+	idleEvictMax      = 10 * time.Minute
+)
 
 // NewTailcatTransport returns a transport serving the cat's identity on
 // the given clowder protocol port, dialing out with clientKey.
@@ -52,7 +61,11 @@ func (t *TailcatTransport) Listen(ctx context.Context) (net.Listener, error) {
 	}
 	s.AllowedClients = append([]key.NodePublic(nil), t.pending...)
 	t.srv = s
+	t.clients = map[string]*tailcat.Client{}
+	t.lastUse = map[string]time.Time{}
+	t.evict = make(chan struct{})
 	t.mu.Unlock()
+	go t.sweepIdle(idleEvictInterval, idleEvictMax)
 
 	ln, err := s.Listen(ctx, "tcp", fmt.Sprintf(":%d", t.Port))
 	if err != nil {
@@ -107,7 +120,52 @@ func (t *TailcatTransport) clientFor(addr string) *tailcat.Client {
 		}
 		t.clients[addr] = c
 	}
+	t.lastUse[addr] = time.Now()
 	return c
+}
+
+// idleKeys returns the addresses unused for longer than maxIdle: the
+// eviction candidates. Each candidate holds a live WireGuard engine,
+// and engines accumulate per peer without this.
+func idleKeys(lastUse map[string]time.Time, now time.Time, maxIdle time.Duration) []string {
+	var out []string
+	for addr, last := range lastUse {
+		if now.Sub(last) > maxIdle {
+			out = append(out, addr)
+		}
+	}
+	return out
+}
+
+// evictIdle closes clients idle beyond maxIdle. Called from the
+// sweeper goroutine started at Listen; a later dial rebuilds the
+// client from the current roster entry (the peer may have rotated its
+// address).
+func (t *TailcatTransport) evictIdle(maxIdle time.Duration) {
+	t.mu.Lock()
+	idle := idleKeys(t.lastUse, time.Now(), maxIdle)
+	for _, addr := range idle {
+		if c, ok := t.clients[addr]; ok {
+			_ = c.Close()
+		}
+		delete(t.clients, addr)
+		delete(t.lastUse, addr)
+	}
+	t.mu.Unlock()
+}
+
+// sweepIdle runs the eviction loop until the transport closes.
+func (t *TailcatTransport) sweepIdle(interval, maxIdle time.Duration) {
+	tick := time.NewTicker(interval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-tick.C:
+			t.evictIdle(maxIdle)
+		case <-t.evict:
+			return
+		}
+	}
 }
 
 func (t *TailcatTransport) Dial(ctx context.Context, addr string) (net.Conn, error) {
@@ -182,13 +240,18 @@ func (t *TailcatTransport) PeerKey(remote net.Addr) (key.NodePublic, bool) {
 	return t.srv.PeerKey(remote)
 }
 
-// Close shuts down the server and any dialed clients.
+// Close shuts down the server, the eviction sweeper, and any dialed
+// clients.
 func (t *TailcatTransport) Close() error {
 	t.mu.Lock()
 	srv := t.srv
 	clients := t.clients
 	t.srv = nil
 	t.clients = nil
+	if t.evict != nil {
+		close(t.evict)
+		t.evict = nil // Close may run again (Run's shutdown plus a stop func)
+	}
 	t.mu.Unlock()
 
 	for _, c := range clients {

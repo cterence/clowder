@@ -567,6 +567,15 @@ func cmdStatus() error {
 		fmt.Printf(", %d %s\n", resp.Spool, plural(resp.Spool, "file", "files"))
 	}
 
+	// Confirmed deliveries (receipts), newest first.
+	if len(resp.Receipts) > 0 {
+		fmt.Printf("\nreceipts: %d shown\n", len(resp.Receipts))
+		for i := len(resp.Receipts) - 1; i >= 0; i-- {
+			r := resp.Receipts[i]
+			fmt.Printf("  %-24s from %-16s delivered %s\n", r.FileName, r.From, age(r.DeliveredAt))
+		}
+	}
+
 	// Lifetime counters.
 	if resp.Stats != nil {
 		st := resp.Stats
