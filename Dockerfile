@@ -4,12 +4,18 @@
 # needs no exposed ports — only outbound access to the DERP relays and
 # to peers' public endpoints.
 
-FROM golang:1.27-alpine AS build
+# Build on the builder's native platform (BUILDPLATFORM) and let Go's
+# cross-compiler target the image platform (TARGETOS/TARGETARCH). An
+# emulated `go build` is slow on Apple Silicon and crashes outright
+# under Rosetta ("found pointer to free object" — Go's GC breaks there).
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
+ARG TARGETOS TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/clow .
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w" -o /out/clow .
 
 FROM alpine:3.21
 # A shell (alpine, not distroless) so `kubectl exec` can run the clow
