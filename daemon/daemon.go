@@ -124,6 +124,11 @@ type Daemon struct {
 	// successful connection, either direction. Guarded by mu.
 	liveness map[string]int64
 
+	// paths caches the last background path probe per cat key, so
+	// `clow status` answers from memory instead of probing (the
+	// refreshPaths background loop keeps it warm). Guarded by mu.
+	paths map[string]PathInfo
+
 	// blocked holds the keys of forgotten (and, later, distrusted)
 	// cats. Tailcat's AllowedClients is add-only, so removal at the
 	// transport layer is impossible; serveConn refuses these peers at
@@ -420,6 +425,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 	poll := time.NewTicker(d.cfg.PollEvery)
 	defer poll.Stop()
 
+	// Warm the path cache immediately instead of waiting for the
+	// first poll tick, so an early `clow status` shows routes.
+	d.goBg(func() { d.refreshPaths(context.WithoutCancel(ctx)) })
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -445,10 +454,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 			// No periodic storer polling: the push sweep delivers
 			// held files to online targets on its own, and `clow
 			// fetch` remains as a manual pull. This keeps the
-			// background traffic to one roster sync per tick plus
-			// spool pushes only while files are held.
+			// background traffic to one roster sync, one path
+			// refresh, plus spool pushes only while files are held.
 			d.goBg(func() { d.syncPeers(context.WithoutCancel(ctx)) })
 			d.goBg(func() { d.sweepSpool(context.WithoutCancel(ctx)) })
+			d.goBg(func() { d.refreshPaths(context.WithoutCancel(ctx)) })
 		}
 	}
 }

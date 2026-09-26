@@ -228,16 +228,20 @@ inboxPath (FuzzInboxPath found a real infinite loop: a NUL byte in a
 file name made os.Stat fail EINVAL, not IsNotExist, spinning the
 collision loop forever — names are now control-stripped and the loop
 bounded), the storer-visible offer metadata documented in the README
-(sealing it remains future work), and fast status paths (pathsFor
-probes only cats seen within the last 10 minutes, at a 1-second
-per-probe deadline instead of 3 seconds every roster cat — a
-never-seen or long-idle cat's disco ping cannot succeed, so probing
-it could only burn the deadline, which held `clow status` for seconds
-whenever any offline cat was in the roster; unreachable cats show no
-route either way, and the fresh window covers the sync round-robin so
-online cats never lose their route line; pinned by
-TestPathsForSkipsCatsNotSeenRecently and
-TestPathsForProbeTimeoutIsBounded via a fake Pinger). Also shipped
+(sealing it remains future work), and instant status paths (status
+never probes — it answers from a daemon-side path cache that
+refreshPaths maintains in the background: every roster cat pinged in
+parallel once at daemon start and on every poll tick, 1s deadline per
+probe, so route lines appear within a second of startup even before
+any handshake records liveness, offline cats cost nothing user-
+visible, and a disco ping still upgrades relayed paths to direct;
+the on-demand probing this replaced held `clow status` for seconds
+waiting out 3s probe deadlines on offline cats, and an intermediate
+cut that skipped probing cats not seen within 10 minutes lost route
+lines for the first minutes after a daemon restart, when liveness is
+still empty; pinned by TestRefreshPathsProbesEveryCat,
+TestPathSnapshotNeverProbes and TestRefreshPathsProbeTimeoutIsBounded
+via a fake Pinger). Also shipped
 earlier today:
 duplicate-name
 hardening (pairing refuses a join whose name another key already

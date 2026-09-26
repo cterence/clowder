@@ -232,7 +232,7 @@ func (d *Daemon) handleIPC(req Request) Response {
 			Stats:      &st,
 			Liveness:   d.livenessSnapshot(),
 			Progress:   d.prog.snapshot(),
-			Paths:      d.pathsFor(ctx),
+			Paths:      d.pathSnapshot(),
 		}
 
 	default:
