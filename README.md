@@ -14,6 +14,9 @@ NAT-traversing, no accounts).
   encrypted file until the target fetches it. Storers can't read what
   they hold: every file is end-to-end sealed to its recipient, in
   memory-bounded 64 KiB chunks.
+- **Resumable transfers.** A transfer cut mid-stream (network drop,
+  either side restarting) resumes from the last chunk that landed,
+  directly or via a storer, instead of starting over.
 - **Self-healing mesh.** Every connection syncs rosters, so every cat
   converges on the same member list.
 

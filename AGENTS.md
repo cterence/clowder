@@ -231,7 +231,39 @@ reason. Update this list and the README when something ships.
    free of OS-conditional deps: modules ship as passthrough attributes
    (`nixosModules`, and the plist as a template the README documents).
 
-Shipped recently (context for a fresh session): daemon drain at
+Shipped recently (context for a fresh session): resumable transfers
+(the biggest pending item, shipped end-to-end: an interrupted transfer
+resumes from the chunks already on disk instead of restarting from
+zero. Mechanism: every file send carries a fixed per-stream 32-byte
+seal secret, generated once at enqueue and persisted in the outbox
+entry, so every attempt of the same transfer seals to the SAME stream
+bytes — the resume correctness invariant, since a receiver can only
+append a suffix to bytes it already holds. Offer.Resumable marks the
+offer; a receiver that kept a partial file answers the offer with the
+sealed-stream offset of its last chunk checkpoint instead of a plain
+yes, and the sender seals from that offset (SealStreamAt repositions
+the plaintext, re-hashes the skipped prefix so the whole-file digest
+check still passes, and re-emits the header — the header is
+deterministic under the fixed secret). Receivers checkpoint after
+every 64 KiB chunk into parts/<id>.part plus a .part.json sidecar
+(frame-boundary offset, plaintext length), fsync'd, moved into the
+inbox atomically on completion, swept by TTL after partTTL; the same
+machinery covers all three transfer legs: direct, storer push, and
+storer deposit (receiveAsStorer answers DepositResume and appends via
+spool.PutResume, which parses only frame lengths — the stream stays
+opaque to the storer — and truncates a torn mid-frame tail back to
+the last boundary), and the fetch pull. Pre-resume outbox entries and
+receipts take the non-resumable path unchanged. Pinned by
+TestDirectSendResumesAfterCut (kill-switched transport cuts the first
+attempt mid-stream; the retry must land the file whole and the
+receiver must have answered a nonzero offset),
+TestDirectSendResumesAcrossRestart (the part and sidecar survive a
+receiver restart), TestStorerPushResumesAfterCut, and
+TestDepositResumeRoundTrip at the store level. Known limits, kept
+honest in the caveats: the resume rides a retry — there is no probe
+asking a checkpoint exists before the sender commits to an attempt —
+and progress accounting on a resumed attempt counts from the resume
+point, not zero), daemon drain at
 shutdown (Run tracks its background goroutines — receipt relays, spool
 sweeps, deliveries, roster syncs, accepted connections, the pairing
 invite teardown and the health server — in a WaitGroup
@@ -406,5 +438,8 @@ two-keypair fix (see invariants).
 
 Known caveats: the golangci-lint-action version in CI (v7 + v2.13.2) is
 unverified until a green run is observed; storer spools have TTL but no
-size quota; no resume of interrupted transfers; rosters created before
-the two-keypair fix must be re-paired (`clow forget` + invite/join).
+size quota; rosters created before the two-keypair fix must be re-paired
+(`clow forget` + invite/join). Interrupted transfers resume from the
+chunks already on disk, but the resume rides a retry: nothing probes
+for a checkpoint before the sender commits to an attempt, and a
+pre-resume outbox entry (or a receipt) restarts from chunk zero.

@@ -76,13 +76,26 @@ type Offer struct {
 	// sealed envelope, not an inbox delivery. Storers relay it like
 	// any other transfer and see only the receipt flag and size.
 	Receipt bool `cbor:"rc,omitempty"`
+	// Resumable tells the receiver this offer can resume where a
+	// previous attempt for the same ID stopped: the sender seals
+	// with a per-transfer secret, so re-sent frames are byte-identical
+	// to the originals. A receiver holding a partial file answers
+	// with Resume set to the sealed-stream offset it wants the rest
+	// from; a receiver with nothing (or one that does not understand
+	// resume) answers Resume 0 and gets a full stream. Receipts are
+	// tiny and never resumable.
+	Resumable bool `cbor:"rs,omitempty"`
 }
 
-// Answer accepts or rejects an Offer.
+// Answer accepts or rejects an Offer. When accepting a Resumable
+// offer, Resume is the sealed-stream offset the receiver already
+// holds (0: start from the beginning). The sender then emits the
+// header followed by the frames from that offset onward.
 type Answer struct {
 	ID     string `cbor:"i"`
 	OK     bool   `cbor:"k"`
 	Reason string `cbor:"r,omitempty"`
+	Resume int64  `cbor:"o,omitempty"`
 }
 
 // Ack confirms a transfer: stored (by a storer) or delivered (by the
@@ -234,6 +247,12 @@ func (c *Conn) WriteMsg(m *Message) error { return WriteMsg(c.c, m) }
 // reason explains the refusal to the peer.
 func (c *Conn) Answer(id string, ok bool, reason string) error {
 	return c.WriteMsg(&Message{Answer: &Answer{ID: id, OK: ok, Reason: reason}})
+}
+
+// AnswerResume sends an accepting Answer carrying the sealed-stream
+// offset a resumable transfer should continue from (0: full stream).
+func (c *Conn) AnswerResume(id string, resume int64) error {
+	return c.WriteMsg(&Message{Answer: &Answer{ID: id, OK: true, Resume: resume}})
 }
 
 // Ack sends an Ack of the given kind for a transfer ID.

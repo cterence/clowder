@@ -13,6 +13,7 @@ import (
 	"io"
 	"time"
 
+	"clowder/envelope"
 	"clowder/protocol"
 	"clowder/roster"
 	"clowder/store"
@@ -66,6 +67,7 @@ func (d *Daemon) deliverHeld(ctx context.Context, cat roster.Cat, m store.Meta) 
 		TargetKey:  m.TargetKey,
 		TargetName: cat.Name,
 		Receipt:    m.Receipt,
+		Resumable:  m.Resumable,
 	}
 	if err := pc.WriteMsg(&protocol.Message{Offer: offer}); err != nil {
 		return err
@@ -88,7 +90,23 @@ func (d *Daemon) deliverHeld(ctx context.Context, cat roster.Cat, m store.Meta) 
 	}
 	defer blob.Close()
 	_ = pc.SetDeadline(time.Now().Add(streamTimeout))
-	if _, err := io.CopyN(pc.Writer(), blob, m.Size); err != nil {
+	// A resumable answer names the sealed offset the target already
+	// holds: replay the stored header plus the stream from that
+	// offset onward (a pure byte skip — the stream stays opaque).
+	// The header must be re-sent so the target can recover the
+	// per-stream secret, exactly like a sender's resumed attempt.
+	resume := resp.Answer.Resume
+	if resume > 0 {
+		if _, err := io.CopyN(pc.Writer(), blob, envelope.HeaderLen); err != nil {
+			return err
+		}
+		if _, err := blob.Seek(resume, io.SeekStart); err != nil {
+			return err
+		}
+		if _, err := io.CopyN(pc.Writer(), blob, m.Size-resume); err != nil {
+			return err
+		}
+	} else if _, err := io.CopyN(pc.Writer(), blob, m.Size); err != nil {
 		return err
 	}
 	_ = pc.SetDeadline(time.Now().Add(msgTimeout))
