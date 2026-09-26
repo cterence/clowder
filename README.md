@@ -133,6 +133,72 @@ Things to know before running it on Kubernetes:
   `200 ok` while the daemon runs. The address needs a `containerPort`
   but no Service; without it, an exec probe on `clow status` works.
 
+## Walkthroughs
+
+### Two laptops and a file
+
+On the first machine (once):
+
+    clow init --name laptop
+    clow daemon                 # leave it running
+
+On the second machine, same two steps with a different name, then pair
+once — the code is five words plus a region number, valid five
+minutes, one use:
+
+    laptop$  clow invite
+    printing: clow join hazel-meadow-quartz-amber-ember-303
+    phone$   clow join hazel-meadow-quartz-amber-ember-303
+
+Both rosters sync automatically from here: a third cat that joins
+later discovers everyone at once. Send a file (async — it queues if
+the target is offline and delivers on the next retry):
+
+    laptop$  clow send phone photo.jpg
+    queued photo.jpg for phone (id 9f3a...)
+    phone$   clow inbox
+    2026-09-26 14:02:11  ~/Downloads/clowder/photo.jpg
+    laptop$  clow status
+    ...
+    receipts: 1 shown
+      photo.jpg                from phone         delivered 2m ago
+
+### Adding a storer
+
+A storer is just a paired cat with the role enabled: it holds sealed
+files for offline targets and pushes them as soon as the target is
+online (targets can also `clow fetch` manually). Pair the third
+machine as above, then:
+
+    server$  clow storer on --max 10G
+    storer duty on: 10.0 GiB capacity
+
+Two things to know about the role:
+
+- The capacity is a hard reservation: deposits that would overflow it
+  are refused, and the sender retries later (or via another storer).
+- Held files expire after 7 days unclaimed (`clow status` shows the
+  spool).
+
+A **dropbox** storer is third-party storage only — it holds files for
+others but takes no deliveries itself and cannot send its own:
+
+    server$  clow storer dropbox --max 100G
+
+For an always-on storer, run the container instead — the role is
+declared as desired state on every start, so a restart reasserts it:
+
+    docker run -d --name clowder-storer \
+        -v clowcfg:/config \
+        -e CLOWDER_NAME=storer \
+        -e CLOWDER_STORER=on \
+        -e CLOWDER_MAX=10G \
+        clowder
+
+Pair it once via `kubectl exec` (or `docker exec`), and remember the
+config volume: a pod that restarts with empty storage comes back as a
+brand-new cat.
+
 ## Privacy: what storers see
 
 Storers hold sealed streams they cannot open, but the Offer metadata
