@@ -93,7 +93,11 @@ func startDaemon(t *testing.T, name string) *Daemon {
 // tests can take a cat offline mid-test.
 var daemonStops sync.Map
 
-// stopDaemon takes a loopback daemon offline (cancels its Run).
+// stopDaemon takes a loopback daemon offline: it cancels Run and waits
+// for Run to return, so the daemon has drained its background work
+// (receipt relays, sweeps, live connections) by the time the caller
+// proceeds — a restart on the same dir or a roster write must not
+// race the old Run's stragglers.
 func stopDaemon(d *Daemon) {
 	if f, ok := daemonStops.Load(d); ok {
 		f.(func())()
@@ -125,9 +129,20 @@ func runDaemon(t *testing.T, dir string, tr Transport) *Daemon {
 		t.Fatalf("New: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	daemonStops.Store(d, func() { cancel() })
-	go func() { _ = d.Run(ctx) }()
+	runDone := make(chan struct{})
+	var stopOnce sync.Once
+	stop := func() {
+		stopOnce.Do(func() {
+			cancel()
+			<-runDone // Run drained its background work before returning
+		})
+	}
+	t.Cleanup(stop)
+	daemonStops.Store(d, stop)
+	go func() {
+		_ = d.Run(ctx)
+		close(runDone)
+	}()
 	waitFor(t, func() bool { return d.Me().Addr != "" }, "daemon %s to listen", d.Me().Name)
 	return d
 }

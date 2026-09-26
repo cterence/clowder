@@ -100,6 +100,19 @@ type Daemon struct {
 	inbox    string
 
 	syncSeq atomic.Int64 // round-robin cursor for peer sync
+	// bg drains Run's background work at shutdown: receipt relays,
+	// spool sweeps, deliveries, roster syncs and accepted connections
+	// are uncancelable by design (a receipt or held-file push must not
+	// be dropped mid-relay because Run stopped), so Run instead waits
+	// for them before returning. A caller that cancels Run's ctx and
+	// waits for Run gets a daemon that no longer touches disk, the
+	// network, or Logf. Bounded by the transfer/stream deadlines.
+	bg      sync.WaitGroup
+	connsMu sync.Mutex
+	// liveConns are accepted connections still being served; Run
+	// closes them at drain time so a shut-down daemon does not wait
+	// out a peer's 2-minute message deadline. Guarded by connsMu.
+	liveConns map[*protocol.Conn]struct{}
 
 	// Pairing invite state (see pairing.go).
 	pairMu   sync.Mutex
@@ -357,15 +370,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 		d.allowCat(c)
 	}
 
-	go func() {
+	d.goBg(func() {
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
 				return
 			}
-			go d.serveAccepted(conn)
+			d.goBg(func() { d.serveAccepted(conn) })
 		}
-	}()
+	})
 
 	ipcLn, err := listenIPC(filepath.Join(d.cfg.Dir, "clow.sock"))
 	if err != nil {
@@ -373,15 +386,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 		_ = d.tr.Close()
 		return fmt.Errorf("daemon: IPC socket: %w", err)
 	}
-	go func() {
+	d.goBg(func() {
 		for {
 			conn, err := ipcLn.Accept()
 			if err != nil {
 				return
 			}
-			go d.serveIPCConn(conn)
+			d.goBg(func() { d.serveIPCConn(conn) })
 		}
-	}()
+	})
 
 	var healthLn net.Listener
 	var healthSrv *http.Server
@@ -393,7 +406,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 			_ = d.tr.Close()
 			return err
 		}
-		go func() { _ = healthSrv.Serve(healthLn) }()
+		d.goBg(func() { _ = healthSrv.Serve(healthLn) })
 		d.cfg.logf("clowder: health endpoint on %s", healthLn.Addr().String())
 	} else if d.cfg.Pprof {
 		_ = ln.Close()
@@ -416,17 +429,26 @@ func (d *Daemon) Run(ctx context.Context) error {
 				_ = healthSrv.Close()
 			}
 			_ = d.tr.Close()
+			// Drain in-flight background work (receipt relays, sweeps,
+			// deliveries, live connections) before Run returns: a caller
+			// waiting on Run gets a daemon that has stopped touching
+			// disk, the network, and Logf. Closing live conns keeps the
+			// wait bounded by local processing, not a peer's message
+			// deadline. Nothing new can arrive: both listeners are
+			// already closed.
+			d.closeLiveConns()
+			d.bg.Wait()
 			return nil
 		case <-retry.C:
-			go d.retryOutbox()
+			d.goBg(d.retryOutbox)
 		case <-poll.C:
 			// No periodic storer polling: the push sweep delivers
 			// held files to online targets on its own, and `clow
 			// fetch` remains as a manual pull. This keeps the
 			// background traffic to one roster sync per tick plus
 			// spool pushes only while files are held.
-			go d.syncPeers(context.WithoutCancel(ctx))
-			go d.sweepSpool(context.WithoutCancel(ctx))
+			d.goBg(func() { d.syncPeers(context.WithoutCancel(ctx)) })
+			d.goBg(func() { d.sweepSpool(context.WithoutCancel(ctx)) })
 		}
 	}
 }
@@ -464,8 +486,52 @@ func (d *Daemon) Send(targetName, path string) (string, error) {
 	if err := d.ob.Put(e); err != nil {
 		return "", err
 	}
-	go d.deliver(e)
+	d.goBg(func() { d.deliver(e) })
 	return id, nil
+}
+
+// goBg runs f tracked by the drain WaitGroup, so Run's shutdown can
+// wait out in-flight background work (see the bg field) before
+// returning.
+func (d *Daemon) goBg(f func()) {
+	d.bg.Add(1)
+	go func() {
+		defer d.bg.Done()
+		f()
+	}()
+}
+
+// trackConn registers a connection being served, so drain can close
+// it instead of waiting out the peer's message deadline. It returns
+// an unregister func to call when serving ends.
+func (d *Daemon) trackConn(pc *protocol.Conn) func() {
+	d.connsMu.Lock()
+	if d.liveConns == nil {
+		d.liveConns = map[*protocol.Conn]struct{}{}
+	}
+	d.liveConns[pc] = struct{}{}
+	d.connsMu.Unlock()
+	return func() {
+		d.connsMu.Lock()
+		delete(d.liveConns, pc)
+		d.connsMu.Unlock()
+	}
+}
+
+// closeLiveConns closes every still-served connection at drain time.
+func (d *Daemon) closeLiveConns() {
+	d.connsMu.Lock()
+	conns := make([]*protocol.Conn, 0, len(d.liveConns))
+	for pc := range d.liveConns {
+		conns = append(conns, pc)
+	}
+	// Clear the map first: closing may synchronously run deferred
+	// unregisters on the serving goroutines, which re-lock connsMu.
+	d.liveConns = nil
+	d.connsMu.Unlock()
+	for _, pc := range conns {
+		_ = pc.Close()
+	}
 }
 
 // Poll asks every known storer for files held for this cat and fetches
@@ -620,7 +686,7 @@ func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *proto
 		return false
 	}
 	d.cfg.logf("clowder: received %s (%s) from %s", o.FileName, HumanBytes(plainSize), from.Name)
-	go d.sendReceipt(from.Name, o.ID, o.FileName)
+	d.goBg(func() { d.sendReceipt(from.Name, o.ID, o.FileName) })
 	return true
 }
 
@@ -665,7 +731,7 @@ func (d *Daemon) receiveAsStorer(pc *protocol.Conn, o *protocol.Offer) bool {
 	d.cfg.logf("clowder: holding %s from %s for %s", o.FileName, o.From, o.TargetName)
 	// The target may be online already: try to push right away
 	// instead of waiting for the next sweep.
-	go d.sweepSpoolFor(context.Background(), o.TargetKey)
+	d.goBg(func() { d.sweepSpoolFor(context.Background(), o.TargetKey) })
 	return true
 }
 
@@ -895,7 +961,7 @@ func (g *transferGauge) done() {
 // has its own timeout, so no context is needed here.
 func (d *Daemon) retryOutbox() {
 	for _, e := range d.ob.All() {
-		go d.deliver(e)
+		d.goBg(func() { d.deliver(e) })
 	}
 }
 
@@ -1123,7 +1189,7 @@ func (d *Daemon) fetchOne(pc *protocol.Conn, f protocol.PendingFile) error {
 		return err
 	}
 	d.cfg.logf("clowder: fetched %s from storer", o.FileName)
-	go d.sendReceipt(o.From, o.ID, o.FileName)
+	d.goBg(func() { d.sendReceipt(o.From, o.ID, o.FileName) })
 	return nil
 }
 

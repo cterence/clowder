@@ -12,6 +12,8 @@ import (
 func (d *Daemon) serveAccepted(conn net.Conn) {
 	pc := protocol.NewConn(conn)
 	defer func() { _ = pc.Close() }()
+	unregister := d.trackConn(pc)
+	defer unregister()
 	authKey, authed := d.tr.PeerKey(conn.RemoteAddr())
 	d.serveConn(pc, authKey, authed)
 }
