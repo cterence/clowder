@@ -36,6 +36,21 @@ func engineGoroutines(t *testing.T) int {
 	return strings.Count(buf.String(), "created by github.com/tailscale/wireguard-go/device.NewDevice")
 }
 
+// waitUntil polls cond until it holds or the deadline passes. The poll
+// interval is the only sleep: these events are not observable except
+// by sampling, so a bounded poll is the synchronization.
+func waitUntil(t *testing.T, d time.Duration, cond func() bool, what string) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
 func integrationEnabled(t *testing.T) {
 	t.Helper()
 	if os.Getenv("CLOWDER_INTEGRATION") == "" {
@@ -163,23 +178,38 @@ func TestIntegrationFailedDialDropsClient(t *testing.T) {
 	// each failure must close the client's WireGuard engine. A leak
 	// would accumulate engines; closing keeps the count bounded.
 	stopB()
-	time.Sleep(20 * time.Second) // let the first failures settle
+	// Baseline: wait for the engines to settle — the count stops
+	// changing across samples — rather than sleeping a fixed beat.
+	// The dead hostB is still redialed by the sync ticker, so the
+	// steady state need not be zero; it just has to be stable.
+	prev := -1
+	waitUntil(t, 30*time.Second, func() bool {
+		g := engineGoroutines(t)
+		stable := prev >= 0 && g == prev
+		prev = g
+		return stable
+	}, "engine goroutines to settle after hostB stopped")
 	baseline := engineGoroutines(t)
 	t.Logf("engine goroutines at baseline: %d", baseline)
-	deadline := time.Now().Add(45 * time.Second)
-	for time.Now().Before(deadline) {
+
+	// Ten concurrent failed dials, no pacing sleeps: per-ID claims
+	// let the attempts overlap naturally, and each must create an
+	// engine and close it when the peer is unreachable. A leak holds
+	// goroutines that never drain, however many attempts run.
+	for i := 0; i < 10; i++ {
 		if _, err := a.Send("hostB", src); err != nil {
-			t.Fatalf("send: %v", err)
-		}
-		time.Sleep(3 * time.Second)
-		if g := engineGoroutines(t); g > baseline+40 {
-			t.Logf("engine goroutines mid-loop: %d", g)
-			break
+			t.Fatalf("send %d: %v", i, err)
 		}
 	}
+	// Drop the queued entries so the retry ticker stops redialing the
+	// dead peer: with no retry churn, the only engines left alive
+	// after the in-flight attempts finish would be leaked ones.
+	if _, err := a.ob.Clear(); err != nil {
+		t.Fatalf("clearing outbox: %v", err)
+	}
 	// Attempts still in flight hold engines briefly; poll for the
-	// count to drain. A leak never drains — the dump then names what
-	// is stuck.
+	// count to drain back to the settled baseline. A leak never
+	// drains — the dump then names what is stuck.
 	drain := time.Now().Add(30 * time.Second)
 	for time.Now().Before(drain) {
 		if g := engineGoroutines(t); g <= baseline+10 {
@@ -269,8 +299,10 @@ func TestIntegrationPairSend(t *testing.T) {
 	}, "the freshly joined hostC to discover hostB from the roster sync")
 
 	// The consumed code cannot pair anyone else: the invite retired with
-	// its first successful join.
-	negCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	// its first successful join. The bounded context keeps the failed
+	// sweep (every region's ping times out against a retired invite)
+	// from costing the full join budget.
+	negCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := b.Join(negCtx, code2); err == nil {
 		t.Fatal("a used pairing code joined again: invites must be one-off")

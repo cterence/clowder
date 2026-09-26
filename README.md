@@ -43,6 +43,25 @@ android build):
 
     GOOS=android GOARCH=arm64 go build -o clow .
 
+## Config layout
+
+State lives under `$CLOWDER_DIR` (default: the OS user config home —
+`~/.config/clowder` on Linux, `~/Library/Application Support/clowder`
+on macOS). The files are deliberately separate: secrets never share a
+file with frequently-rewritten state, and every ledger has a default
+path if lost — except the identity.
+
+| file | what it is | secret | safe to delete (daemon stopped) |
+|---|---|---|---|
+| `identity.json` | node keypair, pre-shared key, region hint — the cat's identity and address | yes | no — losing it makes you a brand-new cat |
+| `clientkey.json` | outbound-dial keypair that peers allowlist | yes | no — peers must re-pair |
+| `me.json` | declared name, storer role, inbox dir | no | no — re-init to rebuild |
+| `roster.json` | the cats you know (LWW-merged on every sync) | no | yes — re-syncs from peers |
+| `stats.json` | lifetime transfer counters | no | yes — counters restart at zero |
+| `blocked.json` | keys of forgotten cats | no | yes — forget state is lost |
+| `outbox/` | pending sends, one file per transfer | no | yes — drops queued sends |
+| `spool/` | sealed streams held for others (storer duty) | no | yes — drops held files |
+
 ## Commands
 
     clow init [--name NAME] [--dir CONFIG_DIR] [--inbox INBOX_DIR]
