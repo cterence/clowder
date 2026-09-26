@@ -242,4 +242,20 @@ func TestIntegrationPairSend(t *testing.T) {
 		got, ok := inboxFile(t, b, "nap2.txt")
 		return ok && got == "second nap"
 	}, "hostB to receive the second file")
+
+	// A third cat joins and must discover the whole roster right away:
+	// the join kicks an immediate sync, whose handshake exchanges full
+	// rosters — not on the next poll tick.
+	c, _ := startRealDaemon(t, t.TempDir(), "hostC")
+	code2, err := a.StartInvite(context.Background())
+	if err != nil {
+		t.Fatalf("invite 2: %v", err)
+	}
+	if err := c.Join(context.Background(), code2); err != nil {
+		t.Fatalf("join 2: %v", err)
+	}
+	waitFor(t, func() bool {
+		_, ok := c.Roster().Get("hostB")
+		return ok
+	}, "the freshly joined hostC to discover hostB from the roster sync")
 }

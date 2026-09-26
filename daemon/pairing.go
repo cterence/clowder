@@ -391,6 +391,10 @@ func (d *Daemon) Join(ctx context.Context, code string) error {
 		if err := d.addPeerCat(peer); err != nil {
 			return err
 		}
+		// Discover the rest of the clowder now: the protocol handshake
+		// exchanges full rosters, so this sync pulls in every cat the
+		// inviter knows instead of waiting for the next poll tick.
+		go d.syncPeers(context.WithoutCancel(ctx))
 		d.cfg.logf("clowder: paired with %s", peer.Name)
 		return nil
 	}
