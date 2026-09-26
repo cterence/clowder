@@ -108,16 +108,6 @@ func (r *realDaemon) stop() {
 	_ = r.tr.Close()
 }
 
-// startRealDaemon runs a daemon with the production tailcat transport;
-// the returned stop function tears it down early.
-func startRealDaemon(t *testing.T, dir, name string) (*Daemon, func()) {
-	t.Helper()
-	r := newRealDaemon(t, dir, name)
-	r.start()
-	waitFor(t, r.ready, "%s to listen", name)
-	return r.Daemon, r.stop
-}
-
 // startRealDaemons starts several cats concurrently: constructions
 // stay sequential (see newRealDaemon), but the tailcat engines
 // netcheck in parallel inside Run, which is where the startup seconds
@@ -286,8 +276,15 @@ func TestIntegrationPairSend(t *testing.T) {
 	integrationEnabled(t)
 	dirA := t.TempDir()
 	dirB := t.TempDir()
-	rs := startRealDaemons(t, [2]string{dirA, "hostA"}, [2]string{dirB, "hostB"})
-	a, b := rs[0].Daemon, rs[1].Daemon
+	dirC := t.TempDir()
+	// All three up front and in parallel: hostC idles until its invite
+	// later in the test (an empty roster generates no traffic), and
+	// its engine netchecks alongside the others instead of after.
+	rs := startRealDaemons(t,
+		[2]string{dirA, "hostA"},
+		[2]string{dirB, "hostB"},
+		[2]string{dirC, "hostC"})
+	a, b, c := rs[0].Daemon, rs[1].Daemon, rs[2].Daemon
 
 	code, err := a.StartInvite(context.Background())
 	if err != nil {
@@ -336,7 +333,6 @@ func TestIntegrationPairSend(t *testing.T) {
 	// A third cat joins and must discover the whole roster right away:
 	// the join kicks an immediate sync, whose handshake exchanges full
 	// rosters — not on the next poll tick.
-	c, _ := startRealDaemon(t, t.TempDir(), "hostC")
 	code2, err := a.StartInvite(context.Background())
 	if err != nil {
 		t.Fatalf("invite 2: %v", err)
