@@ -116,24 +116,19 @@ func TestPairIntroExchange(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		defer func() { _ = c1.Close() }()
-		pc := protocol.NewConn(c1)
-		peer, err := pairIntroOf(pc, inviter.Me())
-		if err != nil {
-			t.Errorf("inviter exchange: %v", err)
-			return
-		}
-		if err := inviter.addPeerCat(peer); err != nil {
-			t.Errorf("inviter addPeerCat: %v", err)
-		}
+		inviter.servePairConn(c1)
 	}()
 	go func() {
 		defer wg.Done()
 		defer func() { _ = c2.Close() }()
 		pc := protocol.NewConn(c2)
-		peer, err := pairIntroOf(pc, joiner.Me())
+		peer, confirmed, err := joinExchange(pc, joiner.Me())
 		if err != nil {
 			t.Errorf("joiner exchange: %v", err)
 			return
+		}
+		if !confirmed {
+			t.Error("joiner exchange completed without the inviter's confirmation")
 		}
 		if err := joiner.addPeerCat(peer); err != nil {
 			t.Errorf("joiner addPeerCat: %v", err)
@@ -228,5 +223,87 @@ func TestIdentityJSONRoundTrip(t *testing.T) {
 	}
 	if c.Key != before {
 		t.Fatal("address-derived key does not match the identity key")
+	}
+}
+
+// TestPairIntroUnconfirmedDoesNotCommit pins the inviter's half of the
+// recovery contract: a joiner that received the intro but never
+// confirmed (or whose reply was lost on the wire) must leave the
+// inviter unpaired and the invite alive for the next attempt. CI lost
+// the inviter's reply on flapping relay paths; committing on the
+// unconfirmed exchange stranded the joiner with a retired invite.
+func TestPairIntroUnconfirmedDoesNotCommit(t *testing.T) {
+	inviter := startDaemon(t, "milo")
+	joiner := startDaemon(t, "fluff")
+	for _, d := range []*Daemon{inviter, joiner} {
+		d.mu.Lock()
+		d.meCat.Addr = string(d.env.Identity.Public.Addr())
+		d.mu.Unlock()
+	}
+	c1, c2 := tcpPair(t)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		defer func() { _ = c1.Close() }()
+		inviter.servePairConn(c1)
+	}()
+	go func() {
+		defer wg.Done()
+		defer func() { _ = c2.Close() }()
+		pc := protocol.NewConn(c2)
+		if _, err := pairIntroOf(pc, joiner.Me()); err != nil {
+			t.Errorf("joiner half exchange: %v", err)
+		}
+		// No ack: the reply path dies here, as it did on CI.
+	}()
+	wg.Wait()
+
+	if _, ok := inviter.Roster().Get("fluff"); ok {
+		t.Error("inviter committed a pairing the joiner never confirmed")
+	}
+}
+
+// TestPairIntroCommitsDespiteLostConfirmation pins the inviter's other
+// recovery property: once the joiner's ack arrives, the inviter commits
+// even if its own confirming reply is lost — the ack is the proof the
+// joiner saw the intro, and the joiner commits optimistically on the
+// ack-write having succeeded.
+func TestPairIntroCommitsDespiteLostConfirmation(t *testing.T) {
+	inviter := startDaemon(t, "milo")
+	joiner := startDaemon(t, "fluff")
+	for _, d := range []*Daemon{inviter, joiner} {
+		d.mu.Lock()
+		d.meCat.Addr = string(d.env.Identity.Public.Addr())
+		d.mu.Unlock()
+	}
+	c1, c2 := tcpPair(t)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		defer func() { _ = c1.Close() }()
+		inviter.servePairConn(c1)
+	}()
+	go func() {
+		defer wg.Done()
+		defer func() { _ = c2.Close() }()
+		pc := protocol.NewConn(c2)
+		if _, err := pairIntroOf(pc, joiner.Me()); err != nil {
+			t.Errorf("joiner half exchange: %v", err)
+			return
+		}
+		// The ack goes out, then the joiner vanishes before reading
+		// the inviter's confirmation.
+		if err := pc.WriteMsg(&protocol.Message{PairAck: &protocol.PairAck{}}); err != nil {
+			t.Errorf("joiner ack: %v", err)
+		}
+	}()
+	wg.Wait()
+
+	if _, ok := inviter.Roster().Get("fluff"); !ok {
+		t.Error("inviter did not commit a pairing the joiner confirmed")
 	}
 }

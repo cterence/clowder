@@ -114,6 +114,12 @@ type PairIntro struct {
 	Dropbox   bool   `cbor:"d,omitempty"`
 }
 
+// PairAck confirms the joiner received the inviter's intro. The
+// inviter commits a pairing — records the joiner and retires its
+// invite — only once this arrives, so a reply the joiner never saw
+// leaves the invite alive for its next attempt.
+type PairAck struct{}
+
 // Message is the union of all protocol messages. Exactly one field is
 // non-nil on the wire.
 type Message struct {
@@ -125,6 +131,7 @@ type Message struct {
 	Pending *Pending    `cbor:"p,omitempty"`
 	Fetch   *Fetch      `cbor:"t,omitempty"`
 	Pair    *PairIntro  `cbor:"j,omitempty"`
+	PairAck *PairAck    `cbor:"g,omitempty"`
 }
 
 // Kind returns a short label for the set message, for logging and errors.
@@ -146,6 +153,8 @@ func (m *Message) Kind() string {
 		return "fetch"
 	case m.Pair != nil:
 		return "pair"
+	case m.PairAck != nil:
+		return "pairack"
 	}
 	return "empty"
 }

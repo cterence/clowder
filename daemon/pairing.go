@@ -292,12 +292,27 @@ func (d *Daemon) servePairConn(conn net.Conn) {
 		d.cfg.logf("clowder: pairing exchange failed: %v", err)
 		return
 	}
+	// Commit only on the joiner's confirmation: a reply it never saw
+	// must leave the invite alive for its next attempt. CI lost the
+	// inviter's reply on flapping relay paths; committing on the
+	// unconfirmed exchange paired the inviter and retired the invite
+	// while the joiner was stranded with nothing to retry against.
+	if err := pairAckOf(pc); err != nil {
+		d.cfg.logf("clowder: pairing with %s not confirmed, invite stays active: %v", peer.Name, err)
+		return
+	}
 	if err := d.addPeerCat(peer); err != nil {
 		d.cfg.logf("clowder: adding paired cat: %v", err)
 		return
 	}
 	d.cfg.logf("clowder: paired with %s", peer.Name)
-	// One successful pairing: retire the invite.
+	// Confirm the commit, so the joiner returns knowing the pairing is
+	// durable on both sides. A lost confirmation does not un-pair it:
+	// the joiner commits optimistically once its own ack was written.
+	if err := pc.WriteMsg(&protocol.Message{PairAck: &protocol.PairAck{}}); err != nil {
+		d.cfg.logf("clowder: confirming pairing with %s: %v", peer.Name, err)
+	}
+	// One confirmed pairing: retire the invite.
 	go d.stopInvite()
 }
 
@@ -440,13 +455,55 @@ func (d *Daemon) pairOnRegion(ctx context.Context, keys *pairingKeys, region int
 	}
 	pc := protocol.NewConn(conn)
 	defer func() { _ = pc.Close() }()
-	// The dial already proved this region is right: give the exchange
-	// the rest of the join budget, not a fixed slice. Bailing early on
-	// a slow first exchange strands the joiner — the inviter's side
-	// (with its own, longer deadline) completes, adds the joiner and
-	// retires the invite, so every retry then finds nothing.
-	_ = pc.SetDeadline(overall)
-	return pairIntroOf(pc, d.Me())
+	// Bound the exchange, but generously: a slow inviter can take tens
+	// of seconds to answer (CI showed ~35s between accept and reply),
+	// so a tight deadline strands the joiner. And since the inviter no
+	// longer commits — or retires its invite — until the exchange is
+	// confirmed, a timed-out attempt can be retried on a fresh
+	// connection instead of eating the whole join budget.
+	exchangeDeadline := time.Now().Add(45 * time.Second)
+	if overall.Before(exchangeDeadline) {
+		exchangeDeadline = overall
+	}
+	_ = pc.SetDeadline(exchangeDeadline)
+	peer, confirmed, err := joinExchange(pc, d.Me())
+	if err == nil && !confirmed {
+		d.cfg.logf("clowder: pairing confirmation lost after our ack; committing optimistically")
+	}
+	return peer, err
+}
+
+// joinExchange runs the joiner's half of a confirmed pairing exchange:
+// intro out, the inviter's intro in, an ack telling the inviter its reply
+// arrived, and the inviter's confirmation that it committed. The inviter
+// commits only after our ack, and confirms with its own; losing that
+// confirmation does not un-pair us — our ack was written, so the inviter
+// has everything it needs — so the exchange reports complete either way.
+func joinExchange(pc *protocol.Conn, me roster.Cat) (*protocol.PairIntro, bool, error) {
+	peer, err := pairIntroOf(pc, me)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := pc.WriteMsg(&protocol.Message{PairAck: &protocol.PairAck{}}); err != nil {
+		return nil, false, err
+	}
+	if err := pairAckOf(pc); err != nil {
+		return peer, false, nil
+	}
+	return peer, true, nil
+}
+
+// pairAckOf waits for the joiner's confirmation that the inviter's intro
+// arrived.
+func pairAckOf(pc *protocol.Conn) error {
+	m, err := pc.ReadMsg()
+	if err != nil {
+		return err
+	}
+	if m.PairAck == nil {
+		return fmt.Errorf("expected pair ack, got %s", m.Kind())
+	}
+	return nil
 }
 
 // pairIntroOf sends our intro and returns the peer's.

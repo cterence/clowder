@@ -210,9 +210,13 @@ func TestIntegrationPairSend(t *testing.T) {
 	if err := b.Join(context.Background(), code); err != nil {
 		t.Fatalf("join: %v", err)
 	}
-	if _, ok := a.Roster().Get("hostB"); !ok {
-		t.Fatal("hostA did not add hostB")
-	}
+	// The inviter commits asynchronously after the joiner's ack (the
+	// confirmed protocol makes it commit last), so poll rather than
+	// assert immediately.
+	waitFor(t, func() bool {
+		_, ok := a.Roster().Get("hostB")
+		return ok
+	}, "hostA to add hostB once the pairing is confirmed")
 	if _, ok := b.Roster().Get("hostA"); !ok {
 		t.Fatal("hostB did not add hostA")
 	}

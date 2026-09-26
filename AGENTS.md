@@ -52,7 +52,11 @@ have grown the same private helper, hoist it there.
   5 words (50 bits) + the inviter's DERP region, valid 5 minutes, and
   strictly one-off: every `clow invite` is a fresh code (a new invite
   invalidates the previous one), and a code dies with its first
-  successful join. The
+  successful join. The inviter commits a pairing only on the joiner's
+  ack (a reply lost on the wire leaves the invite alive for the
+  joiner's retry), and `clow join` returns only on the inviter's
+  confirmation, so both rosters are durable before the command exits.
+  The
   region is a fast-path hint, not a requirement: `clow join` tries it
   first and interleaves retries of it with sweeping the other regions
   (relay presence can flap away from the encoded one on networks with
@@ -81,17 +85,7 @@ have grown the same private helper, hoist it there.
 Ordered by complexity, easiest first; do not reorder without a
 reason. Update this list and the README when something ships.
 
-1. **Nix packaging** — a flake `packages.default` building the clow
-   binary (buildGoModule; needs a vendorHash — compute with a first
-   `nix build`, then pin). Keep the devShell as the default output.
-   BLOCKED (2026-09-26): buildGoModule needs go >= 1.27.1 — clowder,
-   tailcat and tailscale.com all declare `go 1.27.1`, and Go refuses
-   to build a module whose go directive exceeds the running toolchain.
-   nixpkgs unstable ships go 1.26.7 (`go`) and 1.27rc2 (`go_1_27`),
-   and an rc sorts BELOW 1.27.1. Revisit when nixpkgs carries
-   go >= 1.27.1; the go.mod directive cannot be lowered (the deps own
-   the floor).
-2. **Distrust a cat (local, one-directional)** — `clow distrust <CAT>`
+1. **Distrust a cat (local, one-directional)** — `clow distrust <CAT>`
    / `clow trust <CAT>` to undo: a persisted blocklist (keys, in
    blocked.json, NOT propagated — one cat's decision, unlike the
    planned signed-leave gossip). A distrusted cat is refused both
@@ -103,14 +97,14 @@ reason. Update this list and the README when something ships.
    add-only (no RemoveAllowedClient) — so forget today leaves the
    cat's key able to connect; the serveConn-level check must back
    both features (or upstream tailcat grows a removal API).
-3. **Delivery receipts** — approved design, not yet built: when a
+2. **Delivery receipts** — approved design, not yet built: when a
    target receives a file (direct or via storer) it seals a tiny
    receipt {transferID, fileName, deliveredAt} to the sender's node key
    with its own (sealed-box authenticated, storer-opaque) and relays it
    direct-or-via-storer like any small message; the sender keeps a
    receipts.json ledger shown in `clow status`, closing the loop for
    sends that left the outbox while the sender was offline.
-4. **Hardening batch** (from the 2026-09-26 design review):
+3. **Hardening batch** (from the 2026-09-26 design review):
    - Inbox quota / free-space check on receive (a trusted cat can
      fill the receiver's disk today; storers have capacity, direct
      receivers do not).
@@ -126,7 +120,7 @@ reason. Update this list and the README when something ships.
    - Global transfer concurrency cap (claims are per-ID only).
    - Fuzz targets for ReadMsg/parsePairCode/inboxPath (untrusted
      input decode paths).
-5. **Pairing hardening: offline guessability + PAKE** — the pairing
+4. **Pairing hardening: offline guessability + PAKE** — the pairing
    words currently derive the WireGuard static keys and PSK directly
    (derivePairing, daemon/pairing.go), and the file comment claims
    guessing is "active-only, nothing verifiable offline". That claim
@@ -142,16 +136,15 @@ reason. Update this list and the README when something ships.
    (SPAKE2 or OPAQUE) over the pairing channel and derive the
    tunnel keys from its output instead of from the words, or grow
    the code length as a stopgap. Touches pairing + transport: full
-   CLOWDER_INTEGRATION run required after. KNOWN WRINKLE (seen on CI,
-   2026-09-26): the pairing exchange is one round with no joiner ack,
-   so the inviter retires its invite once ITS side completes even if
-   the joiner missed the reply — the joiner is stranded with a "is
-   `clow invite` still active?" error while the inviter considers them
-   paired (recovery: invite again; LWW absorbs the duplicate entry).
-   A second ack round would close the window; the exchange now gets
-   the whole join budget (see pairOnRegion) so the window only opens
-   on a genuine reply loss.
-6. **Leave with signed forget-me gossip + roster entry signing** —
+   CLOWDER_INTEGRATION run required after. The one-round no-ack
+   exchange split-brain (inviter paired and invite retired while the
+   joiner was stranded, seen on CI) is CLOSED as of 2026-09-26: the
+   exchange is now intro / intro / ack / commit-confirm (see
+   servePairConn and joinExchange), with the inviter committing only
+   on the joiner's ack and the joiner returning only on the
+   inviter's confirmation (committing optimistically if that
+   confirmation is lost after its own ack was written).
+5. **Leave with signed forget-me gossip + roster entry signing** —
    derive an Ed25519 keypair from the node key seed
    (ed25519.NewKeyFromSeed(nodeRaw32)); announce the sign-public in
    Hello/roster entries; `clow leave` broadcasts a signed {leaver,
@@ -163,7 +156,7 @@ reason. Update this list and the README when something ships.
    override entries via LWW (brick an entry with a broken address, or
    duplicate a name to capture sends). Merge should require a valid
    signature on entries for keys already known.
-7. **Android app client** — a clowder client for Android. tailcat has
+6. **Android app client** — a clowder client for Android. tailcat has
    Android support (see its android_linux.go and INSTALL.md), so the
    shape is: the daemon packages as an Android library (aar) or runs in
    a foreground service, with a thin UI for init/invite/join/send/
@@ -177,7 +170,7 @@ reason. Update this list and the README when something ships.
    tailcat); Android kills the daemon without a wake lock. Running
    the CLI in Termux is explicitly NOT a goal — the foreground-service
    app is the answer to both the lifecycle and the daemon+client UX.
-8. **Multiple clowders** — named clowders: per-clowder roster files,
+7. **Multiple clowders** — named clowders: per-clowder roster files,
    `--clowder` on invite/join/send, Hello carries the clowder name so a
    connection routes to the right roster. One identity, one daemon,
    clowders stay disjoint (flat sync would otherwise merge them).
@@ -186,7 +179,17 @@ reason. Update this list and the README when something ships.
    O(N²) bytes per cycle; one-peer-per-tick means propagation latency
    grows linearly).
 
-Shipped recently (context for a fresh session): a pprof pass (CLOWDER_PPROF
+Shipped recently (context for a fresh session): a nix flake
+`packages.default` building the clow binary (buildGoModule pinned to
+nixpkgs' go_1_27 — go.mod requires 1.27.1 and the deps own the floor,
+so the default `go` alias is not enough; vendorHash pinned in the
+flake; `nix build .#default` → result/bin/clow; the devShell now ships
+go 1.27.1 natively, no toolchain download), a confirmed pairing
+exchange (intro / intro / ack / commit-confirm: the inviter commits
+only on the joiner's ack — a lost reply leaves the invite alive for
+the joiner's retry — and the joiner returns only on the inviter's
+confirmation, so both rosters are durable before `clow join` exits),
+a pprof pass (CLOWDER_PPROF
 / `clow daemon --pprof` serves net/http/pprof on the health endpoint,
 opt-in only; a loopback end-to-end benchmark, BenchmarkLoopbackSend1MiB,
 profiling found the receive path dominated by per-chunk allocations in

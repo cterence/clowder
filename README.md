@@ -19,7 +19,7 @@ NAT-traversing, no accounts).
 
 ## Quickstart
 
-    go build -o clow .          # or: nix develop
+    go build -o clow .          # or: nix build .#default (result/bin/clow)
     clow init --name laptop     # once per machine
     clow daemon                 # keep running
 

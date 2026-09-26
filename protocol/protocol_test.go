@@ -27,6 +27,7 @@ func TestMessageRoundTrip(t *testing.T) {
 		{Pending: &Pending{Files: []PendingFile{{ID: "id1", FileName: "nap.txt",
 			Size: 77, From: "fluff", SHA256: "aa11", StoredAt: 100}}}},
 		{Fetch: &Fetch{ID: "id1"}},
+		{PairAck: &PairAck{}},
 	}
 
 	for _, m := range msgs {

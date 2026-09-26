@@ -2,3 +2,7 @@
 .vscode/
 /clowder
 *.test
+/result
+/clow
+*.exe
+*.prof
