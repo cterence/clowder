@@ -255,10 +255,10 @@ func TestIntegrationEndToEnd(t *testing.T) {
 	codeBox := milo.invite()
 	box.clow("join", codeBox)
 	waitFor(t, func() bool {
-		return strings.Contains(puma.clow("cats"), "milo") &&
-			strings.Contains(milo.clow("cats"), "puma") &&
-			strings.Contains(milo.clow("cats"), "box")
-	}, "pairing to show up in `clow cats` on both sides")
+		return strings.Contains(puma.clow("status"), "milo") &&
+			strings.Contains(milo.clow("status"), "puma") &&
+			strings.Contains(milo.clow("status"), "box")
+	}, "pairing to show up in `clow status` on both sides")
 
 	// A direct send lands in the target's inbox with its content
 	// intact.
