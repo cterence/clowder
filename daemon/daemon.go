@@ -718,7 +718,7 @@ func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *proto
 			return false
 		}
 		d.cfg.logf("clowder: received %s (%s) from %s", o.FileName, HumanBytes(plainSize), from.Name)
-		d.goBg(func() { d.sendReceipt(from.Name, o.ID, o.FileName) })
+		d.goBg(func() { d.sendReceipt(o.From, o.ID, o.FileName) })
 		return true
 	}
 	if err := pc.Answer(o.ID, true, ""); err != nil {
@@ -745,7 +745,7 @@ func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *proto
 		return false
 	}
 	d.cfg.logf("clowder: received %s (%s) from %s", o.FileName, HumanBytes(plainSize), from.Name)
-	d.goBg(func() { d.sendReceipt(from.Name, o.ID, o.FileName) })
+	d.goBg(func() { d.sendReceipt(o.From, o.ID, o.FileName) })
 	return true
 }
 
