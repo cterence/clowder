@@ -445,6 +445,43 @@ func TestStartupSyncBurst(t *testing.T) {
 	}, "waker to learn niko via the startup sync burst")
 }
 
+// TestSecondDaemonOnSameDirRefuses pins the single-instance rule: a
+// second daemon on the same cat (same config dir, same identity)
+// cross-writes the roster and every ledger and runs a second engine
+// with the same node key — the tunnel wedges (see the two-keypair
+// invariant). Before the lock it would steal the live daemon's IPC
+// socket (listenIPC removes the path first) and run happily.
+func TestSecondDaemonOnSameDirRefuses(t *testing.T) {
+	dir := t.TempDir()
+	if err := Init(dir, "milo"); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	first := startDaemonAt(t, dir)
+
+	second, err := New(Config{
+		Dir:        dir,
+		RetryEvery: 150 * time.Millisecond,
+		PollEvery:  150 * time.Millisecond,
+		Logf:       t.Logf,
+	}, &LocalTransport{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() { done <- second.Run(ctx) }()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "already running") {
+			t.Fatalf("second Run on the same cat: %v, want the single-instance refusal", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("second daemon is running on the same cat; want refusal")
+	}
+	_ = first
+}
+
 func TestForgetClearsOutbox(t *testing.T) {
 	milo := startDaemon(t, "milo")
 	niko, _ := offlineCat(t)

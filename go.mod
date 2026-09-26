@@ -6,7 +6,9 @@ require (
 	github.com/fxamacker/cbor/v2 v2.9.0
 	github.com/google/go-cmp v0.7.0
 	github.com/tailscale/tailcat v0.7.1-0.20260925200634-aa8950c58f81
+	go4.org/mem v0.0.0-20240501181205-ae6ca9944745
 	golang.org/x/crypto v0.57.0
+	golang.org/x/sys v0.48.0
 	tailscale.com v1.103.0-pre.0.20260916030321-a2263542f260
 )
 
@@ -42,12 +44,10 @@ require (
 	github.com/tailscale/wireguard-go v0.0.0-20260911194433-e3222a3340cd // indirect
 	github.com/u-root/u-root v0.14.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	go4.org/mem v0.0.0-20240501181205-ae6ca9944745 // indirect
 	go4.org/netipx v0.0.0-20260823151212-3075585bcbeb // indirect
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
 	golang.org/x/net v0.59.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/term v0.46.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.15.0 // indirect

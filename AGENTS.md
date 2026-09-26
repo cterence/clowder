@@ -251,7 +251,18 @@ learn the newly deployed storer before the storer's pushes stopped
 being rejected as unknown keys; the burst rides the drain WaitGroup
 and an offline peer costs one bounded dial in parallel, not a tick;
 pinned by TestStartupSyncBurst with a waker whose poll tick is a
-minute out, so only the burst can deliver). Also shipped
+minute out, so only the burst can deliver), and the single-instance
+lock (Run takes an exclusive advisory lock on the config dir — flock
+on unix, LockFileEx via golang.org/x/sys on Windows — held until Run
+returns and dying with the process, so a crashed daemon's leftover
+lock file is relockable; a second Run on the same cat refuses
+instead of stealing the live daemon's IPC socket and running two
+engines with the same node key, which wedges the tunnel — the
+two-keypair invariant's failure mode, hit in the wild when a restart
+crossed a live daemon; the lock conflicts even between two Runs in
+one process, and three restart tests that silently ran a second
+daemon on a live dir now stop the first; pinned by
+TestSecondDaemonOnSameDirRefuses). Also shipped
 earlier today:
 duplicate-name
 hardening (pairing refuses a join whose name another key already

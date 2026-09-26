@@ -93,7 +93,10 @@ func TestForgetBlocksReconnect(t *testing.T) {
 		t.Fatalf("inbox has %d files after the block, want 1 (no new arrival)", len(entries))
 	}
 
-	// The blocklist survives a restart.
+	// The blocklist survives a restart. The single-instance lock
+	// means the restart stops the first daemon first — two Runs on
+	// one cat is exactly what it refuses.
+	stopDaemon(milo)
 	milo2 := startDaemonAt(t, milo.cfg.Dir)
 	if !milo2.isBlockedKey(fluff.Me().Key) {
 		t.Fatal("blocklist did not survive restart")

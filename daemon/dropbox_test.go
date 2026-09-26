@@ -69,7 +69,9 @@ func TestDropboxMode(t *testing.T) {
 		t.Fatal("storer off did not clear dropbox mode")
 	}
 
-	// And modes survive a restart (persisted in me.json).
+	// And modes survive a restart (persisted in me.json). The lock
+	// requires stopping the first daemon before restarting on its dir.
+	stopDaemon(box)
 	box2 := startDaemonAt(t, box.cfg.Dir)
 	if box2.Me().Storer || box2.Me().Dropbox {
 		t.Fatal("mode reappeared after restart")

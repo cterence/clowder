@@ -49,7 +49,9 @@ func TestRotateAnnouncesToRoster(t *testing.T) {
 	}
 
 	// A restarted daemon derives the announced address from the new
-	// identity: peers' entries keep matching it.
+	// identity: peers' entries keep matching it. The lock requires
+	// stopping the first daemon before restarting on its dir.
+	stopDaemon(a)
 	a2 := startDaemonAt(t, a.cfg.Dir)
 	waitFor(t, func() bool { return a2.Me().Addr != "" }, "rotated milo to restart")
 	if a2.Me().Addr == oldAddr {

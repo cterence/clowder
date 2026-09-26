@@ -365,6 +365,15 @@ func (d *Daemon) setStorerMode(storer, dropbox bool, capacity int64) error {
 // Run listens, serves connections, retries the outbox, polls storers,
 // syncs rosters, and serves the IPC socket, until ctx is canceled.
 func (d *Daemon) Run(ctx context.Context) error {
+	// One daemon per cat: a second Run on the same config dir refuses
+	// here instead of stealing the IPC socket and running two engines
+	// with the same node key (which wedges the tunnel — see the
+	// two-keypair invariant). Released on every return path.
+	unlock, err := lockDir(d.cfg.Dir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	ln, err := d.tr.Listen(ctx)
 	if err != nil {
 		return fmt.Errorf("daemon: listening: %w", err)
