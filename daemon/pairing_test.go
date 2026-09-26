@@ -34,21 +34,21 @@ func TestPairingWordlist(t *testing.T) {
 }
 
 func TestParsePairCode(t *testing.T) {
-	words, region, err := parsePairCode("Hazel-Meadow-Quartz-Amber-Ember-303")
+	words, region, err := parsePairCode("Hazel-Meadow-Quartz-Amber-Ember-Petal-Ivory-Cedar-303")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if strings.Join(words, " ") != "hazel meadow quartz amber ember" || region != 303 {
+	if strings.Join(words, " ") != "hazel meadow quartz amber ember petal ivory cedar" || region != 303 {
 		t.Fatalf("parsed %v, region %d", words, region)
 	}
 
 	for _, bad := range []string{
-		"hazel meadow quartz amber 303",           // too few words
-		"hazel meadow quartz amber ember oak 303", // too many words
-		"hazel meadow quartz amber notaword 303",  // not in list
-		"hazel meadow quartz amber ember zero",    // bad region
-		"hazel meadow quartz amber ember",         // no region
-		"",                                        // empty
+		"hazel meadow quartz amber ember petal ivory 303",           // too few words
+		"hazel meadow quartz amber ember petal ivory cedar oak 303", // too many words
+		"hazel meadow quartz amber ember petal ivory notaword 303",  // not in list
+		"hazel meadow quartz amber ember petal ivory cedar zero",    // bad region
+		"hazel meadow quartz amber ember petal ivory cedar",         // no region
+		"", // empty
 	} {
 		if _, _, err := parsePairCode(bad); err == nil {
 			t.Errorf("parse(%q) succeeded, want error", bad)
@@ -57,7 +57,7 @@ func TestParsePairCode(t *testing.T) {
 }
 
 func TestDerivePairingDeterministic(t *testing.T) {
-	words, _, err := parsePairCode("hazel-meadow-quartz-amber-ember-303")
+	words, _, err := parsePairCode("hazel-meadow-quartz-amber-ember-petal-ivory-cedar-303")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestDerivePairingDeterministic(t *testing.T) {
 		t.Fatal("derived keys are zero")
 	}
 
-	other, _, err := parsePairCode("hazel-meadow-quartz-ember-petal-303")
+	other, _, err := parsePairCode("hazel-meadow-quartz-amber-ember-petal-cedar-ivory-303")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,15 +375,15 @@ func TestPairingRefusesDuplicateName(t *testing.T) {
 }
 
 func FuzzParsePairCode(f *testing.F) {
-	f.Add("hazel-meadow-quartz-amber-ember-303")
-	f.Add("hazel meadow quartz amber ember 303")
+	f.Add("hazel-meadow-quartz-amber-ember-petal-ivory-cedar-303")
+	f.Add("hazel meadow quartz amber ember petal ivory cedar 303")
 	f.Add("short-code-1")
-	f.Add("hazel-meadow-quartz-amber-notaword-303")
-	f.Add("hazel-meadow-quartz-amber-ember-zero")
+	f.Add("hazel-meadow-quartz-amber-ember-petal-ivory-notaword-303")
+	f.Add("hazel-meadow-quartz-amber-ember-petal-ivory-cedar-zero")
 	f.Add("")
 	f.Fuzz(func(t *testing.T, code string) {
 		if words, region, err := parsePairCode(code); err == nil {
-			if len(words) != 5 || region <= 0 {
+			if len(words) != 8 || region <= 0 {
 				t.Fatalf("parsePairCode(%q) accepted invalid shape: %v %d", code, words, region)
 			}
 		}

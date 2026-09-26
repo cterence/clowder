@@ -3,7 +3,7 @@ package daemon
 // Pairing lets two cats exchange their real tailcat identities by
 // reading a few words to each other instead of copy-pasting ~100-byte
 // addresses. `clow invite` derives two ephemeral tailcat identities and
-// a shared PSK from five random words; the invitee runs `clow join` with
+// a shared PSK from eight random words; the invitee runs `clow join` with
 // the same words, derives the same material, and the two daemons meet on
 // a fixed DERP region. Over that throwaway WireGuard tunnel each sends
 // a PairIntro carrying its real name and address, and both add each
@@ -45,9 +45,14 @@ import (
 )
 
 const (
-	// pairWordCount is the number of words in a pairing code: 50 bits
-	// against active guessing at 10 bits per word.
-	pairWordCount = 5
+	// pairWordCount is the number of words in a pairing code: 80 bits
+	// (10 bits per word, 1024-word list). Eight because the code is
+	// the only secret: the words also derive the pairing tunnel's
+	// static keys, whose MAC1 is an offline oracle for a recorded
+	// handshake (see pairing_mac1_test.go) — the extra words put even
+	// a precomputed 2^80 candidate table out of reach, and eight short
+	// words stay read-over-the-phone friendly.
+	pairWordCount = 8
 	// pairTTL is how long an invite stays valid.
 	pairTTL = 5 * time.Minute
 	// discoDerivationLabel replicates tailcat's disco key derivation
@@ -141,10 +146,10 @@ func generatePairWords() ([]string, error) {
 	return words, nil
 }
 
-// parsePairCode parses a user-supplied pairing code: five words plus
+// parsePairCode parses a user-supplied pairing code: eight words plus
 // the inviter's DERP region as a numeric suffix, with words separated
 // by spaces, dashes, or other punctuation (e.g.
-// "hazel-meadow-quartz-amber-ember-303").
+// "hazel-meadow-quartz-amber-ember-petal-ivory-cedar-303").
 func parsePairCode(code string) (words []string, region int, err error) {
 	fields := strings.FieldsFunc(strings.ToLower(code), func(r rune) bool {
 		isWord := r >= 'a' && r <= 'z'

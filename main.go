@@ -92,7 +92,7 @@ usage:
                                            create this cat's identity
   clow daemon [--port N] [--health ADDR] [--derp-map URL]
                                            run the mesh daemon
-  clow invite                              print a pairing code (5 words, 5 min)
+  clow invite                              print a pairing code (8 words, 5 min)
   clow join <CODE>                         pair with the cat that invited
   clow send <CAT> <FILE>                   send a file asynchronously
   clow fetch                               pull files storers hold for me

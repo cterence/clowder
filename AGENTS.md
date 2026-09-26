@@ -49,7 +49,7 @@ have grown the same private helper, hoist it there.
 
 - Trust is established ONLY via pairing (`clow invite`/`clow join`);
   tailcat addresses are never exchanged by hand. Pairing codes are
-  5 words (50 bits) + the inviter's DERP region, valid 5 minutes, and
+  8 words (80 bits) + the inviter's DERP region, valid 5 minutes, and
   strictly one-off: every `clow invite` is a fresh code (a new invite
   invalidates the previous one), and a code dies with its first
   successful join. The inviter commits a pairing only on the joiner's
@@ -144,19 +144,22 @@ reason. Update this list and the README when something ships.
    evaluated and rejected: a wrong-word join dies in the WireGuard
    handshake, invisible to the daemon layer, so there is nothing to
    rate-limit or alert on — active guessing is already cost-
-   hopeless and the only real surface is the offline oracle. What
-   remains is Phase 2, a product decision between: (a) stopgap —
-   grow pairWordCount 5 → 8 (80 bits makes even the precompute
-   absurd; trivial change, UX cost: typing three more words), or
-   (b) the principled fix — pairing v2: the pairing server's key
-   becomes random per invite and rides IN the code (the routing
-   part is public, ~52 chars; the words stay secret), the tunnel it
-   describes is unauthenticated, and a PAKE (SPAKE2) over that
-   tunnel authenticates the words and derives the PairIntro channel
-   keys — removing the oracle entirely (no offline test exists
-   because no key material is word-derived). (b) changes the
-   invite/join UX and the pairing protocol shape; touches pairing +
-   transport: full CLOWDER_INTEGRATION run required after either.
+   hopeless and the only real surface is the offline oracle. Phase 2
+   decision (2026-09-26): (a) ADOPTED — pairWordCount is 8 (80
+   bits), which puts even a precomputed candidate table out of
+   anyone's reach while keeping the code read-over-the-phone
+   speakable (the deciding constraint: the code must stay
+   human-readable, and speakability forces the routing key to be
+   word-derived, so the MAC1 oracle cannot be removed within
+   current tailcat — only made useless by search-space size).
+   Option (b), pairing v2 (random pairing-server key riding IN the
+   code, unauthenticated tunnel, SPAKE2 over it), stays documented
+   here as the principled fix if a non-speakable code is ever
+   acceptable: it removes the oracle entirely because no key
+   material would be word-derived. Old 5-word codes no longer
+   parse; pairing is version-matched and ephemeral, so a clean
+   cutover is fine (existing rosters unaffected). Touches pairing:
+   full CLOWDER_INTEGRATION run required.
    The one-round no-ack
    exchange split-brain (inviter paired and invite retired while the
    joiner was stranded, seen on CI) is CLOSED as of 2026-09-26: the

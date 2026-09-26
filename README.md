@@ -7,7 +7,7 @@ without the control plane: WireGuard-encrypted, DERP-relayed,
 NAT-traversing, no accounts).
 
 - **No addresses to copy.** Cats trust each other via `clow invite` /
-  `clow join` pairing codes: five words plus a number, read to each
+  `clow join` pairing codes: eight words plus a number, read to each
   other once.
 - **Asynchronous sends.** If the target is online the file goes straight
   there; if not, any cat that declared itself a **storer** holds the
@@ -143,7 +143,7 @@ On the first machine (once):
     clow daemon                 # leave it running
 
 On the second machine, same two steps with a different name, then pair
-once — the code is five words plus a region number, valid five
+once — the code is eight words plus a region number, valid five
 minutes, one use:
 
     laptop$  clow invite
