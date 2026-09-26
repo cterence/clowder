@@ -180,7 +180,8 @@ reason. Update this list and the README when something ships.
 
 Shipped recently (context for a fresh session): daemon drain at
 shutdown (Run tracks its background goroutines — receipt relays, spool
-sweeps, deliveries, roster syncs, accepted connections — in a WaitGroup
+sweeps, deliveries, roster syncs, accepted connections, the pairing
+invite teardown and the health server — in a WaitGroup
 and, on ctx cancel, closes live connections and waits for in-flight
 work before returning; a caller that cancels Run and waits for it back
 gets a daemon that no longer touches disk, the network, or Logf; the

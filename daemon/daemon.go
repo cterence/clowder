@@ -406,7 +406,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 			_ = d.tr.Close()
 			return err
 		}
-		go func() { _ = healthSrv.Serve(healthLn) }()
+		d.goBg(func() { _ = healthSrv.Serve(healthLn) })
 		d.cfg.logf("clowder: health endpoint on %s", healthLn.Addr().String())
 	} else if d.cfg.Pprof {
 		_ = ln.Close()

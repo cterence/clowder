@@ -335,7 +335,7 @@ func (d *Daemon) servePairConn(conn net.Conn) {
 		d.cfg.logf("clowder: confirming pairing with %s: %v", peer.Name, err)
 	}
 	// One confirmed pairing: retire the invite.
-	go d.stopInvite()
+	d.goBg(d.stopInvite)
 }
 
 // addPeerCat records a cat from a PairIntro in the roster and allows it
