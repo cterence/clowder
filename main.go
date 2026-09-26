@@ -470,14 +470,14 @@ func cmdStatus() error {
 		fmt.Println("\ntransfers:")
 		for _, p := range resp.Progress {
 			if p.Receiving {
-				fmt.Printf("  receiving %-24s from %-16s %3.0f%% of %s\n",
-					p.FileName, p.Peer, p.Percent()*100, daemon.HumanBytes(p.Total))
+				fmt.Printf("  receiving %-24s from %-16s %3.0f%% of %s%s\n",
+					p.FileName, p.Peer, p.Percent()*100, daemon.HumanBytes(p.Total), rateSuffix(p))
 			}
 		}
 		for _, p := range resp.Progress {
 			if !p.Receiving {
-				fmt.Printf("  sending   %-24s to   %-16s %3.0f%% of %s\n",
-					p.FileName, p.Peer, p.Percent()*100, daemon.HumanBytes(p.Total))
+				fmt.Printf("  sending   %-24s to   %-16s %3.0f%% of %s%s\n",
+					p.FileName, p.Peer, p.Percent()*100, daemon.HumanBytes(p.Total), rateSuffix(p))
 			}
 		}
 	}
@@ -531,6 +531,15 @@ func plural(n int, one, many string) string {
 }
 
 // age renders a coarse "x ago" for pending entries.
+// rateSuffix renders an in-flight transfer's current rate, when enough
+// of a window has elapsed to measure one.
+func rateSuffix(p daemon.Progress) string {
+	if p.Bps <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(" at %s/s", daemon.HumanBytes(int64(p.Bps)))
+}
+
 func age(unix int64) string {
 	d := time.Since(time.Unix(unix, 0)).Round(time.Second)
 	return d.String() + " old"

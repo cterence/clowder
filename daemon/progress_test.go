@@ -103,3 +103,37 @@ func TestProgressPercent(t *testing.T) {
 		t.Fatal("overflow must clamp to 1")
 	}
 }
+
+func TestProgressRate(t *testing.T) {
+	// A rolling window: the reported rate covers only recent samples,
+	// not the whole transfer's average, and a transfer with no elapsed
+	// window reports zero instead of a divide-by-zero spike.
+	k := newProgressKeeper()
+	base := time.Now()
+	k.now = func() time.Time { return base }
+	k.start(Progress{ID: "t1", FileName: "nap.txt", Total: 1 << 20})
+
+	if got := k.snapshot()[0].Bps; got != 0 {
+		t.Fatalf("fresh transfer reports %.0f B/s, want 0", got)
+	}
+
+	// 256 KiB per second for three seconds.
+	for i := 1; i <= 3; i++ {
+		base = base.Add(time.Second)
+		k.add("t1", 256*1024)
+	}
+	// The window is 3s: the oldest sample inside it is at +1s with
+	// 256 KiB done; now (+3s) has 768 KiB done.
+	got := k.snapshot()[0].Bps
+	want := 256 * 1024.0
+	if got < want*0.9 || got > want*1.1 {
+		t.Fatalf("rate = %.0f B/s, want ~%.0f B/s", got, want)
+	}
+
+	// Samples older than the window are pruned, so a stalled transfer
+	// decays to zero rather than reporting its historic rate.
+	base = base.Add(30 * time.Second)
+	if got := k.snapshot()[0].Bps; got != 0 {
+		t.Fatalf("stalled transfer reports %.0f B/s, want 0", got)
+	}
+}

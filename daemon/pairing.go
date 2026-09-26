@@ -323,8 +323,42 @@ func (d *Daemon) addPeerCat(p *protocol.PairIntro) error {
 
 // ---- join side ----
 
+// pairRegions returns the DERP regions a joiner should try to reach an
+// inviter on: the region encoded in the pairing code first (the
+// inviter measured it nearest), then every other region in the map,
+// ascending. Relay presence can differ from the encoded region on
+// networks with two nearby relays — the inviter's engine homes by its
+// own measurement, and a netcheck that flaps between equidistant
+// regions strands the meeting — so the join sweeps instead of betting
+// everything on one region.
+func pairRegions(ctx context.Context, derpMapURL string, encoded int) ([]int, error) {
+	dm, err := fetchDERPMap(ctx, derpMapURL)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]int, 0, len(dm.Regions))
+	for id := range dm.Regions {
+		ids = append(ids, int(id))
+	}
+	slices.Sort(ids)
+	out := make([]int, 0, len(ids)+1)
+	out = append(out, encoded)
+	for _, id := range ids {
+		if id != encoded {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
+// joinTimeout bounds a whole join attempt: the encoded-region try plus
+// however much of the sweep fits.
+const joinTimeout = 2 * time.Minute
+
 // Join connects to the inviter's pairing channel with the given code
-// and exchanges real identities.
+// and exchanges real identities. It tries the region encoded in the
+// code first, then sweeps the other regions (see pairRegions): each
+// attempt is bounded, and the whole join gives up after joinTimeout.
 func (d *Daemon) Join(ctx context.Context, code string) error {
 	words, region, err := parsePairCode(code)
 	if err != nil {
@@ -335,6 +369,41 @@ func (d *Daemon) Join(ctx context.Context, code string) error {
 		return err
 	}
 
+	regions, err := pairRegions(ctx, d.cfg.DERPMapURL, region)
+	if err != nil {
+		// No map to sweep with: fall back to the encoded region only,
+		// the pre-sweep behavior.
+		d.cfg.logf("clowder: fetching DERP map for the pairing sweep: %v", err)
+		regions = []int{region}
+	}
+
+	deadline := time.Now().Add(joinTimeout)
+	var lastErr error
+	for _, reg := range regions {
+		if time.Now().After(deadline) {
+			break
+		}
+		peer, err := d.pairOnRegion(ctx, keys, reg, deadline)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if err := d.addPeerCat(peer); err != nil {
+			return err
+		}
+		d.cfg.logf("clowder: paired with %s", peer.Name)
+		return nil
+	}
+	if lastErr != nil {
+		return fmt.Errorf("daemon: reaching inviter (is `clow invite` still active?): %w", lastErr)
+	}
+	return errors.New("daemon: could not reach the inviter before the invite expired (is `clow invite` still active?)")
+}
+
+// pairOnRegion reaches the inviter's pairing channel on one DERP
+// region and exchanges intros over it. Each stage is bounded so a
+// region where the inviter is absent costs seconds, not minutes.
+func (d *Daemon) pairOnRegion(ctx context.Context, keys *pairingKeys, region int, overall time.Time) (*protocol.PairIntro, error) {
 	ci := tailcat.ConnInfo{
 		ServerPublic:      tailcat.NodePublic{NodePublic: keys.inviterPub},
 		ServerDiscoPublic: keys.inviterDisco,
@@ -347,23 +416,29 @@ func (d *Daemon) Join(ctx context.Context, code string) error {
 		DERPMapURL: d.cfg.DERPMapURL,
 		Logf:       d.cfg.Logf,
 	}
-	conn, err := c.DialTCPPort(ctx, DefaultPort)
+	defer func() { _ = c.Close() }()
+
+	// A meow ping answers only where the inviter's pairing server is
+	// actually connected, so a wrong region fails here in seconds.
+	pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if _, err := c.Ping(pingCtx); err != nil {
+		return nil, err
+	}
+	dialCtx, cancelDial := context.WithTimeout(ctx, 30*time.Second)
+	defer cancelDial()
+	conn, err := c.DialTCPPort(dialCtx, DefaultPort)
 	if err != nil {
-		return fmt.Errorf("daemon: reaching inviter (is `clow invite` still active?): %w", err)
+		return nil, err
 	}
 	pc := protocol.NewConn(conn)
 	defer func() { _ = pc.Close() }()
-	_ = pc.SetDeadline(time.Now().Add(2 * time.Minute))
-
-	peer, err := pairIntroOf(pc, d.Me())
-	if err != nil {
-		return fmt.Errorf("daemon: pairing exchange: %w", err)
+	exchangeDeadline := time.Now().Add(30 * time.Second)
+	if overall.Before(exchangeDeadline) {
+		exchangeDeadline = overall
 	}
-	if err := d.addPeerCat(peer); err != nil {
-		return err
-	}
-	d.cfg.logf("clowder: paired with %s", peer.Name)
-	return nil
+	_ = pc.SetDeadline(exchangeDeadline)
+	return pairIntroOf(pc, d.Me())
 }
 
 // pairIntroOf sends our intro and returns the peer's.

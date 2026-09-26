@@ -22,6 +22,10 @@ type Progress struct {
 	Done    int64 `json:"done"`
 	Total   int64 `json:"total"`
 	Started int64 `json:"started"` // unix seconds
+	// Bps is the transfer's current rate over a short rolling window,
+	// filled in by snapshot: 0 when too little time has passed to
+	// measure one.
+	Bps float64 `json:"bps,omitempty"`
 }
 
 // Percent returns the completion fraction 0..1, or 0 with a zero total.
@@ -35,23 +39,47 @@ func (p Progress) Percent() float64 {
 	return float64(p.Done) / float64(p.Total)
 }
 
+// rateWindow is how far back snapshot looks to compute a transfer's
+// rate: long enough for a few chunk updates even on a slow relay,
+// short enough that a stalled transfer decays to zero promptly.
+const rateWindow = 3 * time.Second
+
 // progressKeeper tracks in-flight transfers.
 type progressKeeper struct {
 	mu sync.Mutex
 	m  map[string]Progress
+	// samples holds recent (time, cumulative Done) pairs per transfer
+	// for rate computation; anything older than rateWindow is pruned.
+	samples map[string][]progressSample
+	// now is the clock, overridable in tests.
+	now func() time.Time
+}
+
+// progressSample is one rate measurement point.
+type progressSample struct {
+	t    time.Time
+	done int64
 }
 
 func newProgressKeeper() *progressKeeper {
-	return &progressKeeper{m: map[string]Progress{}}
+	return &progressKeeper{m: map[string]Progress{}, samples: map[string][]progressSample{}}
+}
+
+func (k *progressKeeper) clock() time.Time {
+	if k.now != nil {
+		return k.now()
+	}
+	return time.Now()
 }
 
 // start registers an in-flight transfer.
 func (k *progressKeeper) start(p Progress) {
 	if p.Started == 0 {
-		p.Started = time.Now().Unix()
+		p.Started = k.clock().Unix()
 	}
 	k.mu.Lock()
 	k.m[p.ID] = p
+	k.samples[p.ID] = []progressSample{{t: k.clock(), done: p.Done}}
 	k.mu.Unlock()
 }
 
@@ -61,6 +89,8 @@ func (k *progressKeeper) add(id string, n int64) {
 	if p, ok := k.m[id]; ok {
 		p.Done += n
 		k.m[id] = p
+		k.pruneLocked(id, k.clock())
+		k.samples[id] = append(k.samples[id], progressSample{t: k.clock(), done: p.Done})
 	}
 	k.mu.Unlock()
 }
@@ -69,14 +99,28 @@ func (k *progressKeeper) add(id string, n int64) {
 func (k *progressKeeper) end(id string) {
 	k.mu.Lock()
 	delete(k.m, id)
+	delete(k.samples, id)
 	k.mu.Unlock()
 }
 
-// snapshot returns the in-flight transfers, oldest first.
+// pruneLocked drops samples older than the rate window.
+func (k *progressKeeper) pruneLocked(id string, now time.Time) {
+	s := k.samples[id]
+	cut := 0
+	for cut < len(s) && now.Sub(s[cut].t) > rateWindow {
+		cut++
+	}
+	k.samples[id] = s[cut:]
+}
+
+// snapshot returns the in-flight transfers, oldest first, each with
+// its rolling-window rate.
 func (k *progressKeeper) snapshot() []Progress {
+	now := k.clock()
 	k.mu.Lock()
 	out := make([]Progress, 0, len(k.m))
-	for _, p := range k.m {
+	for id, p := range k.m {
+		p.Bps = k.rateLocked(id, now)
 		out = append(out, p)
 	}
 	k.mu.Unlock()
@@ -90,6 +134,26 @@ func (k *progressKeeper) snapshot() []Progress {
 		return 1
 	})
 	return out
+}
+
+// rateLocked computes a transfer's bytes per second across the samples
+// inside the rate window. The sample at the window's start counts as
+// the baseline, so bursts do not skew the result. With no elapsed time
+// in the window it reports 0.
+func (k *progressKeeper) rateLocked(id string, now time.Time) float64 {
+	s := k.samples[id]
+	if len(s) == 0 {
+		return 0
+	}
+	base := s[0]
+	if now.Sub(base.t) > rateWindow {
+		return 0 // everything is stale: the transfer stalled
+	}
+	elapsed := now.Sub(base.t).Seconds()
+	if elapsed < 0.25 {
+		return 0
+	}
+	return float64(s[len(s)-1].done-base.done) / elapsed
 }
 
 // countingWriter wraps a writer, advancing a transfer's progress.

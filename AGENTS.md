@@ -49,7 +49,11 @@ have grown the same private helper, hoist it there.
 
 - Trust is established ONLY via pairing (`clow invite`/`clow join`);
   tailcat addresses are never exchanged by hand. Pairing codes are
-  5 words (50 bits) + the inviter's DERP region, valid 5 minutes.
+  5 words (50 bits) + the inviter's DERP region, valid 5 minutes. The
+  region is a fast-path hint, not a requirement: `clow join` tries it
+  first, then sweeps the other regions (relay presence can flap away
+  from the encoded one on networks with two nearby relays), so a wrong
+  hint costs seconds, not the pairing.
 - **Two keypairs per cat**: the identity (server) key inside the
   tailcat address, and a separate client key (`clientkey.json`) used
   for ALL outbound dials, which peers allowlist (roster `ClientKey`,
