@@ -32,8 +32,11 @@ jobs:
       - run: GOOS=linux GOARCH=arm64 go build ./...
       # Android too: the on-device toolchain cannot auto-download go
       # >= 1.27.1 (no android build of golang.org/toolchain), so the
-      # supported path is cross-compiling — keep it green.
-      - run: GOOS=android GOARCH=arm64 go build ./...
+      # supported path is cross-compiling — keep it green. CGO_ENABLED=0
+      # is required: android is the one cross target where cgo stays on
+      # by default, and glibc headers happen to satisfy runtime/cgo, so
+      # the build would silently link glibc instead of bionic.
+      - run: CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build ./...
 
   lint:
     runs-on: ubuntu-latest
