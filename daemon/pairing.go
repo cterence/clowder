@@ -304,6 +304,12 @@ func (d *Daemon) servePairConn(conn net.Conn) {
 			d.cfg.logf("clowder: refusing duplicate name %s: %v", claim.Name, err)
 		}
 		d.cfg.logf("clowder: refused pairing with %s: %s", claim.Name, reason)
+		// The joiner races its ack against this refusal. Drain it
+		// before closing: a close with unread data in flight sends an
+		// RST that destroys the refusal still on the wire (CI's Linux
+		// runner), and the joiner must get to read the refusal.
+		_ = pc.SetDeadline(time.Now().Add(2 * time.Second))
+		_, _ = pc.ReadMsg()
 		return
 	}
 	// Commit only on the joiner's confirmation: a reply it never saw
@@ -510,18 +516,25 @@ func joinExchange(pc *protocol.Conn, me roster.Cat) (*protocol.PairIntro, bool, 
 	if err != nil {
 		return nil, false, err
 	}
-	if err := pc.WriteMsg(&protocol.Message{PairAck: &protocol.PairAck{}}); err != nil {
-		return nil, false, err
-	}
-	if err := pairAckOf(pc); err != nil {
-		if errors.Is(err, errPairRefused) {
-			return nil, false, err
-		}
+	ackErr := pc.WriteMsg(&protocol.Message{PairAck: &protocol.PairAck{}})
+	readErr := pairAckOf(pc)
+	switch {
+	case readErr == nil:
+		return peer, true, nil
+	case errors.Is(readErr, errPairRefused):
+		// The refusal may have raced our ack write; what we read is
+		// the accurate diagnosis.
+		return nil, false, readErr
+	case ackErr != nil:
+		// The ack never landed (the inviter likely refused and closed
+		// while we were writing), so there is nothing to commit
+		// optimistically on.
+		return nil, false, fmt.Errorf("%w (ack write: %v)", readErr, ackErr)
+	default:
 		// Our ack was written, so the inviter has everything it needs
 		// to commit; a lost confirmation does not un-pair us.
 		return peer, false, nil
 	}
-	return peer, true, nil
 }
 
 // pairAckOf waits for the peer's confirmation on the pairing channel:
