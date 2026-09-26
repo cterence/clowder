@@ -86,7 +86,19 @@ func (d *Daemon) resumePoint(o *protocol.Offer) int64 {
 		d.dropPart(o.ID)
 		return 0
 	}
-	return st.Offset
+	// Clamp to the last full-chunk boundary: a checkpoint taken after
+	// the final chunk (a cut in the terminator window) names the end
+	// of a short frame, which SealedToPlain rejects on both sides —
+	// answering with it verbatim wedges the transfer, retrying an
+	// offset no attempt can use. The plaintext past the boundary is
+	// discarded and re-sent (receiveResumable truncates to it).
+	resume := envelope.LastResumeBoundary(st.PlainLen)
+	if resume <= envelope.HeaderLen {
+		// Less than one full chunk held: not worth resuming.
+		d.dropPart(o.ID)
+		return 0
+	}
+	return resume
 }
 
 // dropPart removes a transfer's partial receive, if any.
@@ -169,10 +181,34 @@ func (d *Daemon) receiveResumable(pc *protocol.Conn, o *protocol.Offer, resume i
 	}
 	ex := &exactReader{r: countingReader{k: d.prog, id: o.ID, r: io.LimitReader(pc.Reader(), expected)}}
 
+	plainKept := int64(0)
 	var f *os.File
 	var err error
 	if resume > 0 {
-		f, err = os.OpenFile(partPath(d.cfg.Dir, o.ID), os.O_WRONLY|os.O_APPEND, 0o600)
+		// resume names a full-chunk boundary (resumePoint clamped it),
+		// so the plaintext it maps to is what the part file must hold
+		// exactly. Truncate away anything past it — a torn tail from a
+		// killed process, or the final short chunk a checkpoint after
+		// the boundary had already written — so the suffix appends to
+		// a clean prefix, and checkpoint the state before streaming.
+		plainKept, _, err = envelope.SealedToPlain(resume)
+		if err == nil {
+			f, err = os.OpenFile(partPath(d.cfg.Dir, o.ID), os.O_WRONLY, 0o600)
+		}
+		if err == nil {
+			err = f.Truncate(plainKept)
+		}
+		if err == nil {
+			_, err = f.Seek(plainKept, io.SeekStart)
+		}
+		if err != nil {
+			if f != nil {
+				_ = f.Close()
+			}
+			d.cfg.logf("clowder: receiving %s: %v", o.FileName, err)
+			return 0, false
+		}
+		d.checkpointPart(o, resume, plainKept)
 	} else {
 		d.dropPart(o.ID)
 		f, err = os.OpenFile(partPath(d.cfg.Dir, o.ID), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
@@ -180,13 +216,6 @@ func (d *Daemon) receiveResumable(pc *protocol.Conn, o *protocol.Offer, resume i
 	if err != nil {
 		d.cfg.logf("clowder: receiving %s: %v", o.FileName, err)
 		return 0, false
-	}
-
-	plainKept := int64(0)
-	if resume > 0 {
-		if st, ok := loadPart(d.cfg.Dir, o.ID); ok {
-			plainKept = st.PlainLen
-		}
 	}
 	var suffixPlain int64
 	openErr := func() error {

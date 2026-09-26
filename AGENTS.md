@@ -259,7 +259,20 @@ attempt mid-stream; the retry must land the file whole and the
 receiver must have answered a nonzero offset),
 TestDirectSendResumesAcrossRestart (the part and sidecar survive a
 receiver restart), TestStorerPushResumesAfterCut, and
-TestDepositResumeRoundTrip at the store level. Known limits, kept
+TestDepositResumeRoundTrip at the store level, and
+TestDirectSendResumesFromFinalChunkCheckpoint pinning the boundary
+invariant a review of the PR found violated: a checkpoint taken
+after the FINAL chunk (a cut in the 4-byte terminator window, or a
+receiver crash between the last chunk and the terminator) names the
+end of a SHORT frame whenever the file's last chunk is short, and
+SealedToPlain accepts only full-chunk boundaries — answering with
+the checkpoint verbatim wedged the transfer forever (every retry
+failed on both sides until the 7-day part sweep). Receivers now
+clamp through envelope.LastResumeBoundary (the last full-chunk
+boundary for the plaintext held) and receiveResumable truncates the
+part to that boundary's plaintext before appending, which also
+removes the blind O_APPEND that let a torn tail corrupt the
+assembly. Known limits, kept
 honest in the caveats: the resume rides a retry — there is no probe
 asking a checkpoint exists before the sender commits to an attempt —
 and progress accounting on a resumed attempt counts from the resume

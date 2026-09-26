@@ -223,3 +223,120 @@ func TestOpenResumeRoundTrip(t *testing.T) {
 	}
 	_ = wholeSha
 }
+
+// TestLastResumeBoundary pins the clamping rule a receiver must apply
+// to its checkpointed offset before answering: only full-chunk frame
+// ends are boundaries SealedToPlain accepts, so the answer for
+// plainLen held bytes is the end of the last FULL chunk frame.
+func TestLastResumeBoundary(t *testing.T) {
+	const fullFrame = 4 + ChunkSize + aeadTagLen
+	tests := []struct {
+		plainLen int64
+		want     int64
+	}{
+		{0, HeaderLen},
+		{1, HeaderLen},
+		{ChunkSize - 1, HeaderLen},
+		{ChunkSize, HeaderLen + fullFrame},
+		{ChunkSize + 1, HeaderLen + fullFrame},
+		{2 * ChunkSize, HeaderLen + 2*fullFrame},
+		{5*ChunkSize + 12345, HeaderLen + 5*fullFrame},
+	}
+	for _, tt := range tests {
+		got := LastResumeBoundary(tt.plainLen)
+		if got != tt.want {
+			t.Errorf("LastResumeBoundary(%d) = %d, want %d", tt.plainLen, got, tt.want)
+			continue
+		}
+		if _, _, err := SealedToPlain(got); err != nil {
+			t.Errorf("LastResumeBoundary(%d) = %d is not a boundary: %v", tt.plainLen, got, err)
+		}
+	}
+}
+
+// TestResumeAfterFinalChunkCheckpoint reproduces a cut in the
+// terminator window: every chunk — including the short final one —
+// arrived, but not the 4-byte terminator. The receiver's last
+// checkpoint names the end of a SHORT frame, which SealedToPlain
+// rejects on both sides; answering with it verbatim wedges the
+// transfer. The receiver must clamp through LastResumeBoundary and
+// re-take the final chunk, and the retry must assemble the whole
+// file.
+func TestResumeAfterFinalChunkCheckpoint(t *testing.T) {
+	sender := key.NewNode()
+	recipient := key.NewNode()
+	var secret [SecretLen]byte
+	if _, err := rand.Read(secret[:]); err != nil {
+		t.Fatal(err)
+	}
+
+	// One full chunk plus a short final chunk: the common file shape.
+	plain := make([]byte, ChunkSize+12345)
+	if _, err := rand.Read(plain); err != nil {
+		t.Fatal(err)
+	}
+	src := resumeFile(t, plain)
+	var sealed bytes.Buffer
+	wholeSize, wholeSha, err := SealStreamAt(sender, recipient.Public(), secret[:], 0, &sealed, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	full := sealed.Bytes()
+
+	// Attempt 1 cut in the terminator window: all but the last 4
+	// bytes arrived, so the receiver holds the whole plaintext and
+	// its last checkpoint follows the final chunk.
+	var got bytes.Buffer
+	var lastCheckpoint int64
+	_, _, err = OpenStreamAt(recipient, bytes.NewReader(full[:len(full)-4]), &got, 0, func(nextOff, plainLen int64) {
+		lastCheckpoint = nextOff
+	})
+	if err == nil {
+		t.Fatal("truncated stream opened without error")
+	}
+	if got.Len() != len(plain) {
+		t.Fatalf("receiver holds %d bytes, want the whole %d", got.Len(), len(plain))
+	}
+	// The raw checkpoint is not a boundary, which is the wedge.
+	if _, _, err := SealedToPlain(lastCheckpoint); err == nil {
+		t.Fatal("checkpoint after a short final chunk parsed as a boundary")
+	}
+
+	// What the receiver must answer instead: the last full-chunk
+	// boundary for the plaintext it holds.
+	resume := LastResumeBoundary(int64(got.Len()))
+	plainKept, _, err := SealedToPlain(resume)
+	if err != nil {
+		t.Fatalf("LastResumeBoundary(%d) = %d is not a boundary: %v", got.Len(), resume, err)
+	}
+	if plainKept >= int64(len(plain)) {
+		t.Fatalf("boundary maps to %d plaintext, already the whole file", plainKept)
+	}
+
+	// Retry: the sender re-seals from the clamped boundary; the
+	// receiver discards the plaintext past it and opens the suffix.
+	resumed := resumeFile(t, plain)
+	var retry bytes.Buffer
+	retrySize, retrySha, err := SealStreamAt(sender, recipient.Public(), secret[:], resume, &retry, resumed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retrySize != wholeSize || retrySha != wholeSha {
+		t.Fatal("retry announced different whole-file values")
+	}
+	if !bytes.Equal(full[resume:], retry.Bytes()[HeaderLen:]) {
+		t.Fatal("retry frames differ from the original attempt's")
+	}
+	var rest bytes.Buffer
+	restSize, _, err := OpenStreamAt(recipient, bytes.NewReader(retry.Bytes()), &rest, resume, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restSize != int64(len(plain))-plainKept {
+		t.Fatalf("suffix size = %d, want %d", restSize, int64(len(plain))-plainKept)
+	}
+	assembled := append(append([]byte{}, got.Bytes()[:plainKept]...), rest.Bytes()...)
+	if !bytes.Equal(assembled, plain) {
+		t.Fatal("assembled plaintext differs from the original")
+	}
+}

@@ -16,8 +16,10 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"clowder/envelope"
+	"clowder/persist"
 	"clowder/store"
 )
 
@@ -323,3 +325,79 @@ func initDir(t *testing.T, name string) string {
 
 func bytes16() []byte { return make([]byte, 16) }
 func bytes8() []byte  { return make([]byte, 8) }
+
+// TestDirectSendResumesFromFinalChunkCheckpoint reproduces a cut in
+// the terminator window: the receiver got every chunk — including the
+// short final one — but died before the 4-byte terminator and the ack.
+// Its sidecar then records a checkpoint past the last full-chunk
+// boundary, an offset both sides' SealedToPlain rejects: answering
+// with it verbatim wedges the transfer forever. The receiver must
+// clamp to the boundary and re-take the final chunk. The window is 4
+// bytes wide, too narrow to aim a byte-quota cut at, so the test seeds
+// the receiver's part with exactly the on-disk state that cut leaves.
+func TestDirectSendResumesFromFinalChunkCheckpoint(t *testing.T) {
+	tr := &killTransport{}
+	fluff := runDaemon(t, initDir(t, "fluff"), tr)
+	milo := startDaemon(t, "milo")
+	trust(t, milo, fluff)
+	trust(t, fluff, milo)
+
+	// Every attempt dies on its first byte until the receiver's part
+	// is seeded, so the transfer cannot complete by luck.
+	tr.quota.Store(0)
+
+	big := strings.Repeat("nap.", 25000) // 100000 bytes: a full chunk plus a short final chunk
+	src := writeSource(t, big)
+	if _, err := milo.Send("fluff", src); err != nil {
+		t.Fatal(err)
+	}
+
+	var e Entry
+	waitFor(t, func() bool {
+		es := milo.ob.All()
+		if len(es) != 1 {
+			return false
+		}
+		e = es[0]
+		return true
+	}, "milo to queue the send")
+	if _, err := e.SealSecretBytes(); err != nil {
+		t.Fatalf("queued entry has no seal secret: %v", err)
+	}
+	digest, size, err := fileDigest(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Exactly what the terminator-window cut leaves: the whole
+	// plaintext in the part file, and a sidecar checkpointed after
+	// the final (short) chunk — one frame end short of the stream.
+	sealed := envelope.SealedSize(size)
+	st := partState{
+		ID:        e.ID,
+		FileName:  "nap.txt",
+		Size:      sealed,
+		SHA256:    digest,
+		Offset:    sealed - 4,
+		PlainLen:  size,
+		UpdatedAt: time.Now().Unix(),
+	}
+	if err := os.MkdirAll(partsDir(fluff.cfg.Dir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := persist.SaveJSON(partStatePath(fluff.cfg.Dir, e.ID), st); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(partPath(fluff.cfg.Dir, e.ID), []byte(big), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Release the kill: the retry must clamp the checkpoint to the
+	// last full-chunk boundary, re-take the final chunk, and land
+	// the file whole.
+	tr.quota.Store(1 << 40)
+	waitFor(t, func() bool {
+		p, ok := inboxFile(t, fluff, "nap.txt")
+		return ok && p == big
+	}, "the resumed transfer to land in the inbox")
+	waitFor(t, func() bool { return len(milo.ob.All()) == 0 }, "milo's outbox to drain")
+}

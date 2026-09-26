@@ -357,3 +357,21 @@ func SealedToPlain(off int64) (plainOff, chunksDone int64, err error) {
 	chunks := body / fullFrame
 	return chunks * ChunkSize, chunks, nil
 }
+
+// LastResumeBoundary returns the largest sealed-stream offset that is
+// a valid resume point for a receiver holding plainLen plaintext
+// bytes: the end of the last FULL chunk frame, the only kind of
+// boundary SealedToPlain accepts. A checkpoint taken after the final
+// chunk (a cut in the terminator window, before the 4-byte terminator)
+// names the end of a short frame whenever the file's last chunk is
+// short, and answering with it wedges the transfer — every retry
+// fails on both sides. Receivers must clamp their checkpointed offset
+// through this before answering; the plaintext past the boundary is
+// discarded and re-sent.
+func LastResumeBoundary(plainLen int64) int64 {
+	full := plainLen / ChunkSize
+	if full < 0 {
+		full = 0
+	}
+	return HeaderLen + full*(4+ChunkSize+aeadTagLen)
+}
