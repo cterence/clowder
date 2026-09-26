@@ -199,9 +199,10 @@ reason. Update this list and the README when something ships.
    connection routes to the right roster. One identity, one daemon,
    clowders stay disjoint (flat sync would otherwise merge them).
    Largest refactor; do last, design tombstones against the final
-   roster shape. Revisit sync scaling here too (full-roster sync is
-   O(N²) bytes per cycle; one-peer-per-tick means propagation latency
-   grows linearly).
+   roster shape. Revisit sync scaling here too (every peer is synced
+   every poll tick as of 2026-09-26 — full-roster exchange is O(N²)
+   bytes per cycle, trivial at homelab scale, but this is where a
+   large-roster cadence would land).
 5. **Nix service packaging: systemd + launchd** — run the daemon as a
    real service from the flake. Linux: a NixOS module
    (`nixosModules.default`) wrapping `packages.default` in a systemd
@@ -266,20 +267,24 @@ cut that skipped probing cats not seen within 10 minutes lost route
 lines for the first minutes after a daemon restart, when liveness is
 still empty; pinned by TestRefreshPathsProbesEveryCat,
 TestPathSnapshotNeverProbes and TestRefreshPathsProbeTimeoutIsBounded
-via a fake Pinger), and the startup sync burst (syncBurst dials every
-roster peer in parallel once at Run start, 10s per dial, so a cat
-that wakes up converges in seconds instead of waiting for the
-one-peer-per-tick round-robin to reach the one online peer that
-knows what changed — the homelab2 incident's 3.5-minute gap was
-exactly this: it woke, but needed macbook's round-robin tick to
-learn the newly deployed storer before the storer's pushes stopped
-being rejected as unknown keys; the burst rides the drain WaitGroup
-and an offline peer costs one bounded dial in parallel, not a tick;
-the first cut wrapped the whole connect in a 10s timeout, which cut a
-slow-attaching tunnel mid-hello — the cap is gone, the transport's
-own 10s dead-peer probe and msgTimeout do the bounding; pinned by
-TestStartupSyncBurst with a waker whose poll tick is a
-minute out, so only the burst can deliver), symmetric liveness
+via a fake Pinger), and the all-peers sync (syncPeers dials EVERY
+roster peer in parallel, once at Run start and on every poll tick,
+so a cat that wakes up converges in seconds and every reachable
+peer's liveness stays fresh — the homelab2 incidents were exactly
+the old shape's cost: a one-shot startup burst that missed when both
+sides restarted near-simultaneously, then the one-peer-per-tick
+round-robin took ~N×60s to reach the online peer that knew what
+changed, and even an always-online peer aged past the online window
+between its turns. A sync is a hello plus two rosters (~2-3 KB), so
+per-tick all-peers costs a few KB at homelab scale — the O(N²)
+per-cycle bytes stay on pending item 4's plate for large rosters;
+the burst's old 10s cap, which cut slow-attaching tunnels
+mid-hello, is gone — the transport's own 10s dead-peer probe and
+msgTimeout do the bounding, so an offline peer costs one bounded
+parallel dial; pinned by TestStartupSyncBurst with a waker whose
+poll tick is a minute out, so only the startup call can deliver, and
+TestSyncPeersDialsEveryPeer with a dial-recording transport),
+symmetric liveness
 marking (a dialer marks its target seen the moment its hello reply
 lands — handshakeClient — the same point the listener marks the
 dialer on its hello, so a connection cut before the roster exchange

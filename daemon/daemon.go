@@ -20,7 +20,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/tailscale/tailcat"
@@ -99,7 +98,6 @@ type Daemon struct {
 	gauge    *transferGauge
 	inbox    string
 
-	syncSeq atomic.Int64 // round-robin cursor for peer sync
 	// bg drains Run's background work at shutdown: receipt relays,
 	// spool sweeps, deliveries, roster syncs and accepted connections
 	// are uncancelable by design (a receipt or held-file push must not
@@ -438,8 +436,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// first poll tick, so an early `clow status` shows routes.
 	d.goBg(func() { d.refreshPaths(context.WithoutCancel(ctx)) })
 	// A cat that just started — woke up, restarted — converges now:
-	// dial every peer once instead of waiting for the round-robin.
-	d.goBg(func() { d.syncBurst(context.WithoutCancel(ctx)) })
+	// dial every peer once instead of waiting for the first tick.
+	d.goBg(func() { d.syncPeers(context.WithoutCancel(ctx)) })
 
 	for {
 		select {
@@ -465,9 +463,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 		case <-poll.C:
 			// No periodic storer polling: the push sweep delivers
 			// held files to online targets on its own, and `clow
-			// fetch` remains as a manual pull. This keeps the
-			// background traffic to one roster sync, one path
-			// refresh, plus spool pushes only while files are held.
+			// fetch` remains as a manual pull. Each tick syncs every
+			// peer in parallel (a few KB at homelab scale) and
+			// refreshes every path, plus spool pushes only while
+			// files are held.
 			d.goBg(func() { d.syncPeers(context.WithoutCancel(ctx)) })
 			d.goBg(func() { d.sweepSpool(context.WithoutCancel(ctx)) })
 			d.goBg(func() { d.refreshPaths(context.WithoutCancel(ctx)) })
@@ -1219,32 +1218,23 @@ func (d *Daemon) fetchOne(pc *protocol.Conn, f protocol.PendingFile) error {
 	return nil
 }
 
-// syncPeers connects to one peer (round-robin) purely to exchange
-// rosters, so membership changes propagate without waiting for sends.
-func (d *Daemon) syncPeers(ctx context.Context) {
-	all := d.ros.All()
-	if len(all) == 0 {
-		return
-	}
-	cat := all[int(d.syncSeq.Add(1))%len(all)%len(all)]
-	pc, err := d.connect(ctx, cat)
-	if err != nil {
-		return
-	}
-	_ = pc.Close()
-}
-
-// syncBurst connects to every roster peer in parallel, exchanging
-// rosters with each one that answers. It runs once at Run start: a
-// cat that wakes up cannot learn anything until it talks to someone,
-// and the steady-state one-peer-per-tick sync takes minutes to reach
-// the one online peer that knows what changed while it was out. No
-// extra timeout here: the transport bounds its own dial (its 10s
+// syncPeers connects to every roster peer in parallel, exchanging
+// rosters with each one that answers. It runs once at Run start (a
+// cat that wakes up cannot learn anything until it talks to someone)
+// and on every poll tick, so membership changes propagate within a
+// tick or two and every reachable peer's liveness stays fresh.
+// One-peer-per-tick round-robin was the old shape — but a sync is a
+// hello plus two rosters (~2-3 KB), so syncing all peers costs a few
+// KB per tick at homelab scale, while the round-robin's O(N)-tick
+// cadence left even an always-online peer unseen for minutes (the
+// wake-gap incidents). The per-cycle bytes are O(N²) across the
+// clowder; revisit if rosters ever grow large (pending item 4).
+// No extra timeout here: the transport bounds its own dial (its 10s
 // dead-peer probe) and the protocol bounds its messages (msgTimeout),
-// so an offline peer costs one bounded dial, in parallel — not a tick
-// each — while a slow-attaching tunnel gets to finish its hello
-// instead of being cut mid-exchange.
-func (d *Daemon) syncBurst(ctx context.Context) {
+// so an offline peer costs one bounded dial, in parallel — not a
+// tick each — while a slow-attaching tunnel gets to finish its
+// hello instead of being cut mid-exchange.
+func (d *Daemon) syncPeers(ctx context.Context) {
 	var wg sync.WaitGroup
 	for _, c := range d.ros.All() {
 		wg.Add(1)

@@ -445,6 +445,67 @@ func TestStartupSyncBurst(t *testing.T) {
 	}, "waker to learn niko via the startup sync burst")
 }
 
+// dialRecordingTransport records every Dial attempt, so tests can
+// assert which roster entries a sync tried to reach.
+type dialRecordingTransport struct {
+	*LocalTransport
+	mu    sync.Mutex
+	dials map[string]int
+}
+
+func (d *dialRecordingTransport) Dial(ctx context.Context, addr string) (net.Conn, error) {
+	d.mu.Lock()
+	d.dials[addr]++
+	d.mu.Unlock()
+	return d.LocalTransport.Dial(ctx, addr)
+}
+
+func (d *dialRecordingTransport) dialed() map[string]int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make(map[string]int, len(d.dials))
+	for k, v := range d.dials {
+		out[k] = v
+	}
+	return out
+}
+
+// TestSyncPeersDialsEveryPeer pins the steady-state sync shape: one
+// syncPeers call attempts EVERY roster entry, in parallel. The old
+// one-peer-per-tick round-robin left a given peer unseen for N ticks
+// — with four cats that was ~4 minutes, aging even an always-online
+// peer past the online window and stretching wake convergence.
+func TestSyncPeersDialsEveryPeer(t *testing.T) {
+	dt := &dialRecordingTransport{LocalTransport: &LocalTransport{}, dials: map[string]int{}}
+	dir := t.TempDir()
+	if err := Init(dir, "milo"); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	milo := runDaemon(t, dir, dt)
+
+	fluff := startDaemon(t, "fluff")
+	addCat(t, fluff, milo.Me())
+	cedar := blockedCat(t, "cedar", time.Now().Unix())
+	addCat(t, fluff, cedar) // milo does not know cedar yet
+	ghost, _ := offlineCat(t)
+	ghost2 := blockedCat(t, "birch", time.Now().Unix())
+	addCat(t, milo, fluff.Me())
+	addCat(t, milo, ghost)  // offline: nothing listens
+	addCat(t, milo, ghost2) // offline: nothing listens
+
+	milo.syncPeers(context.Background())
+
+	dialed := dt.dialed()
+	for _, c := range []roster.Cat{fluff.Me(), ghost, ghost2} {
+		if dialed[c.Addr] == 0 {
+			t.Errorf("syncPeers skipped %s; every roster entry must be reached each sync", c.Name)
+		}
+	}
+	if _, ok := milo.Roster().GetByKey(cedar.Key); !ok {
+		t.Error("milo did not learn cedar from fluff in one sync")
+	}
+}
+
 // TestSecondDaemonOnSameDirRefuses pins the single-instance rule: a
 // second daemon on the same cat (same config dir, same identity)
 // cross-writes the roster and every ledger and runs a second engine
