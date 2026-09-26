@@ -156,6 +156,9 @@ reason. Update this list and the README when something ships.
    a foreground service, with a thin UI for init/invite/join/send/
    inbox. Decide the UI approach (plainCompose/gomobile) before
    starting; the daemon package itself must not grow Android deps.
+   (GOOS=android GOARCH=arm64 cross-compiles cleanly today; CI keeps
+   it green. On-device Termux cannot auto-download go >= 1.27.1 — no
+   android build of golang.org/toolchain — so build on a real box.)
 8. **Multiple clowders** — named clowders: per-clowder roster files,
    `--clowder` on invite/join/send, Hello carries the clowder name so a
    connection routes to the right roster. One identity, one daemon,

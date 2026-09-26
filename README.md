@@ -36,6 +36,13 @@ default; change with `clow inbox --set DIR`). Config lives under
 `$CLOWDER_DIR` or the user config home (`~/.config/clowder` on Linux,
 `~/Library/Application Support/clowder` on macOS).
 
+Building needs Go >= 1.27.1 (a dependency floor, not ours to lower).
+For Android, cross-compile from a machine with that toolchain — the
+on-device one cannot auto-download it (golang.org/toolchain ships no
+android build):
+
+    GOOS=android GOARCH=arm64 go build -o clow .
+
 ## Commands
 
     clow init [--name NAME] [--dir CONFIG_DIR] [--inbox INBOX_DIR]
