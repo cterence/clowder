@@ -250,8 +250,18 @@ exactly this: it woke, but needed macbook's round-robin tick to
 learn the newly deployed storer before the storer's pushes stopped
 being rejected as unknown keys; the burst rides the drain WaitGroup
 and an offline peer costs one bounded dial in parallel, not a tick;
-pinned by TestStartupSyncBurst with a waker whose poll tick is a
-minute out, so only the burst can deliver), and the single-instance
+the first cut wrapped the whole connect in a 10s timeout, which cut a
+slow-attaching tunnel mid-hello — the cap is gone, the transport's
+own 10s dead-peer probe and msgTimeout do the bounding; pinned by
+TestStartupSyncBurst with a waker whose poll tick is a
+minute out, so only the burst can deliver), symmetric liveness
+marking (a dialer marks its target seen the moment its hello reply
+lands — handshakeClient — the same point the listener marks the
+dialer on its hello, so a connection cut before the roster exchange
+still counts both ways; before, only the listener's mark survived
+mid-exchange cuts, which made one side show online while its peer
+said never-seen; pinned by TestDialerMarksTargetSeenOnHelloReply),
+and the single-instance
 lock (Run takes an exclusive advisory lock on the config dir — flock
 on unix, LockFileEx via golang.org/x/sys on Windows — held until Run
 returns and dying with the process, so a crashed daemon's leftover

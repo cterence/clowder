@@ -43,10 +43,6 @@ const (
 	// msgTimeout bounds reads of a single protocol message; long enough
 	// for a slow peer's handshake, short enough to reclaim dead conns.
 	msgTimeout = 2 * time.Minute
-	// syncBurstTimeout bounds one startup-burst dial: the transport's
-	// own dead-peer probe is 10s, so an offline peer costs one bounded
-	// dial, never a wedged one.
-	syncBurstTimeout = 10 * time.Second
 	// streamTimeout bounds a whole sealed-stream transfer.
 	streamTimeout = 30 * time.Minute
 	// maxConcurrentTransfers bounds daemon-wide streaming transfers.
@@ -1242,16 +1238,18 @@ func (d *Daemon) syncPeers(ctx context.Context) {
 // rosters with each one that answers. It runs once at Run start: a
 // cat that wakes up cannot learn anything until it talks to someone,
 // and the steady-state one-peer-per-tick sync takes minutes to reach
-// the one online peer that knows what changed while it was out. An
-// offline peer costs one bounded dial, in parallel — not a tick each.
+// the one online peer that knows what changed while it was out. No
+// extra timeout here: the transport bounds its own dial (its 10s
+// dead-peer probe) and the protocol bounds its messages (msgTimeout),
+// so an offline peer costs one bounded dial, in parallel — not a tick
+// each — while a slow-attaching tunnel gets to finish its hello
+// instead of being cut mid-exchange.
 func (d *Daemon) syncBurst(ctx context.Context) {
 	var wg sync.WaitGroup
 	for _, c := range d.ros.All() {
 		wg.Add(1)
 		go func(c roster.Cat) {
 			defer wg.Done()
-			ctx, cancel := context.WithTimeout(ctx, syncBurstTimeout)
-			defer cancel()
 			pc, err := d.connect(ctx, c)
 			if err != nil {
 				return
@@ -1293,7 +1291,6 @@ func (d *Daemon) connect(ctx context.Context, cat roster.Cat) (*protocol.Conn, e
 		_ = pc.Close()
 		return nil, err
 	}
-	d.markSeen(cat.Key)
 	return pc, nil
 }
 
@@ -1310,6 +1307,12 @@ func (d *Daemon) handshakeClient(pc *protocol.Conn) error {
 	if m.Hello == nil {
 		return errors.New("peer sent no hello")
 	}
+	// Liveness is symmetric and proven by the hello round-trip: the
+	// dialer marks its target seen the moment its reply lands, the
+	// same point the listener marks the dialer (serveConn). A
+	// connection cut before the roster exchange completes still
+	// counts both ways — the peer was provably alive on the wire.
+	d.markSeen(m.Hello.Key)
 	if err := pc.WriteMsg(&protocol.Message{Roster: d.rosterMsg()}); err != nil {
 		return err
 	}

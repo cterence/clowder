@@ -482,6 +482,38 @@ func TestSecondDaemonOnSameDirRefuses(t *testing.T) {
 	_ = first
 }
 
+// TestDialerMarksTargetSeenOnHelloReply pins symmetric liveness: a
+// dialer marks its target seen the moment the target's hello reply
+// lands — the same point the listener marks the dialer — so a
+// connection cut before the roster exchange completes still counts
+// both ways (the target was provably alive on the wire).
+func TestDialerMarksTargetSeenOnHelloReply(t *testing.T) {
+	milo := startDaemon(t, "milo")
+
+	server, client := net.Pipe()
+	defer func() { _ = server.Close() }()
+	pc := protocol.NewConn(server)
+	far := protocol.NewConn(client)
+
+	const targetKey = "nodekey:target-seen"
+	go func() {
+		// Reply to the hello, then vanish before the roster
+		// exchange: the exchange fails, but liveness is proven.
+		if _, err := far.ReadMsg(); err == nil {
+			if err := far.WriteMsg(&protocol.Message{Hello: &protocol.Hello{Name: "niko", Key: targetKey}}); err == nil {
+				_ = far.Close()
+			}
+		}
+	}()
+
+	if err := milo.handshakeClient(pc); err == nil {
+		t.Fatal("handshakeClient succeeded against a vanishing peer, want an error")
+	}
+	if milo.SeenAt(targetKey) == 0 {
+		t.Fatal("dialer did not mark the target seen after its hello reply; a connection cut before the roster exchange lost liveness")
+	}
+}
+
 func TestForgetClearsOutbox(t *testing.T) {
 	milo := startDaemon(t, "milo")
 	niko, _ := offlineCat(t)
