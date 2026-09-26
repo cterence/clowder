@@ -49,10 +49,11 @@ arm64-only daemon; a device is the answer there.)
 
 | App screen | Mechanism |
 |---|---|
-| init | exec `libclowder.so init <name>` with `CLOWDER_DIR` and `HOME` pointing into the app sandbox |
+| init | exec `libclowder.so init --name <name>` with `CLOWDER_DIR` and `HOME` pointing into the app sandbox |
 | status / pair / send / outbox | IPC ops (`status`, `invite`, `join`, `send`, `cats`) over `clow.sock`, the same wire the CLI speaks |
 | inbox | the daemon delivers into `$HOME/Downloads/clowder` inside the app's files dir; the app lists and shares it via FileProvider |
 | daemon lifecycle | `ClowdService`, a `dataSync` foreground service holding a partial wake lock, restarting the process with backoff if it dies |
+| reset | the Status screen's settings dialog: stops the daemon, waits out its IPC socket, then exec's `libclowder.so reset --yes` and returns to init |
 
 ## Notes and limits
 

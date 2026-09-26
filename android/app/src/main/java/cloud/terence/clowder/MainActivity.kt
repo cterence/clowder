@@ -1,6 +1,8 @@
 package cloud.terence.clowder
 
 import android.content.Intent
+import android.net.LocalSocket
+import android.net.LocalSocketAddress
 import android.net.Uri
 import android.os.Bundle
 import android.text.format.DateUtils
@@ -30,7 +32,9 @@ import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -119,7 +123,7 @@ fun ClowderApp() {
     ) { padding ->
         Box(Modifier.padding(padding)) {
             when (tab) {
-                0 -> StatusScreen()
+                0 -> StatusScreen(onReset = { initialized = false })
                 1 -> PairScreen()
                 2 -> SendScreen()
                 3 -> InboxScreen()
@@ -134,7 +138,7 @@ fun ClowderApp() {
 private fun runInit(ctx: android.content.Context, name: String): String = try {
     val dir = ClowdService.configDir(ctx)
     if (!dir.isDirectory) dir.mkdirs()
-    val proc = ProcessBuilder(ClowdService.binaryFile(ctx).absolutePath, "init", name)
+    val proc = ProcessBuilder(ClowdService.binaryFile(ctx).absolutePath, "init", "--name", name)
         .redirectErrorStream(true)
         .apply {
             environment()["CLOWDER_DIR"] = dir.absolutePath
@@ -191,6 +195,34 @@ fun InitScreen(onDone: () -> Unit) {
     }
 }
 
+/** `clow reset --yes` as the app runs it: stop the daemon service
+ *  first and wait until its IPC socket stops answering (reset refuses
+ *  while the daemon is up), then exec the binary against the same
+ *  sandboxed config dir init uses. */
+private fun runReset(ctx: android.content.Context): String = try {
+    ClowdService.stop(ctx)
+    val sock = ClowdService.socketFile(ctx).absolutePath
+    for (i in 0 until 40) {
+        val alive = runCatching {
+            LocalSocket().use { s ->
+                s.connect(LocalSocketAddress(sock, LocalSocketAddress.Namespace.FILESYSTEM))
+            }
+        }.isSuccess
+        if (!alive) break
+        Thread.sleep(250)
+    }
+    val proc = ProcessBuilder(ClowdService.binaryFile(ctx).absolutePath, "reset", "--yes")
+        .redirectErrorStream(true)
+        .apply {
+            environment()["CLOWDER_DIR"] = ClowdService.configDir(ctx).absolutePath
+            environment()["HOME"] = ctx.filesDir.absolutePath
+        }
+        .start()
+    proc.inputStream.bufferedReader().readText() + if (proc.waitFor() == 0) "" else " (reset failed)"
+} catch (e: Exception) {
+    "reset failed: ${e.message}"
+}
+
 @Composable
 private fun SectionHeader(text: String) {
     Text(
@@ -213,11 +245,53 @@ private fun LivenessDot(online: Boolean) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun StatusScreen() {
+fun StatusScreen(onReset: () -> Unit) {
     val ctx = LocalContext.current
     var status by remember { mutableStateOf<Status?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    var showReset by remember { mutableStateOf(false) }
+    var resetResult by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+
+    if (showReset) {
+        AlertDialog(
+            onDismissRequest = { showReset = false },
+            title = { Text("Reset this cat?") },
+            text = {
+                Text(
+                    "Its identity, rosters, spool and outbox are deleted and " +
+                        "you will name a new cat. Received files are kept. " +
+                        "This cannot be undone.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showReset = false
+                    scope.launch {
+                        val out = withContext(Dispatchers.IO) { runReset(ctx) }
+                        if (ClowdService.isInitialized(ctx)) {
+                            resetResult = out
+                        } else {
+                            onReset()
+                        }
+                    }
+                }) { Text("Reset", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showReset = false }) { Text("Cancel") }
+            },
+        )
+    }
+    resetResult?.let {
+        AlertDialog(
+            onDismissRequest = { resetResult = null },
+            title = { Text("reset failed") },
+            text = { Text(it) },
+            confirmButton = {
+                TextButton(onClick = { resetResult = null }) { Text("ok") }
+            },
+        )
+    }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -251,6 +325,9 @@ fun StatusScreen() {
                     style = MaterialTheme.typography.titleMedium,
                 )
                 Spacer(Modifier.weight(1f))
+                IconButton(onClick = { showReset = true }) {
+                    Icon(Icons.Outlined.Settings, contentDescription = "settings")
+                }
                 if (ClowdService.running) {
                     OutlinedButton(onClick = { ClowdService.stop(ctx) }) { Text("Stop") }
                 } else {
