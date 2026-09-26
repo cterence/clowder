@@ -156,9 +156,14 @@ reason. Update this list and the README when something ships.
    a foreground service, with a thin UI for init/invite/join/send/
    inbox. Decide the UI approach (plainCompose/gomobile) before
    starting; the daemon package itself must not grow Android deps.
-   (GOOS=android GOARCH=arm64 cross-compiles cleanly today; CI keeps
-   it green. On-device Termux cannot auto-download go >= 1.27.1 — no
-   android build of golang.org/toolchain — so build on a real box.)
+   Termux findings (2026-09-26): GOOS=android GOARCH=arm64
+   cross-compiles cleanly (CI keeps it green); on-device builds are
+   impossible until Termux ships go >= 1.27.1 (no android
+   golang.org/toolchain download); Termux exec via linker64 inserts
+   the binary path as os.Args[1] (fixed in argvfix_termux.go, same as
+   tailcat); Android kills the daemon without a wake lock. Running
+   the CLI in Termux is explicitly NOT a goal — the foreground-service
+   app is the answer to both the lifecycle and the daemon+client UX.
 8. **Multiple clowders** — named clowders: per-clowder roster files,
    `--clowder` on invite/join/send, Hello carries the clowder name so a
    connection routes to the right roster. One identity, one daemon,
