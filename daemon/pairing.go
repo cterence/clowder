@@ -440,11 +440,12 @@ func (d *Daemon) pairOnRegion(ctx context.Context, keys *pairingKeys, region int
 	}
 	pc := protocol.NewConn(conn)
 	defer func() { _ = pc.Close() }()
-	exchangeDeadline := time.Now().Add(30 * time.Second)
-	if overall.Before(exchangeDeadline) {
-		exchangeDeadline = overall
-	}
-	_ = pc.SetDeadline(exchangeDeadline)
+	// The dial already proved this region is right: give the exchange
+	// the rest of the join budget, not a fixed slice. Bailing early on
+	// a slow first exchange strands the joiner — the inviter's side
+	// (with its own, longer deadline) completes, adds the joiner and
+	// retires the invite, so every retry then finds nothing.
+	_ = pc.SetDeadline(overall)
 	return pairIntroOf(pc, d.Me())
 }
 

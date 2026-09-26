@@ -251,6 +251,11 @@ func TestIntegrationPairSend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("invite 2: %v", err)
 	}
+	// Invites are one-off: a second invitation is a second code, never
+	// a reuse of the first.
+	if code2 == code {
+		t.Fatal("two invitations produced the same code")
+	}
 	if err := c.Join(context.Background(), code2); err != nil {
 		t.Fatalf("join 2: %v", err)
 	}
@@ -258,4 +263,12 @@ func TestIntegrationPairSend(t *testing.T) {
 		_, ok := c.Roster().Get("hostB")
 		return ok
 	}, "the freshly joined hostC to discover hostB from the roster sync")
+
+	// The consumed code cannot pair anyone else: the invite retired with
+	// its first successful join.
+	negCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := b.Join(negCtx, code2); err == nil {
+		t.Fatal("a used pairing code joined again: invites must be one-off")
+	}
 }

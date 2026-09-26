@@ -49,7 +49,10 @@ have grown the same private helper, hoist it there.
 
 - Trust is established ONLY via pairing (`clow invite`/`clow join`);
   tailcat addresses are never exchanged by hand. Pairing codes are
-  5 words (50 bits) + the inviter's DERP region, valid 5 minutes. The
+  5 words (50 bits) + the inviter's DERP region, valid 5 minutes, and
+  strictly one-off: every `clow invite` is a fresh code (a new invite
+  invalidates the previous one), and a code dies with its first
+  successful join. The
   region is a fast-path hint, not a requirement: `clow join` tries it
   first and interleaves retries of it with sweeping the other regions
   (relay presence can flap away from the encoded one on networks with
@@ -139,7 +142,15 @@ reason. Update this list and the README when something ships.
    (SPAKE2 or OPAQUE) over the pairing channel and derive the
    tunnel keys from its output instead of from the words, or grow
    the code length as a stopgap. Touches pairing + transport: full
-   CLOWDER_INTEGRATION run required after.
+   CLOWDER_INTEGRATION run required after. KNOWN WRINKLE (seen on CI,
+   2026-09-26): the pairing exchange is one round with no joiner ack,
+   so the inviter retires its invite once ITS side completes even if
+   the joiner missed the reply — the joiner is stranded with a "is
+   `clow invite` still active?" error while the inviter considers them
+   paired (recovery: invite again; LWW absorbs the duplicate entry).
+   A second ack round would close the window; the exchange now gets
+   the whole join budget (see pairOnRegion) so the window only opens
+   on a genuine reply loss.
 6. **Leave with signed forget-me gossip + roster entry signing** —
    derive an Ed25519 keypair from the node key seed
    (ed25519.NewKeyFromSeed(nodeRaw32)); announce the sign-public in
