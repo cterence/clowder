@@ -79,9 +79,14 @@ func newCat(t *testing.T, name string, env map[string]string) *cat {
 
 // start runs the cat's daemon as a real subprocess and returns once
 // its health endpoint answers, so the test never sleeps on startup.
-func (c *cat) start() {
-	c.t.Helper()
-	port := freePort(c.t)
+// It returns errors instead of failing the test so several daemons
+// can start concurrently: a Fatal here would run on the wrong
+// goroutine.
+func (c *cat) start() error {
+	port, err := freePort()
+	if err != nil {
+		return fmt.Errorf("cat %s: reserving health port: %w", c.name, err)
+	}
 	c.health = port
 	cmd := exec.Command(os.Args[0], "daemon", "--health", port)
 	cmd.Env = c.envWith(map[string]string{"CLOWDER_DIR": c.dir, "CLOWDER_HELPER": "1"})
@@ -91,10 +96,32 @@ func (c *cat) start() {
 	cmd.Stderr = &c.logs
 	c.mu.Unlock()
 	if err := cmd.Start(); err != nil {
-		c.t.Fatalf("cat %s: starting daemon: %v", c.name, err)
+		return fmt.Errorf("cat %s: starting daemon: %w", c.name, err)
 	}
 	c.t.Cleanup(func() { c.stop() })
-	c.waitHealthy()
+	return c.waitHealthy()
+}
+
+// startAll starts several cats' daemons concurrently: the tailcat
+// engines netcheck in parallel, which is where the startup seconds
+// go. Errors are reported by the test goroutine.
+func startAll(t *testing.T, cats ...*cat) {
+	t.Helper()
+	errs := make([]error, len(cats))
+	var wg sync.WaitGroup
+	for i, c := range cats {
+		wg.Add(1)
+		go func(i int, c *cat) {
+			defer wg.Done()
+			errs[i] = c.start()
+		}(i, c)
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			t.Fatalf("starting daemon: %v", err)
+		}
+	}
 }
 
 // stop terminates the daemon process, waiting for a graceful exit.
@@ -188,20 +215,19 @@ func (c *cat) invite() string {
 	return strings.TrimSpace(out[i+len("clow join "):])
 }
 
-func (c *cat) waitHealthy() {
-	c.t.Helper()
+func (c *cat) waitHealthy() error {
 	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		resp, err := http.Get("http://" + c.health + "/healthz")
 		if err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
-				return
+				return nil
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	c.t.Fatalf("cat %s: daemon never became healthy on %s", c.name, c.health)
+	return fmt.Errorf("cat %s: daemon never became healthy on %s", c.name, c.health)
 }
 
 // TestIntegrationEndToEnd is the full user story against real daemon
@@ -221,9 +247,7 @@ func TestIntegrationEndToEnd(t *testing.T) {
 		"CLOWDER_STORER": "on",
 		"CLOWDER_MAX":    "10M",
 	})
-	milo.start()
-	puma.start()
-	box.start()
+	startAll(t, milo, puma, box)
 
 	// Pair milo with both cats, using only the printed pairing codes.
 	codePuma := milo.invite()
@@ -256,7 +280,9 @@ func TestIntegrationEndToEnd(t *testing.T) {
 	}, "the storer to hold the offline cat's file")
 
 	// Back online, the target pulls the held file with one fetch.
-	puma.start()
+	if err := puma.start(); err != nil {
+		t.Fatalf("restarting puma: %v", err)
+	}
 	puma.clow("fetch")
 	waitForFile(t, puma, "nap2.txt", src2)
 
@@ -268,14 +294,13 @@ func TestIntegrationEndToEnd(t *testing.T) {
 
 // ---- helpers ----
 
-func freePort(t *testing.T) string {
-	t.Helper()
+func freePort() (string, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("reserving a port: %v", err)
+		return "", err
 	}
 	defer func() { _ = ln.Close() }()
-	return ln.Addr().String()
+	return ln.Addr().String(), nil
 }
 
 // waitFor polls cond until it holds or the deadline passes.

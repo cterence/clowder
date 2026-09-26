@@ -58,10 +58,19 @@ func integrationEnabled(t *testing.T) {
 	}
 }
 
-// startRealDaemon runs a daemon with the production tailcat transport.
-// startRealDaemon runs a daemon with the production tailcat transport;
-// the returned stop function tears it down early.
-func startRealDaemon(t *testing.T, dir, name string) (*Daemon, func()) {
+// realDaemon is a daemon wired to the production tailcat transport,
+// plus the lifecycle its tests need.
+type realDaemon struct {
+	*Daemon
+	tr     *TailcatTransport
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+// newRealDaemon constructs a cat without starting it. Constructions
+// must stay sequential: t.Setenv scopes each cat's inbox by HOME,
+// which is process state read at New time.
+func newRealDaemon(t *testing.T, dir, name string) *realDaemon {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir()) // keep the default inbox in the sandbox
 	if err := Init(dir, name); err != nil {
@@ -78,14 +87,60 @@ func startRealDaemon(t *testing.T, dir, name string) (*Daemon, func()) {
 		t.Fatalf("New: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	stop := func() {
+	t.Cleanup(func() {
 		cancel()
 		_ = tr.Close()
+	})
+	return &realDaemon{Daemon: d, tr: tr, ctx: ctx, cancel: cancel}
+}
+
+// start runs the daemon in the background. No test methods here: the
+// caller observes a failed start as a daemon that never becomes
+// ready, and does its own Fatalf on the test goroutine.
+func (r *realDaemon) start() {
+	go func() { _ = r.Run(r.ctx) }()
+}
+
+func (r *realDaemon) ready() bool { return r.Me().Addr != "" }
+
+func (r *realDaemon) stop() {
+	r.cancel()
+	_ = r.tr.Close()
+}
+
+// startRealDaemon runs a daemon with the production tailcat transport;
+// the returned stop function tears it down early.
+func startRealDaemon(t *testing.T, dir, name string) (*Daemon, func()) {
+	t.Helper()
+	r := newRealDaemon(t, dir, name)
+	r.start()
+	waitFor(t, r.ready, "%s to listen", name)
+	return r.Daemon, r.stop
+}
+
+// startRealDaemons starts several cats concurrently: constructions
+// stay sequential (see newRealDaemon), but the tailcat engines
+// netcheck in parallel inside Run, which is where the startup seconds
+// go.
+func startRealDaemons(t *testing.T, cats ...[2]string) []*realDaemon {
+	t.Helper()
+	rs := make([]*realDaemon, len(cats))
+	for i, c := range cats {
+		rs[i] = newRealDaemon(t, c[0], c[1])
 	}
-	t.Cleanup(stop)
-	go func() { _ = d.Run(ctx) }()
-	waitFor(t, func() bool { return d.Me().Addr != "" }, "%s to listen", name)
-	return d, stop
+	for _, r := range rs {
+		r.start()
+	}
+	ready := func() bool {
+		for _, r := range rs {
+			if !r.ready() {
+				return false
+			}
+		}
+		return true
+	}
+	waitFor(t, ready, "all %d cats to listen", len(rs))
+	return rs
 }
 
 // TestIntegrationBigFile pushes a multi-gigabyte-class payload shape
@@ -97,8 +152,8 @@ func TestIntegrationBigFile(t *testing.T) {
 	integrationEnabled(t)
 	dirA := t.TempDir()
 	dirB := t.TempDir()
-	a, _ := startRealDaemon(t, dirA, "hostA")
-	b, _ := startRealDaemon(t, dirB, "hostB")
+	rs := startRealDaemons(t, [2]string{dirA, "hostA"}, [2]string{dirB, "hostB"})
+	a, b := rs[0].Daemon, rs[1].Daemon
 
 	code, err := a.StartInvite(context.Background())
 	if err != nil {
@@ -151,8 +206,9 @@ func TestIntegrationBigFile(t *testing.T) {
 func TestIntegrationFailedDialDropsClient(t *testing.T) {
 	integrationEnabled(t)
 	dirA, dirB := t.TempDir(), t.TempDir()
-	a, _ := startRealDaemon(t, dirA, "hostA")
-	b, stopB := startRealDaemon(t, dirB, "hostB")
+	rs := startRealDaemons(t, [2]string{dirA, "hostA"}, [2]string{dirB, "hostB"})
+	a, b := rs[0].Daemon, rs[1].Daemon
+	stopB := rs[1].stop
 
 	code, err := a.StartInvite(context.Background())
 	if err != nil {
@@ -230,8 +286,8 @@ func TestIntegrationPairSend(t *testing.T) {
 	integrationEnabled(t)
 	dirA := t.TempDir()
 	dirB := t.TempDir()
-	a, _ := startRealDaemon(t, dirA, "hostA")
-	b, _ := startRealDaemon(t, dirB, "hostB")
+	rs := startRealDaemons(t, [2]string{dirA, "hostA"}, [2]string{dirB, "hostB"})
+	a, b := rs[0].Daemon, rs[1].Daemon
 
 	code, err := a.StartInvite(context.Background())
 	if err != nil {
