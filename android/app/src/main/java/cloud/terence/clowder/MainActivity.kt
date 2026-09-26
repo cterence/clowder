@@ -3,22 +3,69 @@ package cloud.terence.clowder
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.text.format.DateUtils
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.Email
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material3.Button
+import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -29,9 +76,14 @@ import java.io.File
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { ClowderApp() }
+        enableEdgeToEdge()
+        setContent {
+            ClowderTheme { ClowderApp() }
+        }
     }
 }
+
+private data class Tab(val label: String, val icon: androidx.compose.ui.graphics.vector.ImageVector)
 
 @Composable
 fun ClowderApp() {
@@ -43,16 +95,23 @@ fun ClowderApp() {
         return
     }
 
-    var tab by remember { mutableStateOf(0) }
+    val tabs = listOf(
+        Tab("Status", Icons.Outlined.Home),
+        Tab("Pair", Icons.Outlined.Add),
+        Tab("Send", Icons.Outlined.Share),
+        Tab("Inbox", Icons.Outlined.Email),
+        Tab("Log", Icons.Outlined.Info),
+    )
+    var tab by remember { mutableIntStateOf(0) }
     Scaffold(
         bottomBar = {
             NavigationBar {
-                listOf("status", "pair", "send", "inbox", "log").forEachIndexed { i, label ->
+                tabs.forEachIndexed { i, t ->
                     NavigationBarItem(
                         selected = tab == i,
                         onClick = { tab = i },
-                        label = { Text(label) },
-                        icon = {},
+                        label = { Text(t.label) },
+                        icon = { Icon(t.icon, contentDescription = t.label) },
                     )
                 }
             }
@@ -94,10 +153,26 @@ fun InitScreen(onDone: () -> Unit) {
     var name by remember { mutableStateOf("") }
     var message by remember { mutableStateOf<String?>(null) }
 
-    Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("clowder", style = MaterialTheme.typography.headlineLarge)
-        Text("Name this cat. Names are the human handle inside a clowder.")
-        OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("cat name") })
+    Column(
+        Modifier
+            .fillMaxSize()
+            .padding(32.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text("clowder", style = MaterialTheme.typography.displaySmall)
+        Text(
+            "Name this cat. The name is the human handle inside a clowder.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedTextField(
+            value = name,
+            onValueChange = { name = it },
+            label = { Text("cat name") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
         Button(
             onClick = {
                 scope.launch {
@@ -116,6 +191,27 @@ fun InitScreen(onDone: () -> Unit) {
     }
 }
 
+@Composable
+private fun SectionHeader(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(top = 16.dp, bottom = 4.dp),
+    )
+}
+
+@Composable
+private fun LivenessDot(online: Boolean) {
+    Box(
+        Modifier
+            .size(10.dp)
+            .clip(CircleShape)
+            .background(if (online) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StatusScreen() {
     val ctx = LocalContext.current
@@ -137,63 +233,120 @@ fun StatusScreen() {
         }
     }
 
-    LazyColumn(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    LazyColumn(
+        Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                Modifier.padding(top = 16.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                LivenessDot(ClowdService.running)
+                Text(
+                    if (ClowdService.running) "daemon running" else "daemon stopped",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Spacer(Modifier.weight(1f))
                 if (ClowdService.running) {
-                    Button(onClick = { ClowdService.stop(ctx) }) { Text("stop daemon") }
+                    OutlinedButton(onClick = { ClowdService.stop(ctx) }) { Text("Stop") }
                 } else {
-                    Button(onClick = { ClowdService.start(ctx) }) { Text("start daemon") }
+                    FilledTonalButton(onClick = { ClowdService.start(ctx) }) {
+                        Icon(Icons.Outlined.PlayArrow, contentDescription = null)
+                        Text("Start")
+                    }
                 }
             }
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            error?.let {
+                ListItem(
+                    headlineContent = { Text(it, color = MaterialTheme.colorScheme.error) },
+                )
+            }
         }
+
         val st = status
         if (st == null || !st.ok) return@LazyColumn
 
-        item { Text("me: ${st.me?.name ?: "?"}", style = MaterialTheme.typography.titleMedium) }
+        item {
+            ElevatedCard(Modifier.fillMaxWidth()) {
+                ListItem(
+                    headlineContent = { Text("me: ${st.me?.name ?: "?"}", style = MaterialTheme.typography.titleMedium) },
+                    supportingContent = {
+                        Text(
+                            "sent ${st.sentFiles} (${humanBytes(st.sentBytes)}) · " +
+                                "received ${st.receivedFiles} (${humanBytes(st.receivedBytes)})",
+                        )
+                    },
+                    leadingContent = { LivenessDot(true) },
+                )
+            }
+        }
 
-        item { Text("clowder: ${st.cats.size} cats") }
+        item { SectionHeader("clowder · ${st.cats.size} cats") }
+        if (st.cats.isEmpty()) {
+            item {
+                Text(
+                    "no cats yet — pair one from the Pair tab",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
         items(st.cats) { c ->
             val seen = st.liveness[c.key]?.takeIf { it != 0L }
             val path = st.paths[c.key]
-            val route = when {
-                path == null -> ""
-                path.direct -> "direct ${path.endpoint}"
-                else -> "relayed"
-            }
-            Text(
-                "  ${c.name}${if (c.dropbox) " [dropbox]" else if (c.storer) " [storer]" else ""}  " +
-                    livenessText(seen) + (if (route.isEmpty()) "" else "  $route"),
-                fontFamily = FontFamily.Monospace,
-                fontSize = 13.sp,
+            ListItem(
+                headlineContent = { Text(c.name) },
+                supportingContent = {
+                    val role = when {
+                        c.dropbox -> " · dropbox"
+                        c.storer -> " · storer"
+                        else -> ""
+                    }
+                    val route = when {
+                        path == null -> ""
+                        path.direct -> " · direct"
+                        else -> " · relayed"
+                    }
+                    Text(livenessText(seen) + role + route)
+                },
+                leadingContent = {
+                    LivenessDot(seen != null && System.currentTimeMillis() / 1000 - seen < 120)
+                },
             )
         }
 
         if (st.transfers.isNotEmpty()) {
-            item { Text("transfers") }
+            item { SectionHeader("transfers") }
             items(st.transfers) { t ->
-                Text(
-                    "  ${if (t.receiving) "receiving" else "sending"} ${t.fileName} ${t.peer} " +
-                        "${100 * t.done / t.total.coerceAtLeast(1)}%",
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 13.sp,
+                ListItem(
+                    headlineContent = { Text("${if (t.receiving) "receiving" else "sending"} ${t.fileName}") },
+                    supportingContent = {
+                        Column {
+                            Text("${t.peer} · ${100 * t.done / t.total.coerceAtLeast(1)}%")
+                            LinearProgressIndicator(
+                                progress = { t.done.toFloat() / t.total.coerceAtLeast(1).toFloat() },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 4.dp),
+                            )
+                        }
+                    },
                 )
             }
         }
 
         if (st.outbox.isNotEmpty()) {
-            item { Text("outbox: ${st.outbox.size} pending") }
-            items(st.outbox) { e -> Text("  ${e.fileName} -> ${e.targetName}", fontFamily = FontFamily.Monospace, fontSize = 13.sp) }
-        }
-
-        item {
-            Text(
-                "stats: sent ${st.sentFiles} (${humanBytes(st.sentBytes)}), " +
-                    "received ${st.receivedFiles} (${humanBytes(st.receivedBytes)})",
-                fontFamily = FontFamily.Monospace,
-                fontSize = 13.sp,
-            )
+            item { SectionHeader("outbox · ${st.outbox.size} pending") }
+            items(st.outbox) { e ->
+                ListItem(
+                    headlineContent = { Text(e.fileName) },
+                    supportingContent = { Text("queued for ${e.targetName}") },
+                )
+            }
         }
     }
 }
@@ -207,25 +360,45 @@ fun PairScreen() {
     var joinCode by remember { mutableStateOf("") }
     var joinResult by remember { mutableStateOf<String?>(null) }
 
-    Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Button(onClick = {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        SectionHeader("invite")
+        Text(
+            "Generates a fresh one-off code, valid 5 minutes. Read it to the other cat.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        FilledTonalButton(onClick = {
             scope.launch {
                 val r = withContextOrNull { ipc(ClowdService.socketFile(ctx), "invite") }
                 inviteMessage = if (r != null && r.optBoolean("ok", false)) {
-                    // "ask the other cat to run: clow join <code>" — show the code.
                     r.optString("message").removePrefix("ask the other cat to run: clow join ")
                 } else {
                     r?.optString("error") ?: "daemon not reachable"
                 }
             }
-        }) { Text("invite (new code, valid 5m)") }
+        }) { Text("new invite code") }
 
         inviteMessage?.let { code ->
-            Text(code, fontFamily = FontFamily.Monospace)
-            TextButton(onClick = { clipboard.setText(AnnotatedString(code)) }) { Text("copy code") }
+            ElevatedCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        code,
+                        fontFamily = FontFamily.Monospace,
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    TextButton(onClick = { clipboard.setText(AnnotatedString(code)) }) { Text("copy code") }
+                }
+            }
         }
 
-        HorizontalDivider()
+        HorizontalDivider(Modifier.padding(top = 8.dp))
+
+        SectionHeader("join")
         OutlinedTextField(
             value = joinCode,
             onValueChange = { joinCode = it },
@@ -277,23 +450,38 @@ fun SendScreen() {
         }
     }
 
-    Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("send a file", style = MaterialTheme.typography.titleMedium)
-        cats.forEach { c ->
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                RadioButton(selected = target == c.name, onClick = { target = c.name })
-                Text(c.name)
+    Column(
+        Modifier
+            .fillMaxSize()
+            .padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        SectionHeader("send a file")
+        if (cats.isEmpty()) {
+            Text(
+                "no cats to send to yet — pair one from the Pair tab",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            cats.forEach { c ->
+                FilterChip(
+                    selected = target == c.name,
+                    onClick = { target = if (target == c.name) null else c.name },
+                    label = { Text(c.name) },
+                )
             }
         }
-        Button(onClick = { pickFile.launch(arrayOf("*/*")) }, enabled = target != null) {
-            Text("pick file for ${target ?: "?"}")
-        }
+        Button(
+            onClick = { pickFile.launch(arrayOf("*/*")) },
+            enabled = target != null,
+        ) { Text("pick a file for ${target ?: "…"}") }
         result?.let { Text(it) }
     }
 }
 
 /** Copies the picked SAF document into the sandbox (the daemon needs a
- *  real path, not a content URI) and queues the send. */
+ * real path, not a content URI) and queues the send. */
 private fun sendUri(ctx: android.content.Context, uri: Uri, target: String): String = try {
     val name = queryName(ctx, uri) ?: "file"
     val staging = File(ctx.cacheDir, name)
@@ -329,17 +517,42 @@ fun InboxScreen() {
         }
     }
 
-    Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("inbox", style = MaterialTheme.typography.titleMedium)
-        Button(onClick = { refreshKey++ }) { Text("refresh") }
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 24.dp, end = 24.dp, top = 24.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("inbox", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.weight(1f))
+            IconButton(onClick = { refreshKey++ }) {
+                Icon(Icons.Outlined.Refresh, contentDescription = "refresh")
+            }
+        }
+        if (files.isEmpty()) {
+            Text(
+                "nothing received yet",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 24.dp),
+            )
+        }
         LazyColumn {
             items(files) { f ->
-                TextButton(onClick = { openFile(ctx, f) }) {
-                    Column {
-                        Text(f.name)
-                        Text("${humanBytes(f.length())}  ${f.lastModified() / 1000}s", fontSize = 12.sp)
-                    }
-                }
+                ListItem(
+                    headlineContent = { Text(f.name) },
+                    supportingContent = {
+                        Text(
+                            "${humanBytes(f.length())} · " +
+                                DateUtils.getRelativeTimeSpanString(f.lastModified()).toString(),
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    trailingContent = {
+                        TextButton(onClick = { openFile(ctx, f) }) { Text("open") }
+                    },
+                )
             }
         }
     }
@@ -355,19 +568,27 @@ private fun openFile(ctx: android.content.Context, f: File) {
 
 @Composable
 fun LogScreen() {
-    Text(
-        ClowdService.recentLog(),
-        fontFamily = FontFamily.Monospace,
-        fontSize = 11.sp,
-        modifier = Modifier
-            .padding(12.dp)
-            .fillMaxSize(),
-    )
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        SelectionContainer {
+            LazyColumn(Modifier.padding(12.dp)) {
+                item {
+                    Text(
+                        ClowdService.recentLog(),
+                        fontFamily = FontFamily.Monospace,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
+    }
 }
 
 /** Runs [block] on Dispatchers.IO, returning null on any failure (a
- *  socket error means the daemon is down; the UI treats null as
- *  unreachable). */
+ * socket error means the daemon is down; the UI treats null as
+ * unreachable). */
 private suspend fun <T> withContextOrNull(block: () -> T): T? = withContext(Dispatchers.IO) {
     runCatching { block() }.getOrNull()
 }
