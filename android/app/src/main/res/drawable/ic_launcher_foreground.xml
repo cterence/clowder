@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Three cats clustered around a point: the clowder mark. -->
+    <path
+        android:fillColor="#F2B450"
+        android:pathData="M40,44 m-8,0 a8,8 0 1,1 16,0 a8,8 0 1,1 -16,0 M40,36 l-5,-6 l4,0 l3,4 l3,-4 l4,0 l-5,6" />
+    <path
+        android:fillColor="#7FB4D9"
+        android:pathData="M68,44 m-8,0 a8,8 0 1,1 16,0 a8,8 0 1,1 -16,0 M68,36 l-5,-6 l4,0 l3,4 l3,-4 l4,0 l-5,6" />
+    <path
+        android:fillColor="#C96F5A"
+        android:pathData="M54,68 m-8,0 a8,8 0 1,1 16,0 a8,8 0 1,1 -16,0 M54,60 l-5,-6 l4,0 l3,4 l3,-4 l4,0 l-5,6" />
+</vector>

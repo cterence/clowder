@@ -92,6 +92,14 @@ TUN, no host routes, no root) and the mesh opens **no inbound ports** —
 it only needs outbound access to the DERP relays (TCP 443) and to
 peers' public endpoints. So no Service is needed for the mesh itself.
 
+## Android
+
+An Android client lives in `android/`: the daemon ships as the same
+`GOOS=android` binary, exec'd by a foreground service with a wake
+lock, with a plain Compose UI speaking the CLI's unix-socket IPC. See
+`android/README.md`.
+
+
     docker build -t clowder .
     docker run -d --name clowder -v clowcfg:/config \
         -e CLOWDER_NAME=whiskers -e CLOWDER_STORER=dropbox clowder

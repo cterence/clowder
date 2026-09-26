@@ -180,18 +180,30 @@ reason. Update this list and the README when something ships.
    override entries via LWW (brick an entry with a broken address, or
    duplicate a name to capture sends). Merge should require a valid
    signature on entries for keys already known.
-3. **Android app client** — a clowder client for Android. tailcat has
-   Android support (see its android_linux.go and INSTALL.md), so the
-   shape is: the daemon packages as an Android library (aar) or runs in
-   a foreground service, with a thin UI for init/invite/join/send/
-   inbox. Decide the UI approach (plainCompose/gomobile) before
-   starting; the daemon package itself must not grow Android deps.
-   Termux findings (2026-09-26): GOOS=android GOARCH=arm64
-   cross-compiles cleanly (CI keeps it green); on-device builds are
-   impossible until Termux ships go >= 1.27.1 (no android
-   golang.org/toolchain download); Termux exec via linker64 inserts
-   the binary path as os.Args[1] (fixed in argvfix_termux.go, same as
-   tailcat); Android kills the daemon without a wake lock. Running
+3. **Android app client** — a clowder client for Android. The
+   architecture is DECIDED and the app SCAFFOLDED (2026-09-26, in
+   android/): the daemon is the plain GOOS=android binary shipped as
+   libclowder.so (nativeLibraryDir is executable), exec'd by a
+   foreground dataSync service (ClowdService) that holds a partial
+   wake lock and restarts the process with backoff — NOT gomobile
+   bindings, because tailcat's own android path is the raw binary
+   (its android_linux.go patches DNS/CA/interface discovery at init),
+   the daemon package stays Android-dep-free, and the UI is a second
+   CLI: plain Compose speaking the exact unix-socket JSON IPC the clow
+   CLI uses (one request, one response, daemon/ipc.go shapes). The
+   app runs `init` by exec'ing the binary with CLOWDER_DIR/HOME
+   pointed into its sandbox; the inbox lands under filesDir and is
+   listed/shared via FileProvider. REMAINING: the APK has never been
+   built (no Android SDK on the dev machine — open android/ in
+   Android Studio, run build-native.sh first, and expect minor
+   version pinning to fix); on-device dogfood (pair with a real cat,
+   send/receive through the app); then boot-receive, delivery
+   notifications, and the storer-role UI. Termux findings stand
+   (2026-09-26): GOOS=android GOARCH=arm64 cross-compiles cleanly
+   (CI keeps it green); on-device builds are impossible until Termux
+   ships go >= 1.27.1 (no android golang.org/toolchain download);
+   Termux exec via linker64 inserts the binary path as os.Args[1]
+   (fixed in argvfix_termux.go, same as tailcat). Running
    the CLI in Termux is explicitly NOT a goal — the foreground-service
    app is the answer to both the lifecycle and the daemon+client UX.
 4. **Multiple clowders** — named clowders: per-clowder roster files,
