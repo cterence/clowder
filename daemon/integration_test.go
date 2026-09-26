@@ -62,9 +62,10 @@ func integrationEnabled(t *testing.T) {
 // plus the lifecycle its tests need.
 type realDaemon struct {
 	*Daemon
-	tr     *TailcatTransport
-	ctx    context.Context
-	cancel context.CancelFunc
+	tr      *TailcatTransport
+	ctx     context.Context
+	cancel  context.CancelFunc
+	runDone chan struct{}
 }
 
 // newRealDaemon constructs a cat without starting it. Constructions
@@ -87,24 +88,28 @@ func newRealDaemon(t *testing.T, dir, name string) *realDaemon {
 		t.Fatalf("New: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	r := &realDaemon{Daemon: d, tr: tr, ctx: ctx, cancel: cancel, runDone: make(chan struct{})}
 	t.Cleanup(func() {
-		cancel()
-		_ = tr.Close()
+		r.stop()
 	})
-	return &realDaemon{Daemon: d, tr: tr, ctx: ctx, cancel: cancel}
+	return r
 }
 
 // start runs the daemon in the background. No test methods here: the
 // caller observes a failed start as a daemon that never becomes
 // ready, and does its own Fatalf on the test goroutine.
 func (r *realDaemon) start() {
-	go func() { _ = r.Run(r.ctx) }()
+	go func() {
+		_ = r.Run(r.ctx)
+		close(r.runDone)
+	}()
 }
 
 func (r *realDaemon) ready() bool { return r.Me().Addr != "" }
 
 func (r *realDaemon) stop() {
 	r.cancel()
+	<-r.runDone // Run drained its background work before returning
 	_ = r.tr.Close()
 }
 

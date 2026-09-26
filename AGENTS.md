@@ -178,7 +178,18 @@ reason. Update this list and the README when something ships.
    O(N²) bytes per cycle; one-peer-per-tick means propagation latency
    grows linearly).
 
-Shipped recently (context for a fresh session): delivery receipts
+Shipped recently (context for a fresh session): daemon drain at
+shutdown (Run tracks its background goroutines — receipt relays, spool
+sweeps, deliveries, roster syncs, accepted connections — in a WaitGroup
+and, on ctx cancel, closes live connections and waits for in-flight
+work before returning; a caller that cancels Run and waits for it back
+gets a daemon that no longer touches disk, the network, or Logf; the
+work itself stays uncancelable by design, drain only waits, bounded by
+the transfer deadlines — this is what let the test harness stop
+racing teardown: TestStorerPullByFetch's CI flake was niko's receipt
+relay landing on milo after the test ended, panicking t.Logf and
+writing receipts.json into the TempDir RemoveAll was deleting),
+delivery receipts
 (receivers seal {transferID, fileName, deliveredAt} to the ORIGINAL
 SENDER's node key and relay direct-or-via-storer like any small
 transfer — Offer.Receipt flags the stream, store.Meta preserves the

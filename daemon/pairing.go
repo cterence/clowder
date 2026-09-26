@@ -240,22 +240,22 @@ func (d *Daemon) StartInvite(ctx context.Context) (string, error) {
 	d.pairDone = done
 	d.pairMu.Unlock()
 
-	go func() {
+	d.goBg(func() {
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
 				return
 			}
-			go d.servePairConn(conn)
+			d.goBg(func() { d.servePairConn(conn) })
 		}
-	}()
-	go func() {
+	})
+	d.goBg(func() {
 		select {
 		case <-time.After(pairTTL):
 		case <-done:
 		}
 		d.stopInvite()
-	}()
+	})
 
 	code := fmt.Sprintf("%s-%d", strings.Join(words, "-"), region)
 	d.cfg.logf("clowder: pairing invite %s active for %s", code, pairTTL)
@@ -285,6 +285,8 @@ func (d *Daemon) stopInvite() {
 func (d *Daemon) servePairConn(conn net.Conn) {
 	pc := protocol.NewConn(conn)
 	defer func() { _ = pc.Close() }()
+	unregister := d.trackConn(pc)
+	defer unregister()
 	_ = pc.SetDeadline(time.Now().Add(2 * time.Minute))
 
 	peer, err := pairIntroOf(pc, d.Me())
@@ -441,7 +443,7 @@ func (d *Daemon) Join(ctx context.Context, code string) error {
 		// Discover the rest of the clowder now: the protocol handshake
 		// exchanges full rosters, so this sync pulls in every cat the
 		// inviter knows instead of waiting for the next poll tick.
-		go d.syncPeers(context.WithoutCancel(ctx))
+		d.goBg(func() { d.syncPeers(context.WithoutCancel(ctx)) })
 		d.cfg.logf("clowder: paired with %s", peer.Name)
 		return nil
 	}

@@ -38,8 +38,15 @@ func benchDaemon(b *testing.B, name string) *Daemon {
 		b.Fatalf("New: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	b.Cleanup(cancel)
-	go func() { _ = d.Run(ctx) }()
+	runDone := make(chan struct{})
+	b.Cleanup(func() {
+		cancel()
+		<-runDone
+	})
+	go func() {
+		_ = d.Run(ctx)
+		close(runDone)
+	}()
 	deadline := time.Now().Add(10 * time.Second)
 	for d.Me().Addr == "" {
 		if time.Now().After(deadline) {
