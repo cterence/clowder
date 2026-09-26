@@ -14,6 +14,7 @@ commit that added `Server.PeerKey`).
 ## Commands
 
     nix develop                    # devshell: go, gopls, golangci-lint, prek; installs git hooks
+    nix develop .#android          # android app: SDK + JDK 17 + gradle (android/README.md)
     go build ./... && go test -race -count=1 ./...
     prek run --all-files           # gofmt, go vet, golangci-lint (hooks also run on commit)
     GOOS=windows go build ./daemon/   # cross-compile check
@@ -149,10 +150,14 @@ reason. Update this list and the README when something ships.
    clow CLI (daemon/ipc.go shapes). The app runs `init` by exec'ing
    the binary with CLOWDER_DIR/HOME pointed into its sandbox; the
    inbox lands under filesDir, listed/shared via FileProvider.
-   REMAINING: build the APK (no Android SDK on the dev machine —
-   build-native.sh, then Android Studio, expect version pinning to
-   fix); on-device dogfood; then boot-receive, delivery
-   notifications, and the storer-role UI. Termux: running the CLI in
+   REMAINING: dogfood — the APK builds green from the flake as of
+   2026-09-27 (`nix develop .#android`, build-native.sh, `gradle
+   assembleDebug` in android/ — no Android Studio; the emulator shell
+   `nix develop .#emulator` runs it on Apple Silicon, where the arm64
+   system image can exec the arm64-only daemon), so what is left is
+   actually running it: emulator or on-device dogfood (pair with a
+   real cat, send/receive through the app); then boot-receive,
+   delivery notifications, and the storer-role UI. Termux: running the CLI in
    Termux is explicitly NOT a goal (the foreground-service app is the
    answer); on-device builds are blocked until Termux ships
    go >= 1.27.1; the linker64 argv quirk is already handled in

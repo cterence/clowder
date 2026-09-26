@@ -12,16 +12,38 @@ not a daemon fork. The daemon package carries no Android code.
 
 ## Build
 
-1. Build the daemon binary into the app's jniLibs:
+Everything comes from the flake — no Android Studio, no SDK
+installer, no wrapper jar:
 
-       ./android/build-native.sh
+    nix develop .#android          # SDK + JDK 17 + gradle + go
+    ./android/build-native.sh      # the daemon into jniLibs (arm64)
+    cd android && gradle assembleDebug
+    # -> app/build/outputs/apk/debug/app-debug.apk
 
-2. Open `android/` in Android Studio (it resolves the Gradle wrapper
-   and SDKs on first sync) and run the app on a device or emulator.
+The SDK matches app/build.gradle.kts (compileSdk 34, build-tools
+34.0.0, AGP 8.5.2, JDK 17) — bump them together in flake.nix. The
+shell sets the aapt2 override AGP needs under Nix; the shell's gradle
+replaces the wrapper (none is checked in). Android Studio still works
+as an optional editor — it picks up the same SDK from the shell's
+ANDROID_SDK_ROOT — but nothing requires it.
 
-There is no wrapper jar checked in; Android Studio generates the
-wrapper on first sync, or run `gradle wrapper` if you have a local
-Gradle.
+## Emulator (Apple Silicon)
+
+A second shell adds the emulator and an arm64 system image (~1.5 GB;
+the plain build shell stays light without them):
+
+    nix develop .#emulator
+    # once:
+    avdmanager create avd -n clowder \
+      -k "system-images;android-34;default;arm64-v8a" --device pixel
+    emulator -avd clowder
+    adb install -r app/build/outputs/apk/debug/app-debug.apk
+
+On Apple Silicon the emulator runs the arm64 image under
+Hypervisor.framework and can exec the app's arm64-only daemon, so the
+whole loop — pair with a real cat, send, receive — works without a
+device. (On x86_64 hosts the image is x86_64 and cannot run the
+arm64-only daemon; a device is the answer there.)
 
 ## How it maps to the CLI
 

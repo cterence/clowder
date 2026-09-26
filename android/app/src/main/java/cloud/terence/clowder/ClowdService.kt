@@ -139,7 +139,9 @@ class ClowdService : Service() {
                     }
                     .start()
                 daemon = proc
-                appendLog("daemon started (pid ${proc.pid ?: "?"})")
+                // Android's java.lang.Process exposes no pid(), so
+                // the daemon's own startup lines are the identifier.
+                appendLog("daemon started")
                 proc.inputStream.bufferedReader().useLines { lines ->
                     for (line in lines) {
                         Log.i(TAG, line)
