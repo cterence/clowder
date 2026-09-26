@@ -562,7 +562,23 @@ func cmdInbox(args []string) error {
 		return err
 	}
 	if *set != "" {
-		return printResp(call(daemon.Request{Op: "setinbox", Path: *set}))
+		abs, err := filepath.Abs(*set)
+		if err != nil {
+			return err
+		}
+		dir := configDir()
+		// A running daemon applies the change live; without one the
+		// new inbox persists for the next start instead of failing on
+		// the IPC socket.
+		if conn, err := net.Dial("unix", daemon.IPCPath(dir)); err == nil {
+			_ = conn.Close()
+			return printResp(call(daemon.Request{Op: "setinbox", Path: abs}))
+		}
+		if err := daemon.SetInboxAt(dir, abs); err != nil {
+			return err
+		}
+		fmt.Printf("daemon not running; inbox set to %s for the next daemon start\n", abs)
+		return nil
 	}
 	dir := inboxDir()
 	des, err := os.ReadDir(dir)

@@ -86,14 +86,18 @@ func InboxDir(dir string) string {
 	return filepath.Join(dir, "inbox")
 }
 
-// SetInboxAt persists the inbox dir in a config dir's me.json.
+// SetInboxAt persists the inbox dir in a config dir's me.json and
+// creates the directory.
 func SetInboxAt(dir, inbox string) error {
 	me, err := loadMe(dir)
 	if err != nil {
 		return err
 	}
 	me.Inbox = inbox
-	return saveMe(dir, me)
+	if err := saveMe(dir, me); err != nil {
+		return err
+	}
+	return os.MkdirAll(inbox, 0o700)
 }
 
 // Env holds the persistent state loaded from a config dir.

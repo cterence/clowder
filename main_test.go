@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"clowder/daemon"
 )
 
 func TestInitCreatesIdentity(t *testing.T) {
@@ -98,5 +100,26 @@ func TestFlagsFirst(t *testing.T) {
 				break
 			}
 		}
+	}
+}
+
+func TestInboxSetWithoutDaemon(t *testing.T) {
+	// `clow inbox --set` must not need the daemon: persist locally for
+	// the next start, instead of failing on the IPC socket.
+	dir := t.TempDir()
+	t.Setenv("CLOWDER_DIR", dir)
+	if err := run([]string{"init", "--name", "milo"}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	inbox := filepath.Join(t.TempDir(), "downloads")
+	if err := run([]string{"inbox", "--set", inbox}); err != nil {
+		t.Fatalf("inbox --set without daemon: %v", err)
+	}
+	if got := daemon.InboxDir(dir); got != inbox {
+		t.Fatalf("persisted inbox = %q, want %q", got, inbox)
+	}
+	if _, err := os.Stat(inbox); err != nil {
+		t.Fatalf("inbox dir not created: %v", err)
 	}
 }
