@@ -95,6 +95,18 @@ README when something ships.
    direct-or-via-storer like any small message; the sender keeps a
    receipts.json ledger shown in `clow status`, closing the loop for
    sends that left the outbox while the sender was offline.
+8. **Distrust a cat (local, one-directional)** — `clow distrust <CAT>`
+   / `clow trust <CAT>` to undo: a persisted blocklist (keys, in
+   distrusted.json, NOT propagated — one cat's decision, unlike the
+   planned signed-leave gossip). A distrusted cat is refused both
+   ways: Send and storer-relay selection skip it locally; serveConn
+   closes immediately from distrusted peers; incoming Offers whose
+   From names a distrusted cat are refused (best-effort: relayed
+   offers carry a name, not a key). Kept visible in `clow cats` with a
+   [distrusted] tag, unlike forget. NOTE: tailcat's AllowedClients is
+   add-only (no RemoveAllowedClient) — so forget today leaves the
+   cat's key able to connect; the serveConn-level check must back
+   both features (or upstream tailcat grows a removal API).
 
 Shipped recently (context for a fresh session): storer capacity
 (`clow storer on --max 10G`, required to enable; deposits are refused
