@@ -177,6 +177,21 @@ reason. Update this list and the README when something ships.
    roster shape. Revisit sync scaling here too (full-roster sync is
    O(N²) bytes per cycle; one-peer-per-tick means propagation latency
    grows linearly).
+5. **Nix service packaging: systemd + launchd** — run the daemon as a
+   real service from the flake. Linux: a NixOS module
+   (`nixosModules.default`) wrapping `packages.default` in a systemd
+   unit — `StateDirectory` for the config dir, Restart=on-failure, the
+   health endpoint for a watchdog probe, CLOWDER_NAME/CLOWDER_STORER
+   options, and the container's auto-init-on-first-start so a fresh
+   service bootstraps its identity. macOS: a launchd agent (plist or a
+   nix-darwin module) with KeepAlive + RunAtLoad; agent not daemon,
+   because the default inbox resolves under $HOME/Downloads — either
+   keep it a per-user agent or make the inbox configurable (env/flag)
+   before considering a system-level daemon. Sleeping cats are a
+   first-class case (the homelab2 wake-then-propagate gap), so the
+   unit must survive suspend/resume without restarts. Keep the flake
+   free of OS-conditional deps: modules ship as passthrough attributes
+   (`nixosModules`, and the plist as a template the README documents).
 
 Shipped recently (context for a fresh session): daemon drain at
 shutdown (Run tracks its background goroutines — receipt relays, spool
@@ -189,7 +204,12 @@ work itself stays uncancelable by design, drain only waits, bounded by
 the transfer deadlines — this is what let the test harness stop
 racing teardown: TestStorerPullByFetch's CI flake was niko's receipt
 relay landing on milo after the test ended, panicking t.Logf and
-writing receipts.json into the TempDir RemoveAll was deleting),
+writing receipts.json into the TempDir RemoveAll was deleting; the
+drain also exposed a latent nil-deref in handleFetch — a fetcher
+that reads the offer and then drops the conn left ReadMsg returning
+a nil message the old code dereferenced, which teardown's
+closeLiveConns made CI-frequent — fixed and pinned by
+TestHandleFetchClientVanishes),
 delivery receipts
 (receivers seal {transferID, fileName, deliveredAt} to the ORIGINAL
 SENDER's node key and relay direct-or-via-storer like any small

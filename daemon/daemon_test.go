@@ -14,7 +14,9 @@ import (
 
 	"tailscale.com/types/key"
 
+	"clowder/protocol"
 	"clowder/roster"
+	"clowder/store"
 )
 
 // TestMain points t.TempDir() at a short-path root. Every daemon test
@@ -321,6 +323,46 @@ func TestStorerPullByFetch(t *testing.T) {
 		return ok && got == "pulled nap"
 	}, "niko to pull the held file with a direct fetch")
 	waitFor(t, func() bool { return storer.Spool().Count() == 0 }, "storer to drop the delivered file")
+}
+
+// TestHandleFetchClientVanishes pins the fetch path against a fetcher
+// that reads the offer and then drops the connection without answering
+// (a conn closed mid-exchange — teardown's closeLiveConns, a killed
+// client, a network cut). ReadMsg then returns a nil message, which
+// handleFetch must not dereference.
+func TestHandleFetchClientVanishes(t *testing.T) {
+	storer := startDaemon(t, "storer")
+	meta := store.Meta{
+		ID:         "transfer-vanish",
+		FileName:   "nap.txt",
+		Size:       4,
+		SHA256:     "0000",
+		From:       "milo",
+		TargetKey:  "nodekey:vanisher",
+		TargetName: "vanisher",
+	}
+	if err := storer.Spool().Put(meta, strings.NewReader("abcd")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	server, client := net.Pipe()
+	defer func() { _ = server.Close() }()
+	pc := protocol.NewConn(server)
+	fetcher := protocol.NewConn(client)
+	go func() {
+		// Read the offer, then vanish: no Answer, no stream.
+		if _, err := fetcher.ReadMsg(); err == nil {
+			_ = fetcher.Close()
+		}
+	}()
+
+	hello := &protocol.Hello{Name: "vanisher", Key: "nodekey:vanisher"}
+	if storer.handleFetch(pc, hello, &protocol.Fetch{ID: meta.ID}) {
+		t.Fatal("handleFetch reports the connection may continue after the fetcher vanished")
+	}
+	if storer.Spool().Count() != 1 {
+		t.Fatalf("spool holds %d files, want 1 (no delete without a delivery ack)", storer.Spool().Count())
+	}
 }
 
 func TestRosterPropagation(t *testing.T) {

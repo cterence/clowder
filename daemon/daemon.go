@@ -816,7 +816,11 @@ func (d *Daemon) handleFetch(pc *protocol.Conn, hello *protocol.Hello, f *protoc
 	}
 	m, err := pc.ReadMsg()
 	if err != nil || m.Answer == nil || !m.Answer.OK {
-		return m.Answer != nil
+		// ReadMsg returns a nil message on error: the fetcher is
+		// gone (conn cut mid-exchange), so the connection cannot
+		// continue. A refusal is a valid exchange, so the
+		// connection survives any Answer, OK or not.
+		return m != nil && m.Answer != nil
 	}
 	_ = pc.SetDeadline(time.Now().Add(streamTimeout))
 	if _, err := io.CopyN(pc.Writer(), r, meta.Size); err != nil {
