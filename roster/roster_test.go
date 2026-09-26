@@ -146,3 +146,45 @@ func TestStorers(t *testing.T) {
 		t.Fatalf("Storers() = %v", storers)
 	}
 }
+
+func TestGetPrefersNewestDuplicate(t *testing.T) {
+	r := New()
+	old := Cat{Name: "milo", Key: "nodekey:old", Addr: "tcX", Updated: 100}
+	if err := r.Add(old); err != nil {
+		t.Fatal(err)
+	}
+
+	// A sole claimant does not have its own name taken.
+	if r.NameTaken("milo", old.Key) {
+		t.Fatal("NameTaken with the sole claimant's own key must be false")
+	}
+	if !r.NameTaken("milo", "nodekey:other") {
+		t.Fatal("NameTaken with a different key must be true")
+	}
+
+	new := Cat{Name: "milo", Key: "nodekey:new", Addr: "tcY", Updated: 200}
+	if err := r.Add(new); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := r.Get("milo")
+	if !ok {
+		t.Fatal("duplicate name not found")
+	}
+	if got.Key != new.Key {
+		t.Fatalf("Get(duplicate) = %s, want the newest entry (%s)", got.Key, new.Key)
+	}
+
+	dups := r.Duplicates()
+	if len(dups) != 1 || dups[0] != "milo" {
+		t.Fatalf("Duplicates() = %v, want [milo]", dups)
+	}
+	// With two claimants, each sees the name taken by the other.
+	if !r.NameTaken("milo", old.Key) || !r.NameTaken("milo", new.Key) {
+		t.Fatal("duplicate claimants must see the name taken")
+	}
+
+	// A single cat is not a duplicate.
+	if _, ok := r.Get("old"); ok {
+		t.Fatal("unrelated lookup changed")
+	}
+}

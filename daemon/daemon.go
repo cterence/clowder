@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -434,6 +435,9 @@ func (d *Daemon) Send(targetName, path string) (string, error) {
 	}
 	if d.isBlockedKey(cat.Key) {
 		return "", fmt.Errorf("distrusted cat %q (run: clow trust %s)", targetName, targetName)
+	}
+	if slices.Contains(d.ros.Duplicates(), targetName) {
+		d.cfg.logf("clowder: %q is claimed by more than one cat; sending to the newest", targetName)
 	}
 	if _, err := os.Stat(path); err != nil {
 		return "", fmt.Errorf("reading file: %w", err)
@@ -1093,6 +1097,11 @@ func (d *Daemon) handshakeClient(pc *protocol.Conn) error {
 // mergeRemote merges incoming roster cats (skipping our own entry) and
 // allows any new keys to connect.
 func (d *Daemon) mergeRemote(cats []roster.Cat) {
+	// Capture duplicates before the merge: parallel invites from
+	// different inviters can both claim a name (the pairing check only
+	// sees the inviter's roster), and LWW is per-key so both entries
+	// persist everywhere. Surface the collision the moment it lands.
+	before := d.ros.Duplicates()
 	me := d.Me()
 	filtered := cats[:0:0]
 	for _, c := range cats {
@@ -1108,6 +1117,11 @@ func (d *Daemon) mergeRemote(cats []roster.Cat) {
 	for _, c := range changed {
 		d.allowCat(c)
 		d.cfg.logf("clowder: roster learned %s (%s)", c.Name, c.Key)
+	}
+	for _, name := range d.ros.Duplicates() {
+		if !slices.Contains(before, name) {
+			d.cfg.logf("clowder: name %q is now claimed by more than one cat; name lookups pick the newest — one of them should re-init with a fresh name", name)
+		}
 	}
 }
 

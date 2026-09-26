@@ -124,15 +124,56 @@ func (r *Roster) saveLocked() error {
 }
 
 // Get returns the cat with the given declared name.
+// Get returns the cat with the given declared name. Names are not
+// unique (identity is the key); when more than one cat claims the
+// name, the newest entry wins so lookups are deterministic — see
+// Duplicates for spotting the collision.
 func (r *Roster) Get(name string) (Cat, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	var best Cat
+	found := false
 	for _, c := range r.cats {
-		if c.Name == name {
-			return c, true
+		if c.Name != name {
+			continue
+		}
+		if !found || c.Updated > best.Updated {
+			best = c
+			found = true
 		}
 	}
-	return Cat{}, false
+	return best, found
+}
+
+// Duplicates lists the names claimed by more than one key, sorted.
+func (r *Roster) Duplicates() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	counts := map[string]int{}
+	for _, c := range r.cats {
+		counts[c.Name]++
+	}
+	var out []string
+	for n, k := range counts {
+		if k > 1 {
+			out = append(out, n)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// NameTaken reports whether a name is claimed by a key other than the
+// given one — the pairing-time uniqueness check.
+func (r *Roster) NameTaken(name, key string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, c := range r.cats {
+		if c.Name == name && c.Key != key {
+			return true
+		}
+	}
+	return false
 }
 
 // GetByKey returns the cat with the given node key.

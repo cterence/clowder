@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -305,5 +306,70 @@ func TestPairIntroCommitsDespiteLostConfirmation(t *testing.T) {
 
 	if _, ok := inviter.Roster().Get("fluff"); !ok {
 		t.Error("inviter did not commit a pairing the joiner confirmed")
+	}
+}
+
+// TestPairingRefusesDuplicateName pins the inviter's name-uniqueness
+// check: a join claiming a name another key already has is refused
+// with an error the joiner understands (not a dropped connection),
+// the roster is untouched, and the invite stays active for a
+// differently-named joiner.
+func TestPairingRefusesDuplicateName(t *testing.T) {
+	inviter := startDaemon(t, "milo")
+	squatter := startDaemon(t, "fluff")  // claims the name first
+	pretender := startDaemon(t, "fluff") // same name, different identity
+	niche := startDaemon(t, "niche")     // a legit later joiner
+	for _, d := range []*Daemon{inviter, squatter, pretender, niche} {
+		d.mu.Lock()
+		d.meCat.Addr = string(d.env.Identity.Public.Addr())
+		d.mu.Unlock()
+	}
+	addCat(t, inviter, squatter.Me())
+
+	c1, c2 := tcpPair(t)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		defer func() { _ = c1.Close() }()
+		inviter.servePairConn(c1)
+	}()
+	go func() {
+		defer wg.Done()
+		defer func() { _ = c2.Close() }()
+		pc := protocol.NewConn(c2)
+		if _, _, err := joinExchange(pc, pretender.Me()); !errors.Is(err, errPairRefused) {
+			t.Errorf("duplicate-name join error = %v, want errPairRefused", err)
+		}
+	}()
+	wg.Wait()
+
+	// The roster is unchanged: still exactly one fluff, and it is the
+	// squatter.
+	got, ok := inviter.Roster().Get("fluff")
+	if !ok || got.Key != squatter.Me().Key {
+		t.Fatalf("roster after refusal = %+v, want the original claimant", got)
+	}
+
+	// The invite survived the refusal: a differently-named cat still
+	// pairs on a fresh connection.
+	c3, c4 := tcpPair(t)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		defer func() { _ = c3.Close() }()
+		inviter.servePairConn(c3)
+	}()
+	go func() {
+		defer wg.Done()
+		defer func() { _ = c4.Close() }()
+		pc := protocol.NewConn(c4)
+		if _, _, err := joinExchange(pc, niche.Me()); err != nil {
+			t.Errorf("post-refusal join: %v", err)
+		}
+	}()
+	wg.Wait()
+	if _, ok := inviter.Roster().Get("niche"); !ok {
+		t.Fatal("the differently-named joiner was not added")
 	}
 }

@@ -292,6 +292,20 @@ func (d *Daemon) servePairConn(conn net.Conn) {
 		d.cfg.logf("clowder: pairing exchange failed: %v", err)
 		return
 	}
+	// Names are the human handle within a clowder: refuse a join that
+	// would claim a name another key already has (duplicate names make
+	// every name-based lookup a coin flip — see roster Get). The
+	// refusal is an explicit message, so the joiner knows not to
+	// retry, and the invite stays active for other joiners.
+	claim, err := roster.NewCat(peer.Name, peer.Addr, time.Now().Unix())
+	if err == nil && d.ros.NameTaken(claim.Name, claim.Key) {
+		reason := fmt.Sprintf("name %q is already taken by another cat (re-init with a different name and re-pair)", claim.Name)
+		if err := pc.Answer(pairingAnswerID, false, reason); err != nil {
+			d.cfg.logf("clowder: refusing duplicate name %s: %v", claim.Name, err)
+		}
+		d.cfg.logf("clowder: refused pairing with %s: %s", claim.Name, reason)
+		return
+	}
 	// Commit only on the joiner's confirmation: a reply it never saw
 	// must leave the invite alive for its next attempt. CI lost the
 	// inviter's reply on flapping relay paths; committing on the
@@ -365,6 +379,15 @@ func pairRegions(ctx context.Context, derpMapURL string, encoded int) ([]int, er
 	return out, nil
 }
 
+// pairingAnswerID fills the Answer's ID on the pairing channel, where
+// there is no transfer to identify — the joiner reads only OK/Reason.
+const pairingAnswerID = "pairing"
+
+// errPairRefused marks an inviter's definitive refusal (e.g. the
+// joiner's name is already claimed): retrying other regions or
+// reconnects cannot help, so the join aborts instead of sweeping.
+var errPairRefused = errors.New("inviter refused the pairing")
+
 // joinTimeout bounds a whole join attempt: the encoded-region try plus
 // however much of the sweep fits.
 const joinTimeout = 2 * time.Minute
@@ -399,6 +422,9 @@ func (d *Daemon) Join(ctx context.Context, code string) error {
 		}
 		peer, err := d.pairOnRegion(ctx, keys, reg, deadline)
 		if err != nil {
+			if errors.Is(err, errPairRefused) {
+				return fmt.Errorf("daemon: %w", err)
+			}
 			lastErr = err
 			d.cfg.logf("clowder: pairing attempt on region %d failed: %v", reg, err)
 			continue
@@ -488,22 +514,31 @@ func joinExchange(pc *protocol.Conn, me roster.Cat) (*protocol.PairIntro, bool, 
 		return nil, false, err
 	}
 	if err := pairAckOf(pc); err != nil {
+		if errors.Is(err, errPairRefused) {
+			return nil, false, err
+		}
+		// Our ack was written, so the inviter has everything it needs
+		// to commit; a lost confirmation does not un-pair us.
 		return peer, false, nil
 	}
 	return peer, true, nil
 }
 
-// pairAckOf waits for the joiner's confirmation that the inviter's intro
-// arrived.
+// pairAckOf waits for the peer's confirmation on the pairing channel:
+// a PairAck from the joiner, or — on the joiner's side — the inviter's
+// commit confirmation, or its explicit refusal.
 func pairAckOf(pc *protocol.Conn) error {
 	m, err := pc.ReadMsg()
 	if err != nil {
 		return err
 	}
-	if m.PairAck == nil {
-		return fmt.Errorf("expected pair ack, got %s", m.Kind())
+	if m.PairAck != nil {
+		return nil
 	}
-	return nil
+	if m.Answer != nil && !m.Answer.OK {
+		return fmt.Errorf("%w: %s", errPairRefused, m.Answer.Reason)
+	}
+	return fmt.Errorf("expected pair ack, got %s", m.Kind())
 }
 
 // pairIntroOf sends our intro and returns the peer's.

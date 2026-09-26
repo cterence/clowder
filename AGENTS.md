@@ -101,8 +101,6 @@ reason. Update this list and the README when something ships.
      on the storer path.
    - Wire protocol version field in Hello before the protocol
      ossifies (no version negotiation today).
-   - Duplicate roster names: Get(name) is map-iteration order; prefer
-     newest Updated and flag duplicates in `clow cats`.
    - Idle tailcat-client eviction (engines accumulate per peer; the
      close machinery exists).
    - Global transfer concurrency cap (claims are per-ID only).
@@ -167,7 +165,16 @@ reason. Update this list and the README when something ships.
    O(N²) bytes per cycle; one-peer-per-tick means propagation latency
    grows linearly).
 
-Shipped recently (context for a fresh session): `clow distrust` /
+Shipped recently (context for a fresh session): duplicate-name
+hardening (pairing refuses a join whose name another key already
+claims, with an explicit refusal the joiner understands so it does not
+sweep or optimistically commit; roster Get picks the newest Updated
+when a name is claimed twice; mergeRemote logs the moment a collision
+materializes via sync — two parallel invites from different inviters
+can both claim a name, and LWW is per-key so both entries persist;
+`clow cats`/`status` tag [duplicate name], and Send warns when the
+target is ambiguous; the roster stays add-only: resolution is social,
+one cat re-inits with a fresh name), `clow distrust` /
 `clow trust` (local, one-directional blocklist in blocked.json, the
 same ledger forget uses — never propagated: Send, deliver and
 storer-relay selection skip the cat locally, serveConn refuses its

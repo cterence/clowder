@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"clowder/daemon"
+	"clowder/roster"
 )
 
 func main() {
@@ -388,15 +389,33 @@ func cmdCats() error {
 	for _, n := range resp.Distrusted {
 		distrusted[n] = true
 	}
+	dups := nameCounts(resp.Cats)
 	if resp.Me != nil {
 		fmt.Printf("%s (me)%s\n", resp.Me.Name, storerTag(resp.Me.Storer, resp.Me.Dropbox))
 		fmt.Printf("  address: %s\n", resp.Me.Addr)
 	}
 	for _, c := range resp.Cats {
-		fmt.Printf("%s%s%s\n", c.Name, storerTag(c.Storer, c.Dropbox), distrustTag(distrusted[c.Name]))
+		fmt.Printf("%s%s%s%s\n", c.Name, storerTag(c.Storer, c.Dropbox), distrustTag(distrusted[c.Name]), dupTag(dups[c.Name] > 1))
 		fmt.Printf("  address: %s\n", c.Addr)
 	}
 	return nil
+}
+
+// dupTag marks names claimed by more than one cat.
+func dupTag(dup bool) string {
+	if dup {
+		return " [duplicate name]"
+	}
+	return ""
+}
+
+// nameCounts counts name claims across the roster for dupTag.
+func nameCounts(cats []roster.Cat) map[string]int {
+	counts := map[string]int{}
+	for _, c := range cats {
+		counts[c.Name]++
+	}
+	return counts
 }
 
 // distrustTag marks cats on the local blocklist.
@@ -484,6 +503,7 @@ func cmdStatus() error {
 	for _, n := range resp.Distrusted {
 		distrusted[n] = true
 	}
+	dups := nameCounts(resp.Cats)
 	fmt.Printf("\nclowder: %d %s\n", len(resp.Cats), plural(len(resp.Cats), "cat", "cats"))
 	for _, c := range resp.Cats {
 		name := c.Name + storerTag(c.Storer, c.Dropbox)
@@ -508,7 +528,7 @@ func cmdStatus() error {
 				route = "relayed via DERP"
 			}
 		}
-		fmt.Printf("  %-22s %-24s %s%s\n", name, life, route, distrustTag(distrusted[c.Name]))
+		fmt.Printf("  %-22s %-24s %s%s%s\n", name, life, route, distrustTag(distrusted[c.Name]), dupTag(dups[c.Name] > 1))
 	}
 
 	// In-flight transfers, both directions.
