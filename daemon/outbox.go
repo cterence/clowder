@@ -1,12 +1,14 @@
 package daemon
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 
+	"clowder/envelope"
 	"clowder/persist"
 )
 
@@ -21,6 +23,29 @@ type Entry struct {
 	SourcePath string `json:"source_path"`
 	FileName   string `json:"file_name"`
 	AddedAt    int64  `json:"added_at"`
+	// SealSecret is the transfer's fixed per-stream secret
+	// (hex-encoded envelope.SecretLen bytes), generated once at Send
+	// time: every delivery attempt seals with it, so retried attempts
+	// emit byte-identical sealed frames and a receiver can resume
+	// where a previous attempt stopped. Empty for entries queued
+	// before resume support: those seal with a fresh random secret
+	// per attempt and never set Offer.Resumable.
+	SealSecret string `json:"seal_secret,omitempty"`
+}
+
+// SealSecretBytes decodes the entry's per-stream seal secret, if set.
+func (e Entry) SealSecretBytes() ([]byte, error) {
+	if e.SealSecret == "" {
+		return nil, nil
+	}
+	b, err := hex.DecodeString(e.SealSecret)
+	if err != nil {
+		return nil, fmt.Errorf("outbox: decoding seal secret: %w", err)
+	}
+	if len(b) != envelope.SecretLen {
+		return nil, fmt.Errorf("outbox: seal secret is %d bytes, want %d", len(b), envelope.SecretLen)
+	}
+	return b, nil
 }
 
 // outbox persists entries as <dir>/<id>.json.

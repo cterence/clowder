@@ -470,6 +470,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 			d.goBg(func() { d.syncPeers(context.WithoutCancel(ctx)) })
 			d.goBg(func() { d.sweepSpool(context.WithoutCancel(ctx)) })
 			d.goBg(func() { d.refreshPaths(context.WithoutCancel(ctx)) })
+			d.goBg(func() { d.cleanupParts() })
 		}
 	}
 }
@@ -496,6 +497,13 @@ func (d *Daemon) Send(targetName, path string) (string, error) {
 		return "", fmt.Errorf("reading file: %w", err)
 	}
 	id := newID()
+	// One per-stream secret per transfer, pinned in the entry: every
+	// attempt seals with it, so a receiver that kept a partial file
+	// can resume instead of restarting (see Offer.Resumable).
+	var secret [envelope.SecretLen]byte
+	if _, err := rand.Read(secret[:]); err != nil {
+		return "", fmt.Errorf("generating seal secret: %w", err)
+	}
 	e := Entry{
 		ID:         id,
 		TargetName: cat.Name,
@@ -503,6 +511,7 @@ func (d *Daemon) Send(targetName, path string) (string, error) {
 		SourcePath: path,
 		FileName:   filepath.Base(path),
 		AddedAt:    time.Now().Unix(),
+		SealSecret: hex.EncodeToString(secret[:]),
 	}
 	if err := d.ob.Put(e); err != nil {
 		return "", err
@@ -683,6 +692,35 @@ func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *proto
 		return refuse("receiver busy, try again soon")
 	}
 	defer d.gauge.done()
+	if o.Resumable && !o.Receipt {
+		// A resumable transfer: answer with how far we already are
+		// (if at all) and receive into the partial-receive path.
+		// Progress covers the whole transfer, starting at the
+		// resume point a previous attempt reached.
+		resume := d.resumePoint(o)
+		d.prog.start(Progress{
+			ID:        o.ID,
+			FileName:  o.FileName,
+			Peer:      from.Name,
+			Receiving: true,
+			Total:     o.Size,
+			Done:      resume,
+			Started:   time.Now().Unix(),
+		})
+		defer d.prog.end(o.ID)
+		plainSize, ok := d.receiveResumable(pc, o, resume)
+		if !ok {
+			return false
+		}
+		d.stats.add(func(s *Stats) { s.Received++; s.ReceivedBytes += plainSize })
+		_ = pc.SetDeadline(time.Now().Add(msgTimeout))
+		if err := pc.Ack(o.ID, protocol.AckDelivered); err != nil {
+			return false
+		}
+		d.cfg.logf("clowder: received %s (%s) from %s", o.FileName, HumanBytes(plainSize), from.Name)
+		d.goBg(func() { d.sendReceipt(o.From, o.ID, o.FileName) })
+		return true
+	}
 	if err := pc.Answer(o.ID, true, ""); err != nil {
 		return false
 	}
@@ -707,7 +745,7 @@ func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *proto
 		return false
 	}
 	d.cfg.logf("clowder: received %s (%s) from %s", o.FileName, HumanBytes(plainSize), from.Name)
-	d.goBg(func() { d.sendReceipt(from.Name, o.ID, o.FileName) })
+	d.goBg(func() { d.sendReceipt(o.From, o.ID, o.FileName) })
 	return true
 }
 
@@ -726,9 +764,6 @@ func (d *Daemon) receiveAsStorer(pc *protocol.Conn, o *protocol.Offer) bool {
 		return pc.Answer(o.ID, false, reason) == nil
 	}
 	defer d.releaseReserve(o.Size)
-	if err := pc.Answer(o.ID, true, ""); err != nil {
-		return false
-	}
 	_ = pc.SetDeadline(time.Now().Add(streamTimeout))
 	meta := store.Meta{
 		ID:         o.ID,
@@ -739,8 +774,31 @@ func (d *Daemon) receiveAsStorer(pc *protocol.Conn, o *protocol.Offer) bool {
 		TargetKey:  o.TargetKey,
 		TargetName: o.TargetName,
 		Receipt:    o.Receipt,
+		Resumable:  o.Resumable,
 	}
-	if err := d.spool.Put(meta, io.LimitReader(pc.Reader(), o.Size)); err != nil {
+	var put func(io.Reader) error
+	var attempt int64
+	if o.Resumable {
+		// A resumable deposit answers with how far the spool already
+		// holds this stream and resumes from there; non-resumable
+		// deposits (receipts) take the one-shot path.
+		resume := d.spool.DepositResume(meta)
+		if err := pc.AnswerResume(o.ID, resume); err != nil {
+			return false
+		}
+		attempt = o.Size
+		if resume > 0 {
+			attempt = int64(envelope.HeaderLen) + o.Size - resume
+		}
+		put = func(r io.Reader) error { return d.spool.PutResume(meta, resume, r) }
+	} else {
+		if err := pc.Answer(o.ID, true, ""); err != nil {
+			return false
+		}
+		attempt = o.Size
+		put = func(r io.Reader) error { return d.spool.Put(meta, r) }
+	}
+	if err := put(io.LimitReader(pc.Reader(), attempt)); err != nil {
 		d.cfg.logf("clowder: spooling %s for %s: %v", o.FileName, o.TargetName, err)
 		return false
 	}
@@ -831,6 +889,7 @@ func (d *Daemon) handleFetch(pc *protocol.Conn, hello *protocol.Hello, f *protoc
 		TargetKey:  meta.TargetKey,
 		TargetName: meta.TargetName,
 		Receipt:    meta.Receipt,
+		Resumable:  meta.Resumable,
 	}
 	if err := pc.WriteMsg(&protocol.Message{Offer: offer}); err != nil {
 		return false
@@ -844,7 +903,25 @@ func (d *Daemon) handleFetch(pc *protocol.Conn, hello *protocol.Hello, f *protoc
 		return m != nil && m.Answer != nil
 	}
 	_ = pc.SetDeadline(time.Now().Add(streamTimeout))
-	if _, err := io.CopyN(pc.Writer(), r, meta.Size); err != nil {
+	// A resumable fetch names the sealed offset the target already
+	// holds: replay the stored header plus the stream from that
+	// offset onward (a pure byte skip — the stream stays opaque),
+	// the same contract a resuming sender honors.
+	resume := m.Answer.Resume
+	if resume > 0 {
+		if _, err := io.CopyN(pc.Writer(), r, envelope.HeaderLen); err != nil {
+			d.cfg.logf("clowder: replaying %s: %v", meta.ID, err)
+			return false
+		}
+		if _, err := r.Seek(resume, io.SeekStart); err != nil {
+			d.cfg.logf("clowder: replaying %s: %v", meta.ID, err)
+			return false
+		}
+		if _, err := io.CopyN(pc.Writer(), r, meta.Size-resume); err != nil {
+			d.cfg.logf("clowder: replaying %s: %v", meta.ID, err)
+			return false
+		}
+	} else if _, err := io.CopyN(pc.Writer(), r, meta.Size); err != nil {
 		d.cfg.logf("clowder: replaying %s: %v", meta.ID, err)
 		return false
 	}
@@ -1065,7 +1142,12 @@ func (d *Daemon) deliverStream(ctx context.Context, peer roster.Cat, e Entry, ta
 		TargetKey:  targetKey,
 		TargetName: targetName,
 	}
-	if err := d.sendSealed(ctx, peer, o, digest, src, wantAck, true); err != nil {
+	secret, err := e.SealSecretBytes()
+	if err != nil {
+		return err
+	}
+	o.Resumable = secret != nil
+	if err := d.sendSealed(ctx, peer, o, secret, src, wantAck, true); err != nil {
 		return err
 	}
 	// Stats are plaintext bytes: what the user actually sent, not the
@@ -1077,8 +1159,11 @@ func (d *Daemon) deliverStream(ctx context.Context, peer roster.Cat, e Entry, ta
 // sendSealed performs one Offer/Answer/sealed-stream/Ack exchange
 // toward a peer, sealing to targetKey and streaming src. Shared by
 // file deliveries (outbox entries) and delivery receipts; track enables
-// in-status progress for the former only.
-func (d *Daemon) sendSealed(ctx context.Context, peer roster.Cat, o *protocol.Offer, digest string, src io.Reader, wantAck string, track bool) error {
+// in-status progress for the former only. secret, when non-nil, is the
+// transfer's fixed per-stream secret: the offer is marked resumable
+// and a receiver that kept a partial file answers with the offset it
+// wants the rest from, which the attempt then continues from.
+func (d *Daemon) sendSealed(ctx context.Context, peer roster.Cat, o *protocol.Offer, secret []byte, src io.Reader, wantAck string, track bool) error {
 	pc, err := d.connect(ctx, peer)
 	if err != nil {
 		return err
@@ -1099,6 +1184,10 @@ func (d *Daemon) sendSealed(ctx context.Context, peer roster.Cat, o *protocol.Of
 		}
 		return errors.New(reason)
 	}
+	resume := m.Answer.Resume
+	if resume != 0 && !o.Resumable {
+		return errors.New("peer answered a resume offset for a non-resumable offer")
+	}
 	_ = pc.SetDeadline(time.Now().Add(streamTimeout))
 	targetPub, err := parseKey(o.TargetKey)
 	if err != nil {
@@ -1111,18 +1200,20 @@ func (d *Daemon) sendSealed(ctx context.Context, peer roster.Cat, o *protocol.Of
 			FileName: o.FileName,
 			Peer:     o.TargetName,
 			Total:    o.Size,
+			Done:     resume,
 			Started:  time.Now().Unix(),
 		})
 		defer d.prog.end(o.ID)
 		w = countingWriter{k: d.prog, id: o.ID, w: pc.Writer()}
 	}
-	_, sealedSha, err := envelope.SealStream(d.env.Identity.Private, targetPub, w, src)
+	plainSize, sealedSha, err := sealAttempt(d.env.Identity.Private, targetPub, secret, resume, w, src)
 	if err != nil {
 		return err
 	}
-	if sealedSha != digest {
+	if sealedSha != o.SHA256 {
 		return errors.New("payload changed during send")
 	}
+	_ = plainSize
 	_ = pc.SetDeadline(time.Now().Add(msgTimeout))
 	m, err = pc.ReadMsg()
 	if err != nil {
@@ -1133,6 +1224,19 @@ func (d *Daemon) sendSealed(ctx context.Context, peer roster.Cat, o *protocol.Of
 	}
 	d.cfg.logf("clowder: sent %s (%s) to %s", o.FileName, HumanBytes(o.Size), o.TargetName)
 	return nil
+}
+
+// sealAttempt seals one attempt of a transfer. A resumable transfer
+// (secret non-nil) continues from the resume offset the receiver
+// reported; a non-resumable one (receipts, pre-resume outbox entries)
+// seals the whole payload with a fresh random secret. Resumable
+// sealing needs to reposition the plaintext source, so src must be
+// an io.Seeker.
+func sealAttempt(sender key.NodePrivate, recipient key.NodePublic, secret []byte, resume int64, dst io.Writer, src io.Reader) (int64, string, error) {
+	if secret == nil {
+		return envelope.SealStream(sender, recipient, dst, src)
+	}
+	return envelope.SealStreamAt(sender, recipient, secret, resume, dst, src)
 }
 
 // fetchFrom asks one storer what it holds for us and fetches everything.
@@ -1189,14 +1293,42 @@ func (d *Daemon) fetchOne(pc *protocol.Conn, f protocol.PendingFile) error {
 		}
 		return nil
 	}
-	if err := pc.Answer(o.ID, true, ""); err != nil {
-		return err
-	}
-	_ = pc.SetDeadline(time.Now().Add(streamTimeout))
 	if !d.claimReceive(o.ID) {
 		return errors.New("transfer already in progress")
 	}
 	defer d.releaseReceive(o.ID)
+	if o.Resumable {
+		// The pull path is the mirror of the push path: resume from
+		// whatever a previous attempt (direct or via this storer)
+		// already landed. Progress accounts the whole transfer,
+		// starting at the resume point.
+		resume := d.resumePoint(o)
+		d.prog.start(Progress{
+			ID:        o.ID,
+			FileName:  o.FileName,
+			Peer:      o.From,
+			Receiving: true,
+			Total:     o.Size,
+			Done:      resume,
+			Started:   time.Now().Unix(),
+		})
+		defer d.prog.end(o.ID)
+		_, ok := d.receiveResumable(pc, o, resume)
+		if !ok {
+			return errors.New("resumable receive failed")
+		}
+		_ = pc.SetDeadline(time.Now().Add(msgTimeout))
+		if err := pc.Ack(o.ID, protocol.AckDelivered); err != nil {
+			return err
+		}
+		d.cfg.logf("clowder: fetched %s from storer", o.FileName)
+		d.goBg(func() { d.sendReceipt(o.From, o.ID, o.FileName) })
+		return nil
+	}
+	if err := pc.Answer(o.ID, true, ""); err != nil {
+		return err
+	}
+	_ = pc.SetDeadline(time.Now().Add(streamTimeout))
 	d.prog.start(Progress{
 		ID:        o.ID,
 		FileName:  o.FileName,

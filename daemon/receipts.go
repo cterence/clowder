@@ -139,14 +139,14 @@ func (d *Daemon) sendReceipt(fromName, transferID, fileName string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), transferAttemptTimeout)
 	defer cancel()
-	if err := d.sendSealed(ctx, cat, o, digest, bytes.NewReader(payload), protocol.AckDelivered, false); err == nil {
+	if err := d.sendSealed(ctx, cat, o, nil, bytes.NewReader(payload), protocol.AckDelivered, false); err == nil {
 		return
 	}
 	for _, s := range d.ros.Storers() {
 		if s.Key == cat.Key || d.isBlockedKey(s.Key) {
 			continue
 		}
-		if err := d.sendSealed(ctx, s, o, digest, bytes.NewReader(payload), protocol.AckStored, false); err == nil {
+		if err := d.sendSealed(ctx, s, o, nil, bytes.NewReader(payload), protocol.AckStored, false); err == nil {
 			return
 		}
 	}

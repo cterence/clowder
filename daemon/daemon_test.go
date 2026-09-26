@@ -258,7 +258,8 @@ func TestStorerRelayForOfflineCat(t *testing.T) {
 	addCat(t, storer, niko)
 
 	src := writeSource(t, "nap for a sleeping cat")
-	if _, err := milo.Send("niko", src); err != nil {
+	id, err := milo.Send("niko", src)
+	if err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
@@ -287,6 +288,18 @@ func TestStorerRelayForOfflineCat(t *testing.T) {
 		return ok && got == "nap for a sleeping cat"
 	}, "niko to receive the held file via the storer's push sweep")
 	waitFor(t, func() bool { return storer.Spool().Count() == 0 }, "storer to drop the delivered file")
+	// The receipt for a storer-pushed delivery must reach the ORIGINAL
+	// sender, not the relaying storer: niko answers the offer's From
+	// (milo), so milo's ledger confirms the delivery — pinned after a
+	// CI failure where the receipt rode the push back into the
+	// storer's own ledger and never reached milo.
+	waitFor(t, func() bool {
+		r, ok := milo.receipts.get(id)
+		return ok && r.From == "niko" && r.FileName == "nap.txt"
+	}, "the push-path receipt to reach milo, not the storer")
+	if _, ok := storer.receipts.get(id); ok {
+		t.Fatal("storer recorded a receipt meant for the original sender")
+	}
 }
 
 // TestStorerPullByFetch covers the explicit pull path: a target that
