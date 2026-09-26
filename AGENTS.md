@@ -227,8 +227,18 @@ upgrades never partition), fuzz targets for ReadMsg/parsePairCode/
 inboxPath (FuzzInboxPath found a real infinite loop: a NUL byte in a
 file name made os.Stat fail EINVAL, not IsNotExist, spinning the
 collision loop forever — names are now control-stripped and the loop
-bounded), and the storer-visible offer metadata documented in the
-README (sealing it remains future work). Also shipped earlier today:
+bounded), the storer-visible offer metadata documented in the README
+(sealing it remains future work), and fast status paths (pathsFor
+probes only cats seen within the last 10 minutes, at a 1-second
+per-probe deadline instead of 3 seconds every roster cat — a
+never-seen or long-idle cat's disco ping cannot succeed, so probing
+it could only burn the deadline, which held `clow status` for seconds
+whenever any offline cat was in the roster; unreachable cats show no
+route either way, and the fresh window covers the sync round-robin so
+online cats never lose their route line; pinned by
+TestPathsForSkipsCatsNotSeenRecently and
+TestPathsForProbeTimeoutIsBounded via a fake Pinger). Also shipped
+earlier today:
 duplicate-name
 hardening (pairing refuses a join whose name another key already
 claims, with an explicit refusal the joiner understands so it does not
