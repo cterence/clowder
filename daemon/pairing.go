@@ -324,13 +324,12 @@ func (d *Daemon) addPeerCat(p *protocol.PairIntro) error {
 // ---- join side ----
 
 // pairRegions returns the DERP regions a joiner should try to reach an
-// inviter on: the region encoded in the pairing code first (the
-// inviter measured it nearest), then every other region in the map,
-// ascending. Relay presence can differ from the encoded region on
-// networks with two nearby relays — the inviter's engine homes by its
-// own measurement, and a netcheck that flaps between equidistant
-// regions strands the meeting — so the join sweeps instead of betting
-// everything on one region.
+// inviter on, in order. The encoded region leads and is RETRIED
+// between every other region: a pairing server still attaching to its
+// relay (slow machines) is caught by the next encoded-region retry, a
+// server whose relay presence flapped onto another region is caught
+// when that region's turn comes, and a healthy meeting still answers
+// on the first attempt. Other regions follow ascending by ID.
 func pairRegions(ctx context.Context, derpMapURL string, encoded int) ([]int, error) {
 	dm, err := fetchDERPMap(ctx, derpMapURL)
 	if err != nil {
@@ -341,11 +340,11 @@ func pairRegions(ctx context.Context, derpMapURL string, encoded int) ([]int, er
 		ids = append(ids, int(id))
 	}
 	slices.Sort(ids)
-	out := make([]int, 0, len(ids)+1)
+	out := make([]int, 0, 2*len(ids)+1)
 	out = append(out, encoded)
 	for _, id := range ids {
 		if id != encoded {
-			out = append(out, id)
+			out = append(out, id, encoded)
 		}
 	}
 	return out, nil
@@ -386,6 +385,7 @@ func (d *Daemon) Join(ctx context.Context, code string) error {
 		peer, err := d.pairOnRegion(ctx, keys, reg, deadline)
 		if err != nil {
 			lastErr = err
+			d.cfg.logf("clowder: pairing attempt on region %d failed: %v", reg, err)
 			continue
 		}
 		if err := d.addPeerCat(peer); err != nil {
@@ -419,8 +419,11 @@ func (d *Daemon) pairOnRegion(ctx context.Context, keys *pairingKeys, region int
 	defer func() { _ = c.Close() }()
 
 	// A meow ping answers only where the inviter's pairing server is
-	// actually connected, so a wrong region fails here in seconds.
-	pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	// actually connected, so a wrong region fails here in seconds. A
+	// live server answers in well under a second; the bound only needs
+	// to cover the relay round trip, not server startup (the sweep
+	// retries the encoded region instead).
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if _, err := c.Ping(pingCtx); err != nil {
 		return nil, err

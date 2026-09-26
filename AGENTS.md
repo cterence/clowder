@@ -51,9 +51,11 @@ have grown the same private helper, hoist it there.
   tailcat addresses are never exchanged by hand. Pairing codes are
   5 words (50 bits) + the inviter's DERP region, valid 5 minutes. The
   region is a fast-path hint, not a requirement: `clow join` tries it
-  first, then sweeps the other regions (relay presence can flap away
-  from the encoded one on networks with two nearby relays), so a wrong
-  hint costs seconds, not the pairing.
+  first and interleaves retries of it with sweeping the other regions
+  (relay presence can flap away from the encoded one on networks with
+  two nearby relays, and a pairing server can attach late on slow
+  machines), so a wrong hint or a slow attach costs seconds, not the
+  pairing.
 - **Two keypairs per cat**: the identity (server) key inside the
   tailcat address, and a separate client key (`clientkey.json`) used
   for ALL outbound dials, which peers allowlist (roster `ClientKey`,

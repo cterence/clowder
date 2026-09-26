@@ -48,11 +48,9 @@ jobs:
   # binary against tailcat.dev's public relays. Needs outbound network,
   # which the loopback suite deliberately does not. These are also the
   # transport tests loopback cannot authenticate (PeerKey paths).
-  #
-  # The runner's datacenter sits ~equidistant from two DERP regions and
-  # its netcheck flaps between them, which can break the pairing
-  # meeting (see AGENTS.md, pairing hardening). One retry absorbs that
-  # hiccup; a second consecutive failure fails the job.
+  # No automatic retry: a second suite run right after the first hammers
+  # the relays and failed 3/3 where the first run passed 2/3 — re-run
+  # the job manually instead.
   integration:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -62,11 +60,5 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: daemon suite (retry once on DERP flakiness)
-        run: |
-          CLOWDER_INTEGRATION=1 go test ./daemon/ -run Integration -count=1 -timeout 10m -v \
-            || CLOWDER_INTEGRATION=1 go test ./daemon/ -run Integration -count=1 -timeout 10m -v
-      - name: end-to-end suite (retry once on DERP flakiness)
-        run: |
-          CLOWDER_INTEGRATION=1 go test . -run TestIntegrationEndToEnd -count=1 -timeout 10m -v \
-            || CLOWDER_INTEGRATION=1 go test . -run TestIntegrationEndToEnd -count=1 -timeout 10m -v
+      - run: CLOWDER_INTEGRATION=1 go test ./daemon/ -run Integration -count=1 -timeout 10m -v
+      - run: CLOWDER_INTEGRATION=1 go test . -run TestIntegrationEndToEnd -count=1 -timeout 10m -v

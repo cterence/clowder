@@ -57,17 +57,18 @@ func TestPairRegions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pairRegions: %v", err)
 	}
-	want := []int{99, 1, 303}
+	want := []int{99, 1, 99, 303, 99}
 	if !slices.Equal(got, want) {
 		t.Fatalf("pairRegions(encoded 99) = %v, want %v", got, want)
 	}
 
-	// An encoded region the map does not know still comes first, once.
+	// An encoded region the map does not know still leads and gets
+	// retried between every other region.
 	got, err = pairRegions(context.Background(), srv.URL, 55)
 	if err != nil {
 		t.Fatalf("pairRegions: %v", err)
 	}
-	if !slices.Equal(got, []int{55, 1, 99, 303}) {
-		t.Fatalf("pairRegions(encoded 55) = %v, want [55 1 99 303]", got)
+	if !slices.Equal(got, []int{55, 1, 55, 99, 55, 303, 55}) {
+		t.Fatalf("pairRegions(encoded 55) = %v, want [55 1 55 99 55 303 55]", got)
 	}
 }
