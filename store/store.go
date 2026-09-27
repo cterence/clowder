@@ -1,8 +1,6 @@
 // Package store implements a storer cat's spool: sealed streams held on
-// disk for offline recipients, with a time-to-live and explicit deletion
-// once the target acknowledges delivery. Streams are written atomically
-// (temporary file then rename) so a crash never leaves a half-written
-// stream visible.
+// disk for offline recipients, deleted on delivery or TTL expiry. Writes
+// are atomic (temp file + rename), so a crash leaves no half-written stream.
 package store
 
 import (
@@ -37,15 +35,12 @@ type Meta struct {
 	TargetKey  string `json:"target_key"`  // recipient node public key, string form
 	TargetName string `json:"target_name"` // recipient's declared name
 	StoredAt   int64  `json:"stored_at"`   // unix seconds
-	// Receipt marks the blob as a delivery receipt rather than a
-	// file: relays must preserve the flag so the target routes it to
-	// the receipts ledger, not the inbox.
+	// Marks a delivery receipt: relays must preserve the flag so the target
+	// routes it to the receipts ledger, not the inbox.
 	Receipt bool `json:"receipt,omitempty"`
-	// Resumable marks the sealed stream as sealed with a per-transfer
-	// secret by the original sender (see envelope.SealStreamAt): the
-	// target may answer a delivery attempt with the offset it wants
-	// the rest from, and relays must preserve the flag so the offer
-	// stays resumable across storer hops.
+	// Sealed with a per-transfer secret by the original sender: the target
+	// may answer a delivery attempt with a resume offset, and relays must
+	// preserve the flag across hops.
 	Resumable bool `json:"resumable,omitempty"`
 }
 
@@ -70,10 +65,8 @@ func New(dir string, ttl time.Duration) *Spool {
 	return &Spool{dir: dir, ttl: ttl}
 }
 
-// Put writes a sealed stream and its metadata atomically. meta.Size
-// must be set: exactly that many bytes are consumed from r. The SHA256
-// is taken as given (it is the plaintext digest the sender announced;
-// the stream is opaque to the storer).
+// Put writes meta.Size bytes from r plus the metadata, atomically. The
+// SHA256 is taken as given (the stream is opaque to the storer).
 func (s *Spool) Put(meta Meta, r io.Reader) error {
 	if meta.ID == "" {
 		return errors.New("store: meta has no ID")
@@ -97,11 +90,9 @@ func (s *Spool) Put(meta Meta, r io.Reader) error {
 	return nil
 }
 
-// depositState is the sidecar of a partially received deposit, the
-// storer-side mirror of the receiving cat's parts sidecar: the sender
-// answers with the offset to continue from on a retry. SHA256 pins
-// the announced digest so an offer reusing an ID with different
-// content cannot ride a stale part.
+// depositState is the sidecar of a partial deposit. SHA256 pins the
+// announced digest so an offer reusing an ID with different content cannot
+// ride a stale part.
 type depositState struct {
 	ID        string `json:"id"`
 	Size      int64  `json:"size"` // announced sealed-stream size
@@ -113,10 +104,9 @@ type depositState struct {
 func (s *Spool) partBlobPath(id string) string  { return filepath.Join(s.dir, id+".blob.part") }
 func (s *Spool) partStatePath(id string) string { return filepath.Join(s.dir, id+".partstate") }
 
-// DepositResume reports the sealed-stream offset a retry of deposit
-// meta.ID should continue from, 0 for a fresh deposit. A partial
-// deposit only counts when its sidecar matches the announced size
-// and digest and its part blob really holds the recorded prefix.
+// DepositResume reports the offset a retry should continue from, 0 for a
+// fresh deposit. A partial deposit only counts when sidecar and part blob
+// match the announced values.
 func (s *Spool) DepositResume(meta Meta) int64 {
 	var st depositState
 	if _, err := persist.LoadJSON(s.partStatePath(meta.ID), &st); err != nil || st.ID != meta.ID {
@@ -137,16 +127,11 @@ func (s *Spool) DropDepositPart(id string) {
 	_ = os.Remove(s.partStatePath(id))
 }
 
-// PutResume resumes or starts a resumable deposit continuing at
-// sealed-stream offset resume. r must hold the attempt's shape: the
-// re-sent header (envelope.HeaderLen bytes) followed by exactly
-// meta.Size - resume bytes of frames. The frames append to the part
-// blob, checkpointed at each frame boundary (the storer parses only
-// the 4-byte frame lengths — the stream stays opaque); a stream cut
-// mid-frame truncates back to the last boundary so the next retry
-// resumes from a valid one. On completion the blob takes its final
-// name and the meta appears, atomically. resume must come from a
-// previous DepositResume for the same meta.
+// PutResume resumes or starts a resumable deposit at sealed-stream
+// offset resume. r must hold the re-sent header plus exactly
+// meta.Size - resume bytes of frames; the storer parses only frame
+// lengths (the stream stays opaque) and checkpoints at each boundary. A
+// cut mid-frame truncates back to the last boundary.
 func (s *Spool) PutResume(meta Meta, resume int64, r io.Reader) error {
 	if meta.ID == "" {
 		return errors.New("store: meta has no ID")
@@ -163,11 +148,8 @@ func (s *Spool) PutResume(meta Meta, resume int64, r io.Reader) error {
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return fmt.Errorf("store: creating spool dir: %w", err)
 	}
-	// Every attempt re-sends the sealed-stream header first; the
-	// blob already holds it (a fresh deposit starts with it), so it
-	// is consumed and verified against the blob's own header: a
-	// mismatch means the sender is not re-sending the same stream,
-	// and the deposit restarts from zero rather than mixing bytes.
+	// Every attempt re-sends the header; verify it against the blob's own:
+	// a mismatch means a different stream, and the deposit restarts from zero.
 	var header [envelope.HeaderLen]byte
 	if _, err := io.ReadFull(r, header[:]); err != nil {
 		return fmt.Errorf("store: reading re-sent header: %w", err)
@@ -200,8 +182,7 @@ func (s *Spool) PutResume(meta Meta, resume int64, r io.Reader) error {
 			s.DropDepositPart(meta.ID)
 			return errors.New("store: retry header differs from the original attempt")
 		}
-		// Cut any torn tail from the last failure, then append from
-		// the recorded boundary.
+		// Cut any torn tail, then append from the recorded boundary.
 		if err := f.Truncate(resume); err != nil {
 			_ = f.Close()
 			return fmt.Errorf("store: trimming part blob: %w", err)
@@ -213,9 +194,8 @@ func (s *Spool) PutResume(meta Meta, resume int64, r io.Reader) error {
 	}
 	fail := func(err error) error {
 		_ = f.Close()
-		// A stream cut mid-frame must not leave a torn tail: the
-		// part shrinks to the last complete frame boundary, which is
-		// where the next attempt resumes.
+		// A cut mid-frame must not leave a torn tail: shrink to the last
+		// complete frame boundary.
 		s.truncatePartToBoundary(meta)
 		return err
 	}
@@ -228,9 +208,6 @@ func (s *Spool) PutResume(meta Meta, resume int64, r io.Reader) error {
 			UpdatedAt: time.Now().Unix(),
 		})
 	}
-	// offset is the sealed-stream position of the next frame to append:
-	// the header precedes the frames on both a fresh and a resumed
-	// attempt, and was consumed above.
 	offset := resume
 	if offset < envelope.HeaderLen {
 		offset = envelope.HeaderLen
@@ -258,8 +235,7 @@ func (s *Spool) PutResume(meta Meta, resume int64, r io.Reader) error {
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("store: closing part blob: %w", err)
 	}
-	// The completed blob takes its final name atomically; the meta
-	// appears with it.
+	// Finish atomically.
 	if err := os.Rename(part, s.blobPath(meta.ID)); err != nil {
 		return fmt.Errorf("store: finishing blob: %w", err)
 	}
@@ -270,11 +246,9 @@ func (s *Spool) PutResume(meta Meta, resume int64, r io.Reader) error {
 	return nil
 }
 
-// truncatePartToBoundary shrinks a partial deposit's part blob back
-// to the last complete frame boundary: the offset a retry can safely
-// resume from. The walk starts after the header and stops at a zero
-// frame (the terminator) or a frame that runs past the blob's end
-// (a torn tail).
+// truncatePartToBoundary shrinks a partial deposit back to the last
+// complete frame boundary, stopping at a zero frame (terminator) or a
+// frame running past the blob's end (torn tail).
 func (s *Spool) truncatePartToBoundary(meta Meta) {
 	id := meta.ID
 	path := s.partBlobPath(id)
@@ -325,9 +299,7 @@ func (s *Spool) List(targetKey string) []Meta {
 	})
 }
 
-// All returns the metadata of every held entry (expired entries
-// dropped), sorted by stored time. It is the storer-side view used to
-// find delivery targets.
+// All returns every held entry (expired dropped), sorted by stored time.
 func (s *Spool) All() []Meta {
 	now := time.Now()
 	var metas []Meta
@@ -353,9 +325,7 @@ func (s *Spool) Usage() int64 {
 	return total
 }
 
-// Open returns the metadata and a reader over the sealed stream for an ID
-// the target is fetching. Close the reader when done. The reader is
-// seekable: a resumable replay starts mid-stream.
+// Open returns the metadata and a seekable reader for the sealed stream.
 func (s *Spool) Open(id string) (Meta, io.ReadSeekCloser, error) {
 	var meta Meta
 	mb, err := os.ReadFile(s.metaPath(id))
@@ -391,8 +361,7 @@ func (s *Spool) Delete(id string) error {
 	return nil
 }
 
-// Sweep deletes expired entries and returns how many were removed. Call
-// periodically so files for targets that never return do not accumulate.
+// Sweep deletes expired entries. Call periodically.
 func (s *Spool) Sweep() int {
 	now := time.Now()
 	removed := 0

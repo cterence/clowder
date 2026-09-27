@@ -1,9 +1,7 @@
 package daemon
 
-// In-flight transfer progress, surfaced by `clow status`. Progress is
-// counted on the sealed stream (the sender writes it, the receiver
-// reads it), one update per 64 KiB chunk, and is keyed by the transfer
-// ID: the outbox entry ID for sends, the offer ID for receives.
+// In-flight transfer progress, surfaced by `clow status`. Counted on the
+// sealed stream, one update per 64 KiB chunk, keyed by transfer ID.
 
 import (
 	"io"
@@ -23,9 +21,7 @@ type Progress struct {
 	Done    int64 `json:"done"`
 	Total   int64 `json:"total"`
 	Started int64 `json:"started"` // unix seconds
-	// Bps is the transfer's current rate over a short rolling window,
-	// filled in by snapshot: 0 when too little time has passed to
-	// measure one.
+	// Current rate over a rolling window, filled in by snapshot.
 	Bps float64 `json:"bps,omitempty"`
 }
 
@@ -40,9 +36,8 @@ func (p Progress) Percent() float64 {
 	return float64(p.Done) / float64(p.Total)
 }
 
-// rateWindow is how far back snapshot looks to compute a transfer's
-// rate: long enough for a few chunk updates even on a slow relay,
-// short enough that a stalled transfer decays to zero promptly.
+// rateWindow: long enough for a few chunk updates on a slow relay, short
+// enough that a stalled transfer decays to zero promptly.
 const rateWindow = 3 * time.Second
 
 // progressKeeper tracks in-flight transfers.
@@ -137,10 +132,8 @@ func (k *progressKeeper) snapshot() []Progress {
 	return out
 }
 
-// rateLocked computes a transfer's bytes per second across the samples
-// inside the rate window. The sample at the window's start counts as
-// the baseline, so bursts do not skew the result. With no elapsed time
-// in the window it reports 0.
+// rateLocked computes bytes/sec across the in-window samples (the first is
+// the baseline); 0 when no time has elapsed in the window.
 func (k *progressKeeper) rateLocked(id string, now time.Time) float64 {
 	s := k.samples[id]
 	if len(s) == 0 {

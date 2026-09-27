@@ -1,8 +1,6 @@
-// Package persist writes local state files durably: content appears
-// at its final path only once fully written (temp file + rename,
-// 0600), so a crash never leaves a torn roster, ledger or spool
-// behind. JSON helpers cover the load-or-default ledger pattern used
-// across the daemon, roster and store.
+// Package persist writes local state files atomically: content appears at
+// its final path (0600) only once fully written, so a crash never leaves a
+// torn roster, ledger or spool behind.
 package persist
 
 import (
@@ -13,10 +11,8 @@ import (
 	"path/filepath"
 )
 
-// WriteFunc writes path atomically: write builds the content into a
-// temp file, and the file appears at path (mode 0600) only when write
-// returns nil. Any error — from write or the filesystem — discards
-// the temp file and leaves any existing path untouched.
+// WriteFunc writes path atomically via a temp file: path appears (0600)
+// only when write returns nil; any error leaves any existing path untouched.
 func WriteFunc(path string, write func(w io.Writer) error) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
 	if err != nil {
@@ -50,9 +46,9 @@ func WriteStream(path string, r io.Reader, size int64) error {
 	})
 }
 
-// LoadJSON decodes the JSON file at path into v. A missing file is
-// not an error: it returns (false, nil) and leaves v untouched, so
-// callers supply the default. A corrupt file is an error.
+// LoadJSON decodes the JSON file at path into v. A missing file returns
+// (false, nil), leaving v untouched (callers supply the default); a corrupt
+// file is an error.
 func LoadJSON(path string, v any) (bool, error) {
 	b, err := os.ReadFile(path)
 	if os.IsNotExist(err) {

@@ -1,22 +1,20 @@
 package daemon
 
-// Delivery receipts: when a target receives a file (directly or via a
-// storer), it seals a tiny receipt {transferID, fileName, deliveredAt}
-// to the ORIGINAL SENDER's node key with its own key and relays it
-// direct-or-via-storer exactly like any small transfer — storers see
-// only the receipt flag and size; the payload is sealed to the sender
-// and opaque to them. The sender keeps a receipts.json ledger (via
-// persist) shown in `clow status`, closing the loop for sends that
-// left the outbox while the sender was offline.
+// Delivery receipts: the receiver seals {transferID, fileName, deliveredAt}
+// to the ORIGINAL sender's node key and relays it like any small transfer
+// (storers see only the flag and size). The sender keeps a receipts.json
+// ledger shown in `clow status`.
 
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"sync"
 	"time"
 
@@ -48,6 +46,16 @@ type receiptEnvelope struct {
 	ID          string `cbor:"i"`
 	FileName    string `cbor:"f"`
 	DeliveredAt int64  `cbor:"d"`
+	// Sig is the receiver's Ed25519 signature over the other fields
+	// (receiptPayload), made with its sign key: a receipt's From is a
+	// declared name, so the signature is what makes it unfakeable.
+	Sig []byte `cbor:"s,omitempty"`
+}
+
+// receiptPayload is the canonical bytes a receipt signature covers.
+func receiptPayload(env receiptEnvelope) []byte {
+	return []byte("clowder-receipt:" + env.ID + ":" + env.FileName + ":" +
+		strconv.FormatInt(env.DeliveredAt, 10))
 }
 
 // receiptKeeper is the sender-side ledger: transfer ID -> confirmed
@@ -70,8 +78,7 @@ func loadReceipts(dir string) *receiptKeeper {
 
 func receiptsPath(dir string) string { return filepath.Join(dir, "receipts.json") }
 
-// record remembers a confirmed delivery (idempotent by transfer ID)
-// and reports whether the ledger changed.
+// record remembers a delivery (idempotent by transfer ID).
 func (k *receiptKeeper) record(r Receipt) bool {
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -104,16 +111,16 @@ func (k *receiptKeeper) recent(n int) []Receipt {
 	return out
 }
 
-// sendReceipt seals and relays a receipt for a delivered transfer to
-// the original sender, direct first then via storers, best effort: a
-// receipt that cannot reach anyone now rides a storer for later, and
-// one lost entirely just leaves the sender's ledger unconfirmed.
+// sendReceipt relays the receipt to the original sender, direct then via
+// storers, best effort; a lost receipt just leaves the ledger unconfirmed.
 func (d *Daemon) sendReceipt(fromName, transferID, fileName string) {
 	cat, ok := d.ros.Get(fromName)
 	if !ok || cat.Key == d.Me().Key {
 		return // best effort: unknown sender, no receipt
 	}
-	payload, err := cbor.Marshal(receiptEnvelope{ID: transferID, FileName: fileName, DeliveredAt: time.Now().Unix()})
+	env := receiptEnvelope{ID: transferID, FileName: fileName, DeliveredAt: time.Now().Unix()}
+	env.Sig = ed25519.Sign(d.env.SignPriv, receiptPayload(env))
+	payload, err := cbor.Marshal(env)
 	if err != nil {
 		d.cfg.logf("clowder: encoding receipt for %s: %v", transferID, err)
 		return
@@ -146,8 +153,7 @@ func (d *Daemon) sendReceipt(fromName, transferID, fileName string) {
 	d.cfg.logf("clowder: receipt for %s could not reach %s (delivered anyway)", fileName, fromName)
 }
 
-// receiveReceipt consumes a receipt transfer addressed to us: unseal
-// the tiny payload and record the confirmed delivery. It reports
+// receiveReceipt unseals the payload and records the delivery; reports
 // whether the connection may continue.
 func (d *Daemon) receiveReceipt(pc *protocol.Conn, o *protocol.Offer) bool {
 	if o.Size > receiptMaxLen {
@@ -173,6 +179,23 @@ func (d *Daemon) receiveReceipt(pc *protocol.Conn, o *protocol.Offer) bool {
 	if env.ID == "" || env.FileName != o.FileName {
 		d.cfg.logf("clowder: receipt stream mismatch (id %q, file %q vs %q)", env.ID, env.FileName, o.FileName)
 		return false
+	}
+	// From is a declared name; the signature is the proof. Verified
+	// against the pinned sign key — an unpinned entry (pre-signing
+	// roster) cannot verify and accepts, the same seam as entries and
+	// tombstones.
+	cat, ok := d.ros.Get(o.From)
+	if !ok {
+		d.cfg.logf("clowder: receipt from unknown cat %q dropped", o.From)
+		return false
+	}
+	if cat.SignKey != "" {
+		pub, err := hex.DecodeString(cat.SignKey)
+		if err != nil || len(pub) != ed25519.PublicKeySize ||
+			!ed25519.Verify(ed25519.PublicKey(pub), receiptPayload(env), env.Sig) {
+			d.cfg.logf("clowder: receipt from %s failed signature verification", o.From)
+			return false
+		}
 	}
 	if d.receipts.record(Receipt{ID: env.ID, FileName: env.FileName, From: o.From, DeliveredAt: env.DeliveredAt}) {
 		d.cfg.logf("clowder: delivery of %s to %s confirmed", env.FileName, o.From)

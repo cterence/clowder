@@ -1,8 +1,5 @@
-// Package daemon is the clowder mesh runtime: it owns the cat's identity,
-// serves the clowder protocol over a Transport (tailcat in production,
-// loopback TCP in tests), syncs rosters with every peer it talks to,
-// delivers outbound files directly or via storer cats, fetches held files
-// from storers, and exposes a small IPC socket for the clow CLI.
+// Package daemon is the clowder mesh runtime: identity, protocol serving,
+// roster sync, direct/storer delivery, and the clow IPC socket.
 package daemon
 
 import (
@@ -32,41 +29,29 @@ import (
 	"clowder/store"
 )
 
-// DefaultPort is the clowder protocol port on a cat's tailcat address.
 const DefaultPort = 2569
 
 const (
 	defaultRetryEvery = 30 * time.Second
 	defaultPollEvery  = 60 * time.Second
 
-	// msgTimeout bounds reads of a single protocol message; long enough
-	// for a slow peer's handshake, short enough to reclaim dead conns.
-	msgTimeout = 2 * time.Minute
-	// streamTimeout bounds a whole sealed-stream transfer.
-	streamTimeout = 30 * time.Minute
-	// maxConcurrentTransfers bounds daemon-wide streaming transfers.
+	msgTimeout             = 2 * time.Minute
+	streamTimeout          = 30 * time.Minute
 	maxConcurrentTransfers = 4
-	// recvReserve is the free-space floor a receive insists on beyond
-	// the announced size, so a fill-the-disk sender cannot consume the
-	// last bytes of the volume.
+	// Free-space floor beyond the announced size, so a sender cannot fill the disk.
 	recvReserve = 64 << 20
 )
 
-// Config configures a daemon. Dir is required and must have been created
-// by Init (or contain a compatible identity, roster and me.json).
+// Dir is required; created by Init, or holding compatible state.
 type Config struct {
 	Dir  string
 	Port uint16 // clowder protocol port; used by the tailcat transport
-	// HealthAddr optionally serves HTTP container probes on / and
-	// /healthz (e.g. ":8080"); empty disables the endpoint.
+	// HTTP probe endpoint ("/", "/healthz"); empty disables it.
 	HealthAddr string
-	// Pprof serves net/http/pprof under /debug/pprof/ on the health
-	// endpoint. Requires HealthAddr; off by default — profiling
-	// endpoints leak internals and must be an explicit opt-in.
+	// pprof under /debug/pprof/; requires HealthAddr. Off by default:
+	// profiling leaks internals.
 	Pprof bool
-	// DERPMapURL overrides where tailcat fetches its DERP map from
-	// (server, dials and pairing): a self-hosted map for air-gapped
-	// clusters. Empty means tailcat's default.
+	// Overrides where tailcat fetches its DERP map (server, dials, pairing).
 	DERPMapURL string
 	RetryEvery,
 	PollEvery time.Duration
@@ -79,7 +64,6 @@ func (c *Config) logf(format string, args ...any) {
 	}
 }
 
-// Daemon runs the mesh for one cat. Create with New, run with Run.
 type Daemon struct {
 	cfg Config
 	tr  Transport
@@ -95,73 +79,47 @@ type Daemon struct {
 	stats    *statsKeeper
 	prog     *progressKeeper
 	receipts *receiptKeeper
-	// slots is the transfer semaphore: a buffered channel of capacity
-	// maxConcurrentTransfers; taking a slot claims one.
-	slots chan struct{}
-	inbox string
+	slots    chan struct{}
+	inbox    string
 
-	// bg drains Run's background work at shutdown: receipt relays,
-	// spool sweeps, deliveries, roster syncs and accepted connections
-	// are uncancelable by design (a receipt or held-file push must not
-	// be dropped mid-relay because Run stopped), so Run instead waits
-	// for them before returning. A caller that cancels Run's ctx and
-	// waits for Run gets a daemon that no longer touches disk, the
-	// network, or Logf. Bounded by the transfer/stream deadlines.
+	// Background work Run drains before returning: transfers and relays are
+	// uncancelable by design, bounded by the stream deadlines.
 	bg      sync.WaitGroup
 	connsMu sync.Mutex
-	// liveConns are accepted connections still being served; Run
-	// closes them at drain time so a shut-down daemon does not wait
-	// out a peer's 2-minute message deadline. Guarded by connsMu.
+	// Accepted connections still being served; Run closes them at drain
+	// instead of waiting out a peer's msg deadline.
 	liveConns map[*protocol.Conn]struct{}
 
-	// Pairing invite state (see pairing.go).
 	pairMu   sync.Mutex
 	pairSrv  *tailcat.Server
 	pairLn   net.Listener
 	pairDone chan struct{}
 
-	// liveness records the unix time each cat's key was last seen on a
-	// successful connection, either direction. Guarded by mu.
+	// Unix time each key was last seen on a successful connection, either direction.
 	liveness map[string]int64
 
-	// left is set by Leave: the cat has departed the clowder, so
-	// roster syncs no longer merge (peers would repopulate us with
-	// the clowder we just left). A new pairing clears it. Guarded
-	// by mu.
+	// Set by Leave: refuse roster syncs (peers would repopulate the clowder
+	// we left). A new pairing clears it.
 	left bool
-	// leaveSeen remembers the newest leave time processed per leaver
-	// key, so each leave is applied and re-broadcast once, not once
-	// per peer per sync. Guarded by mu.
+	// Newest leave time processed per leaver, so each leave is handled once.
 	leaveSeen map[string]int64
 
-	// paths caches the last background path probe per cat key, so
-	// `clow status` answers from memory instead of probing (the
-	// refreshPaths background loop keeps it warm). Guarded by mu.
+	// Last background path probe per key, so `clow status` never probes.
 	paths map[string]PathInfo
 
-	// blocked holds the keys of forgotten (and, later, distrusted)
-	// cats. Tailcat's AllowedClients is add-only, so removal at the
-	// transport layer is impossible; serveConn refuses these peers at
-	// the protocol level instead. Guarded by mu, persisted in
-	// blocked.json.
+	// Keys of forgotten/distrusted cats: tailcat's AllowedClients is add-only,
+	// so these are refused at the protocol level. Persisted in blocked.json.
 	blocked map[string]bool
 
-	// deliveryClaims guards outbox entries against concurrent
-	// delivery attempts (the retry ticker must not start a second
-	// transfer while a big one is still streaming); receiveClaims
-	// refuses a second stream for a transfer ID we are already
-	// receiving (retry/sweep/pull races).
+	// In-flight transfer claims: refuse a second concurrent attempt per ID
+	// (retry/sweep races).
 	deliveryClaims *claimSet
 	receiveClaims  *claimSet
-	// resMu guards reserved: spool bytes promised to in-flight
-	// deposits. The capacity check and the claim are one atomic
-	// operation, so many deposits arriving at once are accepted
-	// first-come-first-served, each later one only if it still fits.
+	// Guards reserved: the capacity check and claim are one atomic operation.
 	resMu    sync.Mutex
 	reserved int64
 }
 
-// New loads a cat's state from cfg.Dir and wires it to a transport.
 func New(cfg Config, tr Transport) (*Daemon, error) {
 	if cfg.Dir == "" {
 		return nil, errors.New("daemon: no config dir")
@@ -213,22 +171,18 @@ func New(cfg Config, tr Transport) (*Daemon, error) {
 	return d, nil
 }
 
-// Me returns this cat's roster entry as currently known.
 func (d *Daemon) Me() roster.Cat {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.meCat
 }
 
-// InboxDir returns the directory received files land in.
 func (d *Daemon) InboxDir() string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.inbox
 }
 
-// SetInbox changes the directory received files land in and persists it,
-// so it survives daemon restarts.
 func (d *Daemon) SetInbox(path string) error {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -243,22 +197,17 @@ func (d *Daemon) SetInbox(path string) error {
 	return SetInboxAt(d.cfg.Dir, abs)
 }
 
-// Roster returns the cat's roster, for inspection (clow cats) and tests.
 func (d *Daemon) Roster() *roster.Roster { return d.ros }
 
-// Spool returns the storer spool, for inspection and tests.
 func (d *Daemon) Spool() *store.Spool { return d.spool }
 
-// Forget removes a cat from the roster and drops any pending outbox
-// sends destined to it (local, manual operation; entries are never
-// removed by propagation in v1).
+// Forget removes the cat and its pending sends (local only; entries are
+// never removed by propagation).
 func (d *Daemon) Forget(name string) (roster.Cat, bool) {
 	c, ok := d.ros.RemoveName(name)
 	if !ok {
 		return c, false
 	}
-	// The allowlist cannot drop the cat's key (tailcat is add-only),
-	// so block it at the protocol level.
 	if err := d.blockCat(c); err != nil {
 		d.cfg.logf("clowder: persisting blocklist after forgetting %s: %v", name, err)
 	}
@@ -272,8 +221,6 @@ func (d *Daemon) Forget(name string) (roster.Cat, bool) {
 	return c, true
 }
 
-// markSeen records that the cat with the given key was just seen on a
-// successful connection.
 func (d *Daemon) markSeen(key string) {
 	if key == "" {
 		return
@@ -283,14 +230,12 @@ func (d *Daemon) markSeen(key string) {
 	d.mu.Unlock()
 }
 
-// SeenAt returns when a cat's key was last seen, or 0 if never.
 func (d *Daemon) SeenAt(key string) int64 {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.liveness[key]
 }
 
-// livenessSnapshot copies the last-seen times for the status op.
 func (d *Daemon) livenessSnapshot() map[string]int64 {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -301,10 +246,7 @@ func (d *Daemon) livenessSnapshot() map[string]int64 {
 	return out
 }
 
-// claimSet is a set of transfer IDs with an in-flight claim. A second
-// claim for an ID already in it (the retry ticker racing a slow
-// transfer, or a duplicate stream for an ID we are already receiving)
-// is refused.
+// In-flight claim set: a second claim for the same ID is refused.
 type claimSet struct {
 	mu sync.Mutex
 	m  map[string]bool
@@ -312,7 +254,6 @@ type claimSet struct {
 
 func newClaimSet() *claimSet { return &claimSet{m: map[string]bool{}} }
 
-// claim reports whether id may start, recording the claim if so.
 func (c *claimSet) claim(id string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -323,27 +264,20 @@ func (c *claimSet) claim(id string) bool {
 	return true
 }
 
-// release returns a finished claim to the set.
 func (c *claimSet) release(id string) {
 	c.mu.Lock()
 	delete(c.m, id)
 	c.mu.Unlock()
 }
 
-// SetStorer declares or retracts this cat's storer role and persists it.
 func (d *Daemon) SetStorer(on bool, capacity int64) error {
 	return d.setStorerMode(on, false, capacity)
 }
 
-// SetDropbox switches this cat to dropbox mode (a storer that only
-// serves third parties) or back off entirely.
 func (d *Daemon) SetDropbox(on bool, capacity int64) error {
 	return d.setStorerMode(on, on, capacity)
 }
 
-// setStorerMode applies the storer/dropbox flags with the spool
-// capacity in bytes and persists them. Enabling requires a capacity;
-// disabling ignores it.
 func (d *Daemon) setStorerMode(storer, dropbox bool, capacity int64) error {
 	if storer && capacity <= 0 {
 		return errors.New("daemon: enabling the storer role requires a capacity (e.g. --max 10G)")
@@ -362,13 +296,8 @@ func (d *Daemon) setStorerMode(storer, dropbox bool, capacity int64) error {
 	return saveMe(d.cfg.Dir, me)
 }
 
-// Run listens, serves connections, retries the outbox, polls storers,
-// syncs rosters, and serves the IPC socket, until ctx is canceled.
 func (d *Daemon) Run(ctx context.Context) error {
-	// One daemon per cat: a second Run on the same config dir refuses
-	// here instead of stealing the IPC socket and running two engines
-	// with the same node key (which wedges the tunnel — see the
-	// two-keypair invariant). Released on every return path.
+	// One daemon per config dir: two engines on one node key wedge the tunnel.
 	unlock, err := lockDir(d.cfg.Dir)
 	if err != nil {
 		return err
@@ -439,11 +368,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	poll := time.NewTicker(d.cfg.PollEvery)
 	defer poll.Stop()
 
-	// Warm the path cache immediately instead of waiting for the
-	// first poll tick, so an early `clow status` shows routes.
 	d.goBg(func() { d.refreshPaths(context.WithoutCancel(ctx)) })
-	// A cat that just started — woke up, restarted — converges now:
-	// dial every peer once instead of waiting for the first tick.
 	d.goBg(func() { d.syncPeers(context.WithoutCancel(ctx)) })
 
 	for {
@@ -455,25 +380,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 				_ = healthSrv.Close()
 			}
 			_ = d.tr.Close()
-			// Drain in-flight background work (receipt relays, sweeps,
-			// deliveries, live connections) before Run returns: a caller
-			// waiting on Run gets a daemon that has stopped touching
-			// disk, the network, and Logf. Closing live conns keeps the
-			// wait bounded by local processing, not a peer's message
-			// deadline. Nothing new can arrive: both listeners are
-			// already closed.
+			// Drain: nothing new can arrive; closing live conns bounds the wait
+			// locally, not by a peer's msg deadline.
 			d.closeLiveConns()
 			d.bg.Wait()
 			return nil
 		case <-retry.C:
 			d.goBg(d.retryOutbox)
 		case <-poll.C:
-			// The push sweep delivers held files to online
-			// targets on its own; there is no pull path. Each
-			// tick syncs every
-			// peer in parallel (a few KB at homelab scale) and
-			// refreshes every path, plus spool pushes only while
-			// files are held.
 			d.goBg(func() { d.syncPeers(context.WithoutCancel(ctx)) })
 			d.goBg(func() { d.sweepSpool(context.WithoutCancel(ctx)) })
 			d.goBg(func() { d.refreshPaths(context.WithoutCancel(ctx)) })
@@ -482,10 +396,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 }
 
-// Send queues a file for asynchronous delivery to the named cat and
-// returns the transfer ID. Delivery is attempted in the background:
-// directly to the target first, then via any reachable storer, retrying
-// on the daemon's ticker until one succeeds.
+// Queues a file for background delivery: direct to the target first, then
+// via any reachable storer, retried on the ticker until one succeeds.
 func (d *Daemon) Send(targetName, path string) (string, error) {
 	if d.Me().Dropbox {
 		return "", errors.New("dropbox cats cannot send files")
@@ -504,9 +416,7 @@ func (d *Daemon) Send(targetName, path string) (string, error) {
 		return "", fmt.Errorf("reading file: %w", err)
 	}
 	id := newID()
-	// One per-stream secret per transfer, pinned in the entry: every
-	// attempt seals with it, so a receiver that kept a partial file
-	// can resume instead of restarting (see Offer.Resumable).
+	// One per-stream secret per transfer, so retries resume instead of restarting.
 	var secret [envelope.SecretLen]byte
 	if _, err := rand.Read(secret[:]); err != nil {
 		return "", fmt.Errorf("generating seal secret: %w", err)
@@ -527,9 +437,6 @@ func (d *Daemon) Send(targetName, path string) (string, error) {
 	return id, nil
 }
 
-// goBg runs f tracked by the drain WaitGroup, so Run's shutdown can
-// wait out in-flight background work (see the bg field) before
-// returning.
 func (d *Daemon) goBg(f func()) {
 	d.bg.Add(1)
 	go func() {
@@ -538,9 +445,6 @@ func (d *Daemon) goBg(f func()) {
 	}()
 }
 
-// trackConn registers a connection being served, so drain can close
-// it instead of waiting out the peer's message deadline. It returns
-// an unregister func to call when serving ends.
 func (d *Daemon) trackConn(pc *protocol.Conn) func() {
 	d.connsMu.Lock()
 	if d.liveConns == nil {
@@ -555,15 +459,13 @@ func (d *Daemon) trackConn(pc *protocol.Conn) func() {
 	}
 }
 
-// closeLiveConns closes every still-served connection at drain time.
 func (d *Daemon) closeLiveConns() {
 	d.connsMu.Lock()
 	conns := make([]*protocol.Conn, 0, len(d.liveConns))
 	for pc := range d.liveConns {
 		conns = append(conns, pc)
 	}
-	// Clear the map first: closing may synchronously run deferred
-	// unregisters on the serving goroutines, which re-lock connsMu.
+	// Clear first: closing runs deferred unregisters, which re-lock connsMu.
 	d.liveConns = nil
 	d.connsMu.Unlock()
 	for _, pc := range conns {
@@ -573,7 +475,6 @@ func (d *Daemon) closeLiveConns() {
 
 // ---- serving ----
 
-// serveConn runs the protocol on one accepted connection.
 func (d *Daemon) serveConn(pc *protocol.Conn, authKey key.NodePublic, authed bool) {
 	_ = pc.SetDeadline(time.Now().Add(msgTimeout))
 	m, err := pc.ReadMsg()
@@ -593,9 +494,7 @@ func (d *Daemon) serveConn(pc *protocol.Conn, authKey key.NodePublic, authed boo
 		}
 	}
 	if peer.Version > protocol.HelloVersion {
-		// No negotiation: serve anyway, so an upgrade never partitions
-		// the clowder — but say so, before the protocol ossifies into
-		// silent incompatibility.
+		// Serve newer peers anyway: an upgrade must never partition the clowder.
 		d.cfg.logf("clowder: %s speaks protocol version %d, newer than ours (%d); serving anyway", peer.Name, peer.Version, protocol.HelloVersion)
 	}
 	d.markSeen(peer.Key)
@@ -603,7 +502,6 @@ func (d *Daemon) serveConn(pc *protocol.Conn, authKey key.NodePublic, authed boo
 	if err := pc.WriteMsg(&protocol.Message{Hello: d.helloMsg()}); err != nil {
 		return
 	}
-	// The peer sends its roster, then we send ours.
 	m, err = pc.ReadMsg()
 	if err != nil || m.Roster == nil {
 		return
@@ -625,12 +523,11 @@ func (d *Daemon) serveConn(pc *protocol.Conn, authKey key.NodePublic, authed boo
 				return
 			}
 		case m.Roster != nil:
-			// Post-handshake roster push (e.g. an address rotation
-			// announcement). Merged; no reply, to avoid sync ping-pong.
+			// Post-handshake roster push (e.g. a rotation). No reply: avoid
+			// sync ping-pong.
 			d.mergeRemote(m.Roster)
 		case m.Leave != nil:
-			// A peer's signed forget-me: drop it everywhere and
-			// re-broadcast once. The connection itself may continue.
+			// Signed forget-me: apply and re-broadcast; the connection continues.
 			d.handleLeave(m.Leave)
 		default:
 			d.cfg.logf("clowder: unexpected %s message from %s", m.Kind(), peer.Name)
@@ -639,10 +536,14 @@ func (d *Daemon) serveConn(pc *protocol.Conn, authKey key.NodePublic, authed boo
 	}
 }
 
-// handleOffer receives either a direct delivery (target is us) or a
-// storer deposit (target is a third cat). It reports whether the
-// connection may continue.
+// handleOffer receives a direct delivery or a storer deposit; the return
+// value says whether the connection may continue.
 func (d *Daemon) handleOffer(pc *protocol.Conn, from *protocol.Hello, o *protocol.Offer) bool {
+	if !validID(o.ID) {
+		// IDs name spool and parts files; anything but our own 32-hex
+		// format — traversal sequences included — is refused.
+		return pc.Answer(o.ID, false, "invalid transfer ID") == nil
+	}
 	if o.Receipt && o.TargetKey == d.Me().Key {
 		return d.receiveReceipt(pc, o)
 	}
@@ -652,29 +553,23 @@ func (d *Daemon) handleOffer(pc *protocol.Conn, from *protocol.Hello, o *protoco
 	return d.receiveAsStorer(pc, o)
 }
 
-// receiveDirect decrypts a sealed stream into the inbox and acks
-// delivery.
 func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *protocol.Offer) bool {
 	refuse := func(reason string) bool {
 		return pc.Answer(o.ID, false, reason) == nil
 	}
 	if d.Me().Dropbox {
-		// A dropbox relays files for others; it takes none for itself.
 		return refuse("dropbox cat: no personal deliveries")
 	}
 	if d.isBlockedName(o.From) {
-		// The connection itself is fine (this is a storer relaying),
-		// but the sender named in the offer is distrusted.
+		// The relaying storer is fine; the named sender is distrusted.
 		return refuse("sender is distrusted")
 	}
-	// The disk is not fillable by a sender: refuse when the announced
-	// stream plus a reserve would not fit.
+	// Refuse when the announced stream plus a reserve would not fit.
 	if free, ok := freeSpace(d.InboxDir()); ok && free < uint64(o.Size)+recvReserve {
 		return refuse(fmt.Sprintf("receiver is low on disk (%s free)", HumanBytes(int64(free))))
 	}
 	if !d.receiveClaims.claim(o.ID) {
-		// A duplicate stream for a transfer already in flight (the
-		// sender retried, or the sweep raced the pull): refuse it.
+		// A duplicate stream for a transfer ID already in flight.
 		return refuse("transfer already in progress")
 	}
 	defer d.receiveClaims.release(o.ID)
@@ -685,10 +580,7 @@ func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *proto
 		return refuse("receiver busy, try again soon")
 	}
 	if o.Resumable && !o.Receipt {
-		// A resumable transfer: answer with how far we already are
-		// (if at all) and receive into the partial-receive path.
-		// Progress covers the whole transfer, starting at the
-		// resume point a previous attempt reached.
+		// Resumable: answer with our offset, receive into the partial path.
 		resume := d.resumePoint(o)
 		d.prog.start(Progress{
 			ID:        o.ID,
@@ -741,8 +633,8 @@ func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *proto
 	return true
 }
 
-// receiveAsStorer spools a sealed stream for an offline target. The
-// stream stays opaque: the storer cannot decrypt it.
+// receiveAsStorer spools a sealed stream for an offline target; it stays
+// opaque to us.
 func (d *Daemon) receiveAsStorer(pc *protocol.Conn, o *protocol.Offer) bool {
 	me := d.Me()
 	if !me.Storer {
@@ -771,9 +663,6 @@ func (d *Daemon) receiveAsStorer(pc *protocol.Conn, o *protocol.Offer) bool {
 	var put func(io.Reader) error
 	var attempt int64
 	if o.Resumable {
-		// A resumable deposit answers with how far the spool already
-		// holds this stream and resumes from there; non-resumable
-		// deposits (receipts) take the one-shot path.
 		resume := d.spool.DepositResume(meta)
 		if err := pc.AnswerResume(o.ID, resume); err != nil {
 			return false
@@ -800,16 +689,12 @@ func (d *Daemon) receiveAsStorer(pc *protocol.Conn, o *protocol.Offer) bool {
 	}
 	d.stats.add(func(s *Stats) { s.Spooled++ })
 	d.cfg.logf("clowder: holding %s from %s for %s", o.FileName, o.From, o.TargetName)
-	// The target may be online already: try to push right away
-	// instead of waiting for the next sweep.
 	d.goBg(func() { d.sweepSpoolFor(context.Background(), o.TargetKey) })
 	return true
 }
 
-// tryReserve atomically claims spool capacity for a deposit of the
-// given size: the check and the claim happen under one lock, so
-// concurrent deposits are accepted first-come-first-served and a
-// deposit is only accepted if it still fits.
+// tryReserve claims capacity atomically with the check, so concurrent
+// deposits are accepted first-come-first-served.
 func (d *Daemon) tryReserve(capacity, size int64) bool {
 	d.resMu.Lock()
 	defer d.resMu.Unlock()
@@ -820,8 +705,6 @@ func (d *Daemon) tryReserve(capacity, size int64) bool {
 	return true
 }
 
-// releaseReserve gives a deposit's reservation back (stream ended,
-// failed, or refused mid-flight).
 func (d *Daemon) releaseReserve(size int64) {
 	d.resMu.Lock()
 	d.reserved -= size
@@ -831,17 +714,14 @@ func (d *Daemon) releaseReserve(size int64) {
 	d.resMu.Unlock()
 }
 
-// heldBytes reports the spool usage plus reservations, for refusal
-// messages.
 func (d *Daemon) heldBytes() int64 {
 	d.resMu.Lock()
 	defer d.resMu.Unlock()
 	return d.spool.Usage() + d.reserved
 }
 
-// saveIncoming decrypts a sealed stream from src into the inbox under a
-// unique name, verifying the announced plaintext digest. It returns the
-// plaintext size.
+// saveIncoming decrypts into the inbox under a unique name, verifying the
+// announced size and plaintext digest.
 func (d *Daemon) saveIncoming(o *protocol.Offer, src io.Reader, recipient key.NodePrivate) (int64, error) {
 	inbox := d.InboxDir()
 	if err := os.MkdirAll(inbox, 0o700); err != nil {
@@ -857,10 +737,7 @@ func (d *Daemon) saveIncoming(o *protocol.Offer, src io.Reader, recipient key.No
 		if err != nil {
 			return err
 		}
-		// The sealed stream must be exactly as long as announced: a
-		// sender lying about the size (a modified client) gets the
-		// connection killed and no delivery ack. Nothing lands in
-		// the inbox unless every check passes.
+		// A size lie or digest mismatch kills the conn; nothing lands in the inbox.
 		if ex.n != o.Size {
 			return fmt.Errorf("protocol violation: sealed stream was %d bytes, %d announced", ex.n, o.Size)
 		}
@@ -874,7 +751,6 @@ func (d *Daemon) saveIncoming(o *protocol.Offer, src io.Reader, recipient key.No
 	return gotSize, nil
 }
 
-// exactReader counts the bytes consumed from a stream.
 type exactReader struct {
 	r io.Reader
 	n int64
@@ -886,15 +762,12 @@ func (e *exactReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// inboxPath picks a non-existing name for a received file, numbering
-// collisions with a dash before the extension (nap-1.txt): a dot would
-// read as an extension, which is especially confusing for files that
-// never had one. Dotfiles keep their whole name as the stem.
+// inboxPath picks a non-existing inbox name, numbering collisions with a
+// dash before the extension (nap-1.txt — a dot would read as an extension).
+// Dotfiles keep their whole name as the stem.
 func inboxPath(dir, name string) string {
-	// Control characters are stripped before anything else: os.Stat
-	// fails with EINVAL (not IsNotExist) on e.g. a NUL byte, which
-	// would spin the collision loop below forever (found by
-	// FuzzInboxPath).
+	// Strip control characters first: os.Stat fails with EINVAL (not IsNotExist)
+	// on a NUL byte, which would spin the collision loop below.
 	clean := strings.Map(func(r rune) rune {
 		if r < 32 {
 			return -1
@@ -914,18 +787,14 @@ func inboxPath(dir, name string) string {
 	p := filepath.Join(dir, clean)
 	for i := 1; ; i++ {
 		if _, err := os.Stat(p); err == nil {
-			// taken: try the next number
 		} else if os.IsNotExist(err) {
 			return p
 		} else {
-			// Unverifiable (permissions, invalid name): fall through
-			// and keep numbering rather than spinning forever on the
-			// same broken name.
+			// Unverifiable stat: keep numbering instead of spinning.
 			_ = err
 		}
 		if i > 1<<16 {
-			// Absurd collision count: pick something unique instead
-			// of looping unboundedly.
+			// Absurd collision count: pick something unique.
 			return filepath.Join(dir, fmt.Sprintf("clow-%d%s", time.Now().UnixNano(), ext))
 		}
 		p = filepath.Join(dir, fmt.Sprintf("%s-%d%s", stem, i, ext))
@@ -934,16 +803,12 @@ func inboxPath(dir, name string) string {
 
 // ---- outbound ----
 
-// retryOutbox attempts delivery of every pending entry. Each attempt
-// has its own timeout, so no context is needed here.
 func (d *Daemon) retryOutbox() {
 	for _, e := range d.ob.All() {
 		d.goBg(func() { d.deliver(e) })
 	}
 }
 
-// deliver tries the target directly, then each known storer, and removes
-// the outbox entry on success.
 func (d *Daemon) deliver(e Entry) {
 	if !d.deliveryClaims.claim(e.ID) {
 		return // already streaming this entry
@@ -986,8 +851,6 @@ func (d *Daemon) deliver(e Entry) {
 	d.cfg.logf("clowder: %s to %s still pending", e.FileName, e.TargetName)
 }
 
-// deliverStream performs one Offer/stream/Ack exchange toward peer,
-// where wantAck is the ack that ends the transfer successfully.
 func (d *Daemon) deliverStream(ctx context.Context, peer roster.Cat, e Entry, targetKey, targetName, wantAck string) error {
 	digest, size, err := fileDigest(e.SourcePath)
 	if err != nil {
@@ -1016,19 +879,14 @@ func (d *Daemon) deliverStream(ctx context.Context, peer roster.Cat, e Entry, ta
 	if err := d.sendSealed(ctx, peer, o, secret, src, wantAck, true); err != nil {
 		return err
 	}
-	// Stats are plaintext bytes: what the user actually sent, not the
-	// sealed stream size.
+	// Stats are plaintext bytes, not sealed-stream bytes.
 	d.stats.add(func(s *Stats) { s.Sent++; s.SentBytes += size })
 	return nil
 }
 
-// sendSealed performs one Offer/Answer/sealed-stream/Ack exchange
-// toward a peer, sealing to targetKey and streaming src. Shared by
-// file deliveries (outbox entries) and delivery receipts; track enables
-// in-status progress for the former only. secret, when non-nil, is the
-// transfer's fixed per-stream secret: the offer is marked resumable
-// and a receiver that kept a partial file answers with the offset it
-// wants the rest from, which the attempt then continues from.
+// sendSealed runs one Offer/Answer/stream/Ack exchange, shared by
+// deliveries and receipts (track enables status progress). A non-nil
+// secret makes the offer resumable.
 func (d *Daemon) sendSealed(ctx context.Context, peer roster.Cat, o *protocol.Offer, secret []byte, src io.Reader, wantAck string, track bool) error {
 	pc, err := d.connect(ctx, peer)
 	if err != nil {
@@ -1072,11 +930,6 @@ func (d *Daemon) sendSealed(ctx context.Context, peer roster.Cat, o *protocol.Of
 		defer d.prog.end(o.ID)
 		w = countingWriter{k: d.prog, id: o.ID, w: pc.Writer()}
 	}
-	// A resumable attempt (secret non-nil) continues from the resume
-	// offset the receiver reported; a non-resumable one (receipts,
-	// pre-resume outbox entries) seals the whole payload with a fresh
-	// random secret. Resumable sealing repositions the plaintext
-	// source, so src must be an io.Seeker.
 	var sealedSha string
 	if secret == nil {
 		_, sealedSha, err = envelope.SealStream(d.env.Identity.Private, targetPub, w, src)
@@ -1101,22 +954,10 @@ func (d *Daemon) sendSealed(ctx context.Context, peer roster.Cat, o *protocol.Of
 	return nil
 }
 
-// syncPeers connects to every roster peer in parallel, exchanging
-// rosters with each one that answers. It runs once at Run start (a
-// cat that wakes up cannot learn anything until it talks to someone)
-// and on every poll tick, so membership changes propagate within a
-// tick or two and every reachable peer's liveness stays fresh.
-// One-peer-per-tick round-robin was the old shape — but a sync is a
-// hello plus two rosters (~2-3 KB), so syncing all peers costs a few
-// KB per tick at homelab scale, while the round-robin's O(N)-tick
-// cadence left even an always-online peer unseen for minutes (the
-// wake-gap incidents). The per-cycle bytes are O(N²) across the
-// clowder; revisit if rosters ever grow large (pending item 3).
-// No extra timeout here: the transport bounds its own dial (its 10s
-// dead-peer probe) and the protocol bounds its messages (msgTimeout),
-// so an offline peer costs one bounded dial, in parallel — not a
-// tick each — while a slow-attaching tunnel gets to finish its
-// hello instead of being cut mid-exchange.
+// syncPeers dials every peer in parallel, at start and on every poll
+// tick, so membership and liveness converge within a tick. O(N²) bytes per
+// cycle at homelab scale — pending item 3. No extra timeout: the transport
+// bounds dials and the protocol bounds messages.
 func (d *Daemon) syncPeers(ctx context.Context) {
 	var wg sync.WaitGroup
 	for _, c := range d.ros.All() {
@@ -1154,7 +995,6 @@ func (d *Daemon) rosterMsg() *protocol.RosterSync {
 	return &protocol.RosterSync{Cats: cats, Tombstones: d.ros.Tombstones()}
 }
 
-// connect dials a peer and performs the hello and roster exchange.
 func (d *Daemon) connect(ctx context.Context, cat roster.Cat) (*protocol.Conn, error) {
 	conn, err := d.tr.Dial(ctx, cat.Addr)
 	if err != nil {
@@ -1168,7 +1008,6 @@ func (d *Daemon) connect(ctx context.Context, cat roster.Cat) (*protocol.Conn, e
 	return pc, nil
 }
 
-// handshakeClient sends our hello and roster and reads the peer's.
 func (d *Daemon) handshakeClient(pc *protocol.Conn) error {
 	_ = pc.SetDeadline(time.Now().Add(msgTimeout))
 	if err := pc.WriteMsg(&protocol.Message{Hello: d.helloMsg()}); err != nil {
@@ -1181,11 +1020,8 @@ func (d *Daemon) handshakeClient(pc *protocol.Conn) error {
 	if m.Hello == nil {
 		return errors.New("peer sent no hello")
 	}
-	// Liveness is symmetric and proven by the hello round-trip: the
-	// dialer marks its target seen the moment its reply lands, the
-	// same point the listener marks the dialer (serveConn). A
-	// connection cut before the roster exchange completes still
-	// counts both ways — the peer was provably alive on the wire.
+	// The hello round-trip proves liveness both ways, even if the roster
+	// exchange never completes.
 	d.markSeen(m.Hello.Key)
 	if err := pc.WriteMsg(&protocol.Message{Roster: d.rosterMsg()}); err != nil {
 		return err
@@ -1201,12 +1037,8 @@ func (d *Daemon) handshakeClient(pc *protocol.Conn) error {
 	return nil
 }
 
-// mergeRemote applies an incoming roster sync: tombstones first (a
-// leave must land before the stale entries that may ride along with
-// it), then the cats, and allows any new keys to connect. A cat that
-// has left the clowder merges nothing — peers would repopulate it
-// with the clowder it just discarded; a fresh pairing clears the
-// flag (see addPeerCat).
+// mergeRemote applies tombstones first (a leave must land before the stale
+// entries riding with it), then cats. A cat that has left merges nothing.
 func (d *Daemon) mergeRemote(sync *protocol.RosterSync) {
 	if d.hasLeft() {
 		return
@@ -1215,10 +1047,8 @@ func (d *Daemon) mergeRemote(sync *protocol.RosterSync) {
 		d.handleTombstone(t, false)
 	}
 	cats := sync.Cats
-	// Capture duplicates before the merge: parallel invites from
-	// different inviters can both claim a name (the pairing check only
-	// sees the inviter's roster), and LWW is per-key so both entries
-	// persist everywhere. Surface the collision the moment it lands.
+	// Capture duplicates before the merge: parallel invites can both claim a
+	// name; LWW is per-key, so both entries persist.
 	before := d.ros.Duplicates()
 	me := d.Me()
 	filtered := cats[:0:0]
@@ -1226,9 +1056,8 @@ func (d *Daemon) mergeRemote(sync *protocol.RosterSync) {
 		if c.Key == "" || c.Key == me.Key {
 			continue
 		}
-		// A blocked cat (forgotten or distrusted) is out on purpose:
-		// its entry must not ride back in on another peer's sync.
-		// Re-pairing is the way back (addPeerCat bypasses the merge).
+		// Blocked cats stay out; re-pairing is the way back (addPeerCat bypasses
+		// the merge).
 		if d.isBlockedKey(c.Key) || d.isBlockedKey(c.ClientKey) {
 			continue
 		}
@@ -1249,10 +1078,8 @@ func (d *Daemon) mergeRemote(sync *protocol.RosterSync) {
 	}
 }
 
-// pinSignKey records the sign key a directly connected peer announced
-// in its Hello, on the roster entry we hold for it. The connection is
-// transport-authenticated, so the Hello is the peer's own word; the
-// entry's signature is verified against this pin on every later merge.
+// pinSignKey records the Hello's sign key on the peer's roster entry; the
+// connection is transport-authenticated, and later merges verify against it.
 func (d *Daemon) pinSignKey(peer *protocol.Hello) {
 	if peer.SignKey == "" {
 		return
@@ -1267,9 +1094,7 @@ func (d *Daemon) pinSignKey(peer *protocol.Hello) {
 			d.cfg.logf("clowder: pinning %s's sign key: %v", peer.Name, err)
 		}
 	} else if c.SignKey != peer.SignKey {
-		// The sign key is derived from the node key: it cannot change
-		// legitimately. Their signed entries will fail verification
-		// and never land; say so.
+		// The sign key derives from the node key: it cannot legitimately change.
 		d.cfg.logf("clowder: %s announced sign key %s, but we pinned %s; ignoring its roster updates", peer.Name, peer.SignKey, c.SignKey)
 	}
 }
@@ -1298,8 +1123,16 @@ func newID() string {
 	return hex.EncodeToString(b[:])
 }
 
-// fileDigest returns the hex SHA-256 and size of a file, read
-// streaming.
+// validID reports whether s is a transfer ID: 32 hex chars, the only
+// form this daemon generates.
+func validID(s string) bool {
+	if len(s) != 32 {
+		return false
+	}
+	_, err := hex.DecodeString(s)
+	return err == nil
+}
+
 func fileDigest(path string) (string, int64, error) {
 	f, err := os.Open(path)
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -15,21 +16,15 @@ import (
 	"clowder/persist"
 )
 
-// Me is the local cat's declared state: its name, whether it volunteers
-// as a storer, and where received files land. It persists in me.json next
-// to the identity.
+// Me is the local cat's declared state, persisted in me.json.
 type Me struct {
 	Name   string `json:"name"`
 	Storer bool   `json:"storer"`
-	// Dropbox marks a storer that only serves third parties: no
-	// deliveries to itself, no originating sends. Implies Storer.
+	// Storer that only serves third parties. Implies Storer.
 	Dropbox bool `json:"dropbox,omitempty"`
-	// Capacity is the storer's spool budget in bytes. Enabling the
-	// storer role requires one; deposits that would exceed it are
-	// refused.
+	// Spool budget in bytes; enabling the storer role requires one.
 	Capacity int64 `json:"capacity,omitempty"`
-	// Inbox is the absolute directory received files land in. Empty
-	// means the default (see DefaultInbox).
+	// Absolute inbox dir; empty means the default.
 	Inbox string `json:"inbox,omitempty"`
 }
 
@@ -58,13 +53,14 @@ func ParseSize(s string) (int64, error) {
 	if err != nil || n < 0 {
 		return 0, fmt.Errorf("daemon: invalid size %q", s)
 	}
+	if n > math.MaxInt64/mult {
+		return 0, fmt.Errorf("daemon: size %q overflows", s)
+	}
 	return n * mult, nil
 }
 
-// DefaultInbox is where received files land when no inbox dir is set: a
-// clowder folder in the OS's downloads directory (see downloadDir),
-// kept distinct from the config dir. It returns "" when no suitable
-// directory is known.
+// DefaultInbox is the clowder folder in the OS's downloads directory, or
+// "" when no suitable directory is known.
 func DefaultInbox() string {
 	d := downloadDir()
 	if d == "" {
@@ -105,16 +101,11 @@ func SetInboxAt(dir, inbox string) error {
 type Env struct {
 	Dir      string
 	Identity *tailcat.PrivateKey
-	// ClientIdentity is the keypair used for all outbound dials. It must
-	// differ from Identity: a cat runs a tailcat server and tailcat
-	// clients concurrently, and two engines sharing one static key with
-	// different per-side pre-shared keys cross-deliver handshakes and
-	// wedge. Peers allowlist this key to authenticate our dials.
+	// Outbound-dial keypair. Must differ from Identity: two engines sharing one
+	// static key cross-deliver handshakes and wedge. Peers allowlist it.
 	ClientIdentity key.NodePrivate
-	// SignPriv is the Ed25519 keypair derived from the node key seed.
-	// It is not stored: the identity regenerates it. Peers know its
-	// public half from Hello and roster entries; it signs the cat's
-	// roster entries and its leave.
+	// Ed25519 keypair derived from the node key seed (not stored; the identity
+	// regenerates it). Signs the cat's roster entries and its leave.
 	SignPriv ed25519.PrivateKey
 	Me       Me
 }
@@ -128,9 +119,8 @@ func saveIdentity(dir string, k *tailcat.PrivateKey) error {
 	return persist.SaveJSON(filepath.Join(dir, "identity.json"), k)
 }
 
-// UpdatePresharedKey persists a new pre-shared key into the identity,
-// changing the cat's tailcat address from the next daemon start. The
-// running daemon keeps serving under the old address until restarted.
+// UpdatePresharedKey persists a new PSK, changing the address from the next
+// daemon start; the running daemon keeps serving under the old one.
 func UpdatePresharedKey(dir string, psk tailcat.PresharedKey) error {
 	var k *tailcat.PrivateKey
 	if _, err := persist.LoadJSON(filepath.Join(dir, "identity.json"), &k); err != nil {
@@ -143,10 +133,8 @@ func UpdatePresharedKey(dir string, psk tailcat.PresharedKey) error {
 	return saveIdentity(dir, k)
 }
 
-// Init creates a new cat identity in dir: a node keypair with a WireGuard
-// pre-shared key (RegionID -1 picks the DERP region automatically at
-// startup), plus the cat's declared name. The directory must not already
-// contain an identity.
+// Init creates a new identity in dir (RegionID -1 auto-picks the DERP
+// region at startup) with the given name. Refuses if dir has an identity.
 func Init(dir, name string) error {
 	if name == "" {
 		return errors.New("daemon: cat name is required")
@@ -173,8 +161,6 @@ func Init(dir, name string) error {
 	return nil
 }
 
-// Open loads the identity and declared state from a config dir created by
-// Init.
 func Open(dir string) (*Env, error) {
 	var k *tailcat.PrivateKey
 	if _, err := persist.LoadJSON(filepath.Join(dir, "identity.json"), &k); err != nil {
@@ -196,7 +182,6 @@ func Open(dir string) (*Env, error) {
 	return &Env{Dir: dir, Identity: k, ClientIdentity: ck, SignPriv: signPriv, Me: me}, nil
 }
 
-// writeClientKey persists an outbound client identity.
 func writeClientKey(dir string, priv key.NodePrivate) error {
 	text, err := priv.MarshalText()
 	if err != nil {

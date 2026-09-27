@@ -69,7 +69,6 @@ func run(args []string) error {
 	}
 }
 
-// shortUsage prints the one-screen command list.
 func shortUsage() error {
 	fmt.Fprint(os.Stderr, `usage: clow <command> [args]
 
@@ -81,7 +80,6 @@ run "clow help" for details.
 	return nil
 }
 
-// longUsage prints the full command reference and conventions.
 func longUsage() error {
 	fmt.Print(`clow - a member of a clowder, an async file-transfer mesh over tailcat
 
@@ -116,7 +114,6 @@ daemon:      every command except init and inbox needs it running
 	return nil
 }
 
-// configDir resolves the cat's config directory.
 func configDir() string {
 	if d := os.Getenv("CLOWDER_DIR"); d != "" {
 		return d
@@ -158,8 +155,7 @@ func cmdInit(args []string) error {
 	return nil
 }
 
-// defaultName derives a cat name from the environment: $CLOWDER_NAME if
-// set (the usual way in containers), else the short hostname.
+// defaultName: $CLOWDER_NAME if set, else the short hostname.
 func defaultName() string {
 	if n := os.Getenv("CLOWDER_NAME"); n != "" {
 		return n
@@ -188,8 +184,7 @@ func cmdDaemon(args []string) error {
 	}
 	dir := configDir()
 	if _, err := os.Stat(filepath.Join(dir, "identity.json")); os.IsNotExist(err) {
-		// First start (typical in a container with a fresh volume):
-		// become a cat before joining the clowder.
+		// First start in a fresh volume: init before joining.
 		if err := daemon.Init(dir, *name); err != nil {
 			return err
 		}
@@ -207,9 +202,7 @@ func cmdDaemon(args []string) error {
 	if err != nil {
 		return err
 	}
-	// CLOWDER_STORER declares the role as desired state, the
-	// container-friendly way: applied on every start, so a restart
-	// reasserts it. Empty means leave the persisted role alone.
+	// Desired state, applied on every start. Empty leaves the role alone.
 	if role := os.Getenv("CLOWDER_STORER"); role != "" {
 		var roleErr error
 		capacity, _ := daemon.ParseSize(os.Getenv("CLOWDER_MAX"))
@@ -233,7 +226,6 @@ func cmdDaemon(args []string) error {
 	return d.Run(ctx)
 }
 
-// call sends one IPC request and prints the reply.
 func call(req daemon.Request) (daemon.Response, error) {
 	return daemon.CallIPC(daemon.IPCPath(configDir()), req)
 }
@@ -251,12 +243,10 @@ func printResp(resp daemon.Response, err error) error {
 	return nil
 }
 
-// cmdInvite starts a pairing code the other cat joins with.
 func cmdInvite() error {
 	return printResp(call(daemon.Request{Op: "invite"}))
 }
 
-// cmdJoin pairs with an inviter using the given code words.
 func cmdJoin(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: clow join <CODE> (the words from `clow invite`)")
@@ -264,7 +254,6 @@ func cmdJoin(args []string) error {
 	return printResp(call(daemon.Request{Op: "join", Words: strings.Join(args, " ")}))
 }
 
-// cmdOutbox manages pending sends; only "clear" exists for now.
 func cmdOutbox(args []string) error {
 	if len(args) != 1 || args[0] != "clear" {
 		return fmt.Errorf("usage: clow outbox clear")
@@ -272,7 +261,6 @@ func cmdOutbox(args []string) error {
 	return printResp(call(daemon.Request{Op: "outbox", Path: "clear"}))
 }
 
-// cmdForget drops a cat from the roster.
 func cmdForget(args []string) error {
 	fs := flag.NewFlagSet("forget", flag.ContinueOnError)
 	if err := fs.Parse(args); err != nil {
@@ -284,7 +272,6 @@ func cmdForget(args []string) error {
 	return printResp(call(daemon.Request{Op: "forget", Target: fs.Arg(0)}))
 }
 
-// cmdDistrust blocks a cat locally, both ways, without gossip.
 func cmdDistrust(args []string) error {
 	fs := flag.NewFlagSet("distrust", flag.ContinueOnError)
 	if err := fs.Parse(args); err != nil {
@@ -296,7 +283,6 @@ func cmdDistrust(args []string) error {
 	return printResp(call(daemon.Request{Op: "distrust", Target: fs.Arg(0)}))
 }
 
-// cmdTrust undoes cmdDistrust.
 func cmdTrust(args []string) error {
 	fs := flag.NewFlagSet("trust", flag.ContinueOnError)
 	if err := fs.Parse(args); err != nil {
@@ -308,11 +294,9 @@ func cmdTrust(args []string) error {
 	return printResp(call(daemon.Request{Op: "trust", Target: fs.Arg(0)}))
 }
 
-// cmdReset wipes the cat's config dir: identity, rosters, spool and
-// outbox. Received files in the inbox dir are outside the config dir and
-// are kept. Refuses while the daemon is running — but a confirmed reset
-// first tells the running daemon to announce a leave to the clowder,
-// while it can still reach anyone.
+// cmdReset wipes the config dir (the inbox is kept). Refuses while the
+// daemon runs: a confirmed reset first tells it to announce a leave while
+// it can still reach anyone.
 func cmdReset(args []string) error {
 	fs := flag.NewFlagSet("reset", flag.ContinueOnError)
 	yes := fs.Bool("yes", false, "skip the confirmation prompt")
@@ -326,9 +310,8 @@ func cmdReset(args []string) error {
 		if err := confirmReset(dir, *yes); err != nil {
 			return err
 		}
-		// Best effort: the daemon broadcasts the signed forget-me; a
-		// cat nobody could reach is forgotten by nobody, but the
-		// reset still proceeds on the next, daemonless run.
+		// Best effort: the leave is announced; the reset proceeds on the next,
+		// daemonless run.
 		resp, lerr := call(daemon.Request{Op: "leave"})
 		if lerr == nil && !resp.OK {
 			lerr = fmt.Errorf("%s", resp.Error)
@@ -351,7 +334,6 @@ func cmdReset(args []string) error {
 	return nil
 }
 
-// confirmReset asks the user to confirm a reset unless yes is set.
 func confirmReset(dir string, yes bool) error {
 	if yes {
 		return nil
@@ -367,7 +349,6 @@ func confirmReset(dir string, yes bool) error {
 	return nil
 }
 
-// dupTag marks names claimed by more than one cat.
 func dupTag(dup bool) string {
 	if dup {
 		return " [duplicate name]"
@@ -375,7 +356,6 @@ func dupTag(dup bool) string {
 	return ""
 }
 
-// nameCounts counts name claims across the roster for dupTag.
 func nameCounts(cats []roster.Cat) map[string]int {
 	counts := map[string]int{}
 	for _, c := range cats {
@@ -384,7 +364,6 @@ func nameCounts(cats []roster.Cat) map[string]int {
 	return counts
 }
 
-// distrustTag marks cats on the local blocklist.
 func distrustTag(on bool) string {
 	if on {
 		return " [distrusted]"
@@ -458,7 +437,6 @@ func cmdStatus(args []string) error {
 		return fmt.Errorf("%s", resp.Error)
 	}
 
-	// Me and directories.
 	if resp.Me != nil {
 		fmt.Printf("me:      %s%s\n", resp.Me.Name, storerTag(resp.Me.Storer, resp.Me.Dropbox))
 		if *addresses {
@@ -468,7 +446,6 @@ func cmdStatus(args []string) error {
 	fmt.Printf("config:  %s\n", configDir())
 	fmt.Printf("inbox:   %s\n", inboxDir())
 
-	// The clowder: one row per cat with liveness and route.
 	distrusted := map[string]bool{}
 	for _, n := range resp.Distrusted {
 		distrusted[n] = true
@@ -492,9 +469,6 @@ func cmdStatus(args []string) error {
 			if p.Direct {
 				route = "direct " + p.Endpoint
 			} else {
-				// The relay's region label is not reliably
-				// recoverable from roster addresses, so keep it
-				// generic.
 				route = "relayed via DERP"
 			}
 		}
@@ -504,7 +478,6 @@ func cmdStatus(args []string) error {
 		}
 	}
 
-	// In-flight transfers, both directions.
 	if len(resp.Progress) > 0 {
 		fmt.Println("\ntransfers:")
 		for _, p := range resp.Progress {
@@ -521,7 +494,6 @@ func cmdStatus(args []string) error {
 		}
 	}
 
-	// Queued but not in flight.
 	fmt.Printf("\noutbox: %d pending\n", len(resp.Outbox))
 	for _, e := range resp.Outbox {
 		queue := sinceStr(e.AddedAt) + " old"
@@ -531,7 +503,6 @@ func cmdStatus(args []string) error {
 		fmt.Printf("  %s -> %s (%s)\n", e.FileName, e.TargetName, queue)
 	}
 
-	// Storer duty.
 	if resp.Spool > 0 || (resp.Me != nil && resp.Me.Storer) {
 		fmt.Printf("\nspool:  %s held", daemon.HumanBytes(resp.SpoolBytes))
 		if resp.Me != nil && resp.Me.Storer && resp.Me.Capacity > 0 {
@@ -540,7 +511,6 @@ func cmdStatus(args []string) error {
 		fmt.Printf(", %d %s\n", resp.Spool, plural(resp.Spool, "file", "files"))
 	}
 
-	// Confirmed deliveries (receipts), newest first.
 	if len(resp.Receipts) > 0 {
 		fmt.Printf("\nreceipts: %d shown\n", len(resp.Receipts))
 		for i := len(resp.Receipts) - 1; i >= 0; i-- {
@@ -549,7 +519,6 @@ func cmdStatus(args []string) error {
 		}
 	}
 
-	// Lifetime counters.
 	if resp.Stats != nil {
 		st := resp.Stats
 		fmt.Printf("\nstats:  sent %d %s (%s), received %d %s (%s)\n",
@@ -560,7 +529,6 @@ func cmdStatus(args []string) error {
 	return nil
 }
 
-// sendingID returns the in-flight send progress for a transfer ID.
 func sendingID(progress []daemon.Progress, id string) (daemon.Progress, bool) {
 	for _, p := range progress {
 		if p.ID == id && !p.Receiving {
@@ -570,7 +538,6 @@ func sendingID(progress []daemon.Progress, id string) (daemon.Progress, bool) {
 	return daemon.Progress{}, false
 }
 
-// plural picks the singular or plural form for n.
 func plural(n int, one, many string) string {
 	if n == 1 {
 		return one
@@ -578,8 +545,7 @@ func plural(n int, one, many string) string {
 	return many
 }
 
-// rateSuffix renders an in-flight transfer's current rate, when enough
-// of a window has elapsed to measure one.
+// rateSuffix renders the transfer rate, when measurable.
 func rateSuffix(p daemon.Progress) string {
 	if p.Bps <= 0 {
 		return ""
@@ -587,12 +553,10 @@ func rateSuffix(p daemon.Progress) string {
 	return fmt.Sprintf(" at %s/s", daemon.HumanBytes(int64(p.Bps)))
 }
 
-// sinceStr renders how long ago a unix time was, e.g. "4s" or "1m20s".
 func sinceStr(unix int64) string {
 	return time.Since(time.Unix(unix, 0)).Round(time.Second).String()
 }
 
-// inboxDir resolves where received files land for the current config dir.
 func inboxDir() string { return daemon.InboxDir(configDir()) }
 
 // cmdInbox lists received files with their full paths, or sets the
@@ -609,9 +573,8 @@ func cmdInbox(args []string) error {
 			return err
 		}
 		dir := configDir()
-		// A running daemon applies the change live; without one the
-		// new inbox persists for the next start instead of failing on
-		// the IPC socket.
+		// A running daemon applies it live; without one it persists for the
+		// next start.
 		if conn, err := net.Dial("unix", daemon.IPCPath(dir)); err == nil {
 			_ = conn.Close()
 			return printResp(call(daemon.Request{Op: "setinbox", Path: abs}))

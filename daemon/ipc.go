@@ -66,10 +66,8 @@ func shortAddr(a string) string {
 // IPCPath returns the daemon's IPC socket path for a config dir.
 func IPCPath(dir string) string { return filepath.Join(dir, "clow.sock") }
 
-// listenIPC listens on a unix socket, or a TCP address if path contains a
-// colon (useful for tests). The unix socket is user-only: any local
-// process could otherwise drive the daemon, including rotating its
-// identity.
+// listenIPC listens on a unix socket (0600: any local process could
+// otherwise drive the daemon), or TCP if path contains a colon (tests).
 func listenIPC(path string) (net.Listener, error) {
 	if strings.Contains(path, ":") {
 		return net.Listen("tcp", path)
@@ -86,7 +84,6 @@ func listenIPC(path string) (net.Listener, error) {
 	return ln, nil
 }
 
-// serveIPCConn handles one CLI connection: one request, one response.
 func (d *Daemon) serveIPCConn(conn net.Conn) {
 	defer func() { _ = conn.Close() }()
 	_ = conn.SetDeadline(time.Now().Add(2 * time.Minute))
@@ -243,8 +240,6 @@ func (d *Daemon) handleIPC(req Request) Response {
 	}
 }
 
-// CallIPC is the CLI's client: dial the daemon's socket, send one
-// request, read one response.
 func CallIPC(path string, req Request) (Response, error) {
 	var conn net.Conn
 	var err error

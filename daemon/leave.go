@@ -1,13 +1,9 @@
 package daemon
 
-// Leaving the clowder. A cat's leave is a signed forget-me: the
-// leaver broadcasts a leave tombstone to every reachable peer, each
-// recipient drops the leaver (roster entry, allowlist, held files,
-// pending sends) and re-broadcasts once, and the tombstone rides
-// every roster sync so offline peers catch up on wake. A tombstone
-// outlives unsigned re-adds; only a newer entry signed by the
-// leaver's own sign key (a re-pair) resurrects it — see
-// roster.ApplyTombstones.
+// Leaving the clowder. A leave is a signed tombstone broadcast to every
+// reachable peer and carried by roster sync; recipients drop the leaver
+// (roster, allowlist, spool, outbox) and re-broadcast once. Only a re-pair
+// (newer signed entry) resurrects — see roster.ApplyTombstones.
 
 import (
 	"context"
@@ -17,12 +13,10 @@ import (
 	"clowder/roster"
 )
 
-// Leave broadcasts a signed forget-me to every reachable peer, then
-// discards the clowder locally: roster, outbox, spool and blocklist
-// are wiped (tombstones included, so a later pairing starts clean).
-// The identity is kept; pair again with invite/join to join a
-// clowder. It returns the number of peers the leave reached — a cat
-// nobody could reach has still left locally.
+// Leave broadcasts the leave, then wipes the clowder locally (roster,
+// outbox, spool, blocklist — tombstones included); the identity is kept.
+// Returns how many peers were reached; a cat nobody could reach has still
+// left locally.
 func (d *Daemon) Leave(ctx context.Context) (int, error) {
 	me := d.Me()
 	all := d.ros.All()
@@ -73,15 +67,12 @@ func (d *Daemon) Leave(ctx context.Context) (int, error) {
 	return announced, nil
 }
 
-// hasLeft reports whether the cat has left the clowder.
 func (d *Daemon) hasLeft() bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.left
 }
 
-// handleLeave processes a leave received from a peer on an open
-// connection: claim it, apply it, re-broadcast once.
 func (d *Daemon) handleLeave(l *protocol.LeaveMsg) {
 	if l.Key == d.Me().Key {
 		return // our own leave echoing back
@@ -94,12 +85,9 @@ func (d *Daemon) handleLeave(l *protocol.LeaveMsg) {
 	}, true)
 }
 
-// handleTombstone applies one leave tombstone and re-broadcasts it to
-// every other reachable peer. claim guards the re-broadcast: each
-// leave is processed and forwarded once per cat (claim false for
-// tombstones discovered in a roster sync, where a duplicate would
-// loop between sync partners — ApplyTombstones is idempotent, the
-// re-broadcast is not).
+// handleTombstone applies one tombstone and re-broadcasts it; claim guards
+// the re-broadcast (each leave is forwarded once per cat — ApplyTombstones
+// is idempotent, the re-broadcast is not).
 func (d *Daemon) handleTombstone(t roster.Tombstone, claim bool) {
 	if claim && !d.claimLeave(t.Key, t.Time) {
 		return
@@ -110,9 +98,7 @@ func (d *Daemon) handleTombstone(t roster.Tombstone, claim bool) {
 	d.rebroadcastLeave(t)
 }
 
-// claimLeave records that a leave (leaver, time) is being processed,
-// reporting false for one this cat has already seen. A newer time
-// for the same leaver (a leave, then a re-pair, then another leave)
+// claimLeave reports false for a (leaver, time) already seen; a newer time
 // is processed again.
 func (d *Daemon) claimLeave(key string, at int64) bool {
 	d.mu.Lock()
@@ -124,10 +110,8 @@ func (d *Daemon) claimLeave(key string, at int64) bool {
 	return true
 }
 
-// applyTombstone verifies and applies one leave tombstone locally:
-// the leaver leaves the roster, the allowlist (blocked.json, since
-// tailcat's AllowedClients is add-only), the spool and the outbox.
-// It reports whether the tombstone changed local state.
+// applyTombstone drops the leaver from roster, blocklist, spool and outbox;
+// reports whether local state changed.
 func (d *Daemon) applyTombstone(t roster.Tombstone) bool {
 	entry, _ := d.ros.GetByKey(t.Key)
 	applied := d.ros.ApplyTombstones([]roster.Tombstone{t})
@@ -157,9 +141,7 @@ func (d *Daemon) applyTombstone(t roster.Tombstone) bool {
 	return true
 }
 
-// rebroadcastLeave forwards an applied leave to every reachable
-// peer except the leaver. First-arrival claim on the receiving side
-// bounds the flood: each cat re-broadcasts once.
+// rebroadcastLeave forwards an applied leave once per cat (claim-guarded).
 func (d *Daemon) rebroadcastLeave(t roster.Tombstone) {
 	msg := &protocol.Message{Leave: &protocol.LeaveMsg{
 		Key:     t.Key,

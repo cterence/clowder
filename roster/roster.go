@@ -1,7 +1,5 @@
-// Package roster tracks the cats this cat knows: their declared names,
-// tailcat addresses, and whether they volunteer as storers. Entries are
-// identified by the cat's node public key (the unguessable part of its
-// tailcat address), merged last-write-wins by timestamp, and never deleted.
+// Package roster tracks the cats this cat knows, identified by node public
+// key, merged last-write-wins by timestamp, and never deleted.
 package roster
 
 import (
@@ -16,19 +14,16 @@ import (
 	"clowder/persist"
 )
 
-// Cat is one member of the clowder. Key is the cat's node public key in
-// string form (as produced by key.NodePublic.String), Addr its tailcat
-// address, and Updated the unix time of the last change, used for
-// last-write-wins merge.
+// Cat is one clowder member. Key is the node public key in string form,
+// Addr the tailcat address, Updated the unix time of the last change (LWW).
 type Cat struct {
 	Name      string `json:"name" cbor:"n"`
 	Addr      string `json:"addr" cbor:"a"`
 	Key       string `json:"key" cbor:"k"`                            // node identity (the address's key)
 	ClientKey string `json:"client_key,omitempty" cbor:"c,omitempty"` // outbound-dial identity peers allowlist
 	Storer    bool   `json:"storer,omitempty" cbor:"s,omitempty"`
-	// Dropbox marks a storer that only serves third parties: it holds
-	// and relays files for others but takes no deliveries for itself
-	// and cannot originate sends. Implies Storer.
+	// A storer that only serves third parties: no deliveries to itself, no
+	// originating sends. Implies Storer.
 	Dropbox bool `json:"dropbox,omitempty" cbor:"d,omitempty"`
 	// Capacity is the storer's spool budget in bytes (storer only).
 	Capacity int64 `json:"capacity,omitempty" cbor:"p,omitempty"`
@@ -139,10 +134,8 @@ func (r *Roster) saveLocked() error {
 	return nil
 }
 
-// Get returns the cat with the given declared name. Names are not
-// unique (identity is the key); when more than one cat claims the
-// name, the newest entry wins so lookups are deterministic — see
-// Duplicates for spotting the collision.
+// Get returns the cat with the given name. Names are not unique (identity
+// is the key); the newest entry wins, so lookups are deterministic.
 func (r *Roster) Get(name string) (Cat, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -241,21 +234,13 @@ func (r *Roster) Add(c Cat) error {
 	return err
 }
 
-// Merge applies incoming cats with last-write-wins semantics: an incoming
-// entry replaces the local one if its Updated is newer, or if Updated is
-// equal and its Addr sorts greater (a deterministic tie-break so all cats
-// converge). Entries with an empty Key are skipped. A key carrying a
-// leave tombstone is refused unless the entry is a newer, validly signed
-// rejoin by the leaver itself (see ApplyTombstones). For keys already
-// known, the entry must be signed by the pinned sign key — the same
-// Ed25519 key announced in the local entry — so no trusted cat can
-// inject or override another cat's entry; a known key whose local entry
-// has no sign key yet (a pre-signing roster) pins the incoming one.
-// It returns the entries that changed local state, so callers can
-// react (e.g. allowing the new keys). The roster is persisted if
-// anything changed. MaxClockSkew bounds how far an incoming entry's
-// timestamp may lie in the future: a malicious or broken-clocked cat
-// must not win every future merge with a far-future timestamp.
+// Merge applies incoming cats LWW: newer Updated wins, ties broken by Addr
+// then Name so all cats converge. A tombstoned key is refused unless the
+// entry is a newer, validly signed rejoin by the leaver. Known keys must
+// be signed by the pinned sign key, so no cat can inject or override
+// another's entry; a pre-signing local entry pins the first sign key it
+// sees. Returns the entries that changed state. MaxClockSkew bounds future
+// timestamps, so a broken clock cannot win every merge.
 const MaxClockSkew = 5 * time.Minute
 
 func (r *Roster) Merge(cats []Cat) (changed []Cat, err error) {
@@ -269,9 +254,8 @@ func (r *Roster) Merge(cats []Cat) (changed []Cat, err error) {
 			continue // impossible timestamp: never let it win
 		}
 		if t, ok := r.tombstones[c.Key]; ok {
-			// The leaver rejoining is the only resurrection: an
-			// entry newer than the leave, signed by the leaver's
-			// sign key (pinned in the tombstone itself).
+			// The leaver rejoining is the only resurrection: newer than the leave,
+			// signed by the sign key pinned in the tombstone.
 			if c.SignKey != t.SignKey || c.Updated <= t.Time || !verifyEntry(c) {
 				continue
 			}

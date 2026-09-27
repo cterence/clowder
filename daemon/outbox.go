@@ -12,10 +12,8 @@ import (
 	"clowder/persist"
 )
 
-// Entry is one pending outbound send: a source file on this cat's disk
-// destined for a target cat, retried until the target or a storer accepts
-// it. The file is re-sealed per attempt, so the outbox never holds a
-// second copy of the file's bytes.
+// Entry is one pending outbound send: a source file retried until the
+// target or a storer accepts it. The file is re-sealed per attempt.
 type Entry struct {
 	ID         string `json:"id"`
 	TargetName string `json:"target_name"`
@@ -23,13 +21,9 @@ type Entry struct {
 	SourcePath string `json:"source_path"`
 	FileName   string `json:"file_name"`
 	AddedAt    int64  `json:"added_at"`
-	// SealSecret is the transfer's fixed per-stream secret
-	// (hex-encoded envelope.SecretLen bytes), generated once at Send
-	// time: every delivery attempt seals with it, so retried attempts
-	// emit byte-identical sealed frames and a receiver can resume
-	// where a previous attempt stopped. Empty for entries queued
-	// before resume support: those seal with a fresh random secret
-	// per attempt and never set Offer.Resumable.
+	// Fixed per-stream secret (hex envelope.SecretLen bytes) generated at Send
+	// time, so retried attempts re-emit identical sealed frames and a receiver
+	// can resume. Empty for pre-resume entries: fresh random secret per attempt.
 	SealSecret string `json:"seal_secret,omitempty"`
 }
 
@@ -96,8 +90,7 @@ func (o *outbox) All() []Entry {
 	return entries
 }
 
-// Delete removes a pending entry. Deleting a missing entry is not an
-// error.
+// Delete removes a pending entry; a missing entry is not an error.
 func (o *outbox) Delete(id string) error {
 	err := os.Remove(filepath.Join(o.dir, id+".json"))
 	if os.IsNotExist(err) {

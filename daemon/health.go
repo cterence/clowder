@@ -9,12 +9,8 @@ import (
 	"time"
 )
 
-// healthHandler serves the container probe endpoint: GET / and
-// /healthz answer 200 "ok" while the daemon is running, anything else
-// 404. With pprof set it also serves the net/http/pprof handlers
-// under /debug/pprof/ — profiling must be an explicit opt-in, never
-// riding along on every health port: profiling endpoints leak
-// internals.
+// healthHandler serves GET / and /healthz (200 "ok"), 404 elsewhere.
+// pprof is an explicit opt-in — profiling endpoints leak internals.
 func healthHandler(pprof bool) http.Handler {
 	mux := http.NewServeMux()
 	ok := func(w http.ResponseWriter, _ *http.Request) {
@@ -42,8 +38,6 @@ func healthHandler(pprof bool) http.Handler {
 	return mux
 }
 
-// listenHealth binds the health endpoint address. The caller owns the
-// listener and the server.
 func listenHealth(addr string, pprof bool) (net.Listener, *http.Server, error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {

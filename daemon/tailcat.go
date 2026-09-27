@@ -12,28 +12,26 @@ import (
 	"tailscale.com/types/key"
 )
 
-// TailcatTransport is the production Transport: it runs a tailcat Server
-// under the cat's identity key and dials peers with tailcat Clients
-// under a separate client key. The keys must differ: server and client
-// engines sharing one static key cross-deliver each other's handshakes
-// (their per-side pre-shared keys differ) and the connection wedges.
+// TailcatTransport is the production Transport: a tailcat Server under the
+// identity key, dials via tailcat Clients under a separate client key.
+// The keys must differ: two engines sharing one static key (with different
+// per-side PSKs) cross-deliver handshakes and wedge.
 type TailcatTransport struct {
 	Port uint16
 	Key  *tailcat.PrivateKey
-	// ClientKey is the identity all outbound dials use. Peers must
-	// allowlist its public form.
+	// Outbound-dial identity; peers allowlist its public form.
 	ClientKey key.NodePrivate
-	// DERPMapURL, if set, is where the server and dialed clients
-	// fetch the DERP map from instead of tailcat's default.
+	// Where the server and dialed clients fetch the DERP map; empty = default.
 	DERPMapURL string
 	Logf       func(format string, args ...any)
 
-	mu      sync.Mutex
-	pending []key.NodePublic           // allows before Listen
-	srv     *tailcat.Server            // non-nil after Listen
-	clients map[string]*tailcat.Client // one client per peer address
-	lastUse map[string]time.Time       // per address, for idle eviction
-	evict   chan struct{}              // closes when the sweeper stops
+	mu       sync.Mutex
+	pending  []key.NodePublic           // allows before Listen
+	srv      *tailcat.Server            // non-nil after Listen
+	clients  map[string]*tailcat.Client // one client per peer address
+	lastUse  map[string]time.Time       // per address, for idle eviction
+	inflight map[string]int             // open dials per address: never evict these
+	evict    chan struct{}              // closes when the sweeper stops
 }
 
 // Idle-engine eviction: a cached client holds a live WireGuard engine
@@ -43,8 +41,6 @@ const (
 	idleEvictMax      = 10 * time.Minute
 )
 
-// NewTailcatTransport returns a transport serving the cat's identity on
-// the given clowder protocol port, dialing out with clientKey.
 func NewTailcatTransport(k *tailcat.PrivateKey, clientKey key.NodePrivate, port uint16, logf func(format string, args ...any)) *TailcatTransport {
 	return &TailcatTransport{Port: port, Key: k, ClientKey: clientKey, Logf: logf}
 }
@@ -98,17 +94,20 @@ func (t *TailcatTransport) Allow(peer key.NodePublic) {
 	t.srv.AddAllowedClient(peer)
 }
 
-// Dial connects to the clowder port of the cat at the given tailcat
-// address. Clients are cached per address: each holds a WireGuard
-// engine, and a cat dials the same peers repeatedly.
-// clientFor returns the cached client for an address, creating it on
-// first use. Each client holds a WireGuard engine, and a cat dials the
-// same peers repeatedly.
+// Dial connects to the clowder port at addr. Clients are cached per
+// address (each holds a WireGuard engine, and we dial the same peers
+// repeatedly); clientFor creates one on first use.
 func (t *TailcatTransport) clientFor(addr string) *tailcat.Client {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.clients == nil {
 		t.clients = map[string]*tailcat.Client{}
+	}
+	if t.lastUse == nil {
+		t.lastUse = map[string]time.Time{}
+	}
+	if t.inflight == nil {
+		t.inflight = map[string]int{}
 	}
 	c, ok := t.clients[addr]
 	if !ok {
@@ -124,15 +123,15 @@ func (t *TailcatTransport) clientFor(addr string) *tailcat.Client {
 	return c
 }
 
-// evictIdle closes clients idle beyond maxIdle. Called from the
-// sweeper goroutine started at Listen; a later dial rebuilds the
-// client from the current roster entry (the peer may have rotated its
-// address).
+// evictIdle closes clients idle beyond maxIdle — never ones with an
+// open dial (a streaming transfer outlives the idle window); a later
+// dial rebuilds from the current roster entry (the peer may have
+// rotated its address).
 func (t *TailcatTransport) evictIdle(maxIdle time.Duration) {
 	t.mu.Lock()
 	now := time.Now()
 	for addr, last := range t.lastUse {
-		if now.Sub(last) <= maxIdle {
+		if now.Sub(last) <= maxIdle || t.inflight[addr] > 0 {
 			continue
 		}
 		if c, ok := t.clients[addr]; ok {
@@ -160,23 +159,17 @@ func (t *TailcatTransport) sweepIdle(interval, maxIdle time.Duration) {
 
 func (t *TailcatTransport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	c := t.clientFor(addr)
-	// Liveness first, with a real round trip: tailcat's meow Ping is
-	// one-shot per client (a cached client that has ever talked to the
-	// peer reports success instantly, dead or not), so probing with it
-	// lets a just-went-offline peer pass and the dial below wedges in
-	// netstack SYN retries for the caller's whole context. A disco ping
-	// has no such one-shot state: one ping is a cheap round trip for a
-	// live peer and a bounded failure for a dead one, and it also
-	// triggers direct-path discovery.
+	// Liveness first, with a real round trip: tailcat's meow Ping is one-shot
+	// per client, so it lets a just-went-offline peer pass and the dial wedges
+	// in SYN retries. A disco ping is a cheap round trip for a live peer, a
+	// bounded failure for a dead one, and triggers direct-path discovery.
 	pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if _, err := c.DiscoPing(pingCtx); err != nil {
 		t.dropClient(addr, c)
 		return nil, err
 	}
-	// Bound the tunnel dial as well: a peer that pongs but has a dead
-	// tunnel session must fail in seconds, not starve the storer
-	// fallback until the (multi-minute) delivery context ends.
+	// Bound the tunnel dial too: a dead session must fail in seconds.
 	dialCtx, cancelDial := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelDial()
 	conn, err := c.DialTCPPort(dialCtx, t.Port)
@@ -184,14 +177,37 @@ func (t *TailcatTransport) Dial(ctx context.Context, addr string) (net.Conn, err
 		t.dropClient(addr, c)
 		return nil, err
 	}
-	return conn, nil
+	t.mu.Lock()
+	if t.inflight == nil {
+		t.inflight = map[string]int{}
+	}
+	t.inflight[addr]++
+	t.mu.Unlock()
+	return &dialConn{Conn: conn, t: t, addr: addr}, nil
 }
 
-// dropClient closes and forgets a cached client: a client holds a live
-// WireGuard engine, and one abandoned mid-handshake keeps retrying the
-// unreachable peer forever (log spam and a goroutine leak). The next
-// use rebuilds it from the current roster entry (the peer may have
-// re-paired with a new address).
+// dialConn decrements its address's in-flight count on Close, so the
+// idle sweeper never closes a client an open stream is using.
+type dialConn struct {
+	net.Conn
+	t    *TailcatTransport
+	addr string
+}
+
+func (c *dialConn) Close() error {
+	err := c.Conn.Close()
+	c.t.mu.Lock()
+	if c.t.inflight[c.addr] <= 1 {
+		delete(c.t.inflight, c.addr)
+	} else {
+		c.t.inflight[c.addr]--
+	}
+	c.t.mu.Unlock()
+	return err
+}
+
+// dropClient closes and forgets a cached client: one abandoned mid-handshake
+// retries the unreachable peer forever. The next use rebuilds it.
 func (t *TailcatTransport) dropClient(addr string, c *tailcat.Client) {
 	_ = c.Close()
 	t.mu.Lock()
@@ -199,9 +215,8 @@ func (t *TailcatTransport) dropClient(addr string, c *tailcat.Client) {
 	t.mu.Unlock()
 }
 
-// Ping probes the path to the cat at the given tailcat address with a
-// disco ping, which also triggers direct-path discovery: probing can
-// upgrade a relayed connection to a direct one.
+// Ping probes the path with a disco ping, which also triggers direct-path
+// discovery.
 func (t *TailcatTransport) Ping(ctx context.Context, addr string) (PathInfo, error) {
 	c := t.clientFor(addr)
 	res, err := c.DiscoPing(ctx)
@@ -230,8 +245,6 @@ func (t *TailcatTransport) PeerKey(remote net.Addr) (key.NodePublic, bool) {
 	return t.srv.PeerKey(remote)
 }
 
-// Close shuts down the server, the eviction sweeper, and any dialed
-// clients.
 func (t *TailcatTransport) Close() error {
 	t.mu.Lock()
 	srv := t.srv

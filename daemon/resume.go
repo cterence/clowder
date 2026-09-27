@@ -1,20 +1,12 @@
 package daemon
 
-// Resumable receives: a receiver keeps a partially transferred file
-// on disk (parts/<id>.part plus a small sidecar) and, when the same
-// transfer is offered again, answers with the sealed-stream offset it
-// wants the rest from instead of starting over. This works because a
-// resumable sender seals every attempt of one transfer with the same
-// per-stream secret, so the frames it re-sends are byte-identical to
-// the originals (see envelope.SealStreamAt): the receiver's kept
-// prefix stays valid across retries. Its end-to-end checks are
-// unchanged — the assembled plaintext must still match the announced
-// size and digest before anything lands in the inbox.
-//
-// Parts live under <config>/parts. They are removed on completion, on
-// an offer/size/digest mismatch (a restart-from-zero), and — for
-// transfers that never come back — by cleanupParts once they stop
-// progressing.
+// Resumable receives: a partial transfer stays on disk (parts/<id>.part
+// plus a sidecar), and a re-offer answers with the offset to continue from
+// instead of restarting — safe because a resumable sender re-seals every
+// attempt with the same secret, so re-sent frames are byte-identical. The
+// assembled plaintext must still match the announced size and digest
+// before anything lands in the inbox. Stale parts are removed on mismatch
+// and by cleanupParts once they stop progressing.
 
 import (
 	"crypto/sha256"
@@ -31,10 +23,8 @@ import (
 	"clowder/protocol"
 )
 
-// partState is the durable sidecar of a partially received transfer.
-// Size and SHA256 pin the announced values of the offer the part came
-// from: an offer for the same ID but different values means the part
-// does not belong to it, and receiving restarts from zero.
+// partState is the durable sidecar of a partial receive. Size and SHA256
+// pin the offer's announced values: a mismatch restarts from zero.
 type partState struct {
 	ID        string `json:"id"`
 	FileName  string `json:"file_name"`
@@ -45,9 +35,7 @@ type partState struct {
 	UpdatedAt int64  `json:"updated"` // unix seconds of the last checkpoint
 }
 
-// partTTL is how long an unfinished part survives without progress
-// before the sweep deletes it: an offer that never returns is
-// eventually forgotten, like a spool entry past its TTL.
+// How long an unfinished part survives without progress.
 const partTTL = 7 * 24 * time.Hour
 
 func partsDir(dir string) string          { return filepath.Join(dir, "parts") }
@@ -63,12 +51,9 @@ func loadPart(dir, id string) (partState, bool) {
 	return st, true
 }
 
-// resumePoint reports the sealed-stream offset a retry of offer o
-// should continue from, 0 for a fresh receive. A part only counts
-// when its sidecar matches the offer's announced file name, size and
-// digest and its .part file really holds the recorded plaintext
-// prefix; anything else means the part is unusable and the transfer
-// starts fresh (the stale files are removed).
+// resumePoint reports the offset a retry should continue from, 0 for a
+// fresh receive. A part only counts when sidecar and part file match the
+// offer; anything else restarts fresh (stale files removed).
 func (d *Daemon) resumePoint(o *protocol.Offer) int64 {
 	st, ok := loadPart(d.cfg.Dir, o.ID)
 	if !ok {
@@ -86,12 +71,10 @@ func (d *Daemon) resumePoint(o *protocol.Offer) int64 {
 		d.dropPart(o.ID)
 		return 0
 	}
-	// Clamp to the last full-chunk boundary: a checkpoint taken after
-	// the final chunk (a cut in the terminator window) names the end
-	// of a short frame, which SealedToPlain rejects on both sides —
-	// answering with it verbatim wedges the transfer, retrying an
-	// offset no attempt can use. The plaintext past the boundary is
-	// discarded and re-sent (receiveResumable truncates to it).
+	// Clamp to the last full-chunk boundary: a checkpoint after the final
+	// chunk names the end of a short frame, which SealedToPlain rejects —
+	// answering with it wedges the transfer. The plaintext past the
+	// boundary is re-sent.
 	resume := envelope.LastResumeBoundary(st.PlainLen)
 	if resume <= envelope.HeaderLen {
 		// Less than one full chunk held: not worth resuming.
@@ -107,9 +90,7 @@ func (d *Daemon) dropPart(id string) {
 	_ = os.Remove(partStatePath(d.cfg.Dir, id))
 }
 
-// checkpointPart persists a partial receive after a chunk boundary:
-// the resume offset (the start of the next frame) and the plaintext
-// length the .part file now holds.
+// checkpointPart persists the resume offset and plaintext length so far.
 func (d *Daemon) checkpointPart(o *protocol.Offer, offset, plainLen int64) {
 	st := partState{
 		ID:        o.ID,
@@ -125,9 +106,7 @@ func (d *Daemon) checkpointPart(o *protocol.Offer, offset, plainLen int64) {
 	}
 }
 
-// cleanupParts drops parts whose sidecar is older than partTTL, plus
-// orphaned files without their counterpart. Called from the poll
-// tick.
+// cleanupParts drops parts idle beyond partTTL, plus orphans.
 func (d *Daemon) cleanupParts() {
 	dir := partsDir(d.cfg.Dir)
 	des, err := os.ReadDir(dir)
@@ -154,12 +133,9 @@ func (d *Daemon) cleanupParts() {
 	}
 }
 
-// receiveResumable answers offer o with the sealed-stream offset this
-// receiver wants the rest from (resume, 0 for a fresh receive), decrypts
-// the attempt's stream into the partial-receive file, checkpoints after
-// each chunk, and — once the assembled plaintext matches the announced
-// size and digest — moves it into the inbox. It returns the whole
-// plaintext size and whether the exchange completed.
+// receiveResumable answers with our offset, decrypts into the part file,
+// checkpoints per chunk, and moves the assembled plaintext into the inbox
+// once it matches the announced size and digest.
 func (d *Daemon) receiveResumable(pc *protocol.Conn, o *protocol.Offer, resume int64) (int64, bool) {
 	if err := pc.AnswerResume(o.ID, resume); err != nil {
 		return 0, false
@@ -171,10 +147,8 @@ func (d *Daemon) receiveResumable(pc *protocol.Conn, o *protocol.Offer, resume i
 		return 0, false
 	}
 
-	// A resumed attempt carries the header plus the frames from
-	// resume onward; a fresh one carries the whole announced stream.
-	// The sender must send exactly that many bytes (the size-lie
-	// check mirrors saveIncoming's).
+	// A resumed attempt carries the header plus the frames from resume; the
+	// sender must send exactly that many bytes (the size-lie check).
 	expected := o.Size
 	if resume > 0 {
 		expected = int64(envelope.HeaderLen) + o.Size - resume
@@ -185,12 +159,8 @@ func (d *Daemon) receiveResumable(pc *protocol.Conn, o *protocol.Offer, resume i
 	var f *os.File
 	var err error
 	if resume > 0 {
-		// resume names a full-chunk boundary (resumePoint clamped it),
-		// so the plaintext it maps to is what the part file must hold
-		// exactly. Truncate away anything past it — a torn tail from a
-		// killed process, or the final short chunk a checkpoint after
-		// the boundary had already written — so the suffix appends to
-		// a clean prefix, and checkpoint the state before streaming.
+		// Truncate the part to the boundary's plaintext — a torn tail from a
+		// killed process — so the suffix appends to a clean prefix.
 		plainKept, _, err = envelope.SealedToPlain(resume)
 		if err == nil {
 			f, err = os.OpenFile(partPath(d.cfg.Dir, o.ID), os.O_WRONLY, 0o600)
@@ -228,8 +198,7 @@ func (d *Daemon) receiveResumable(pc *protocol.Conn, o *protocol.Offer, resume i
 		return err
 	}()
 	if openErr != nil {
-		// Cut the part back to the recorded prefix: a stream that
-		// died mid-chunk must not leave a torn tail appended.
+		// Cut the part back to the recorded prefix: no torn tail.
 		if st, ok := loadPart(d.cfg.Dir, o.ID); ok && st.PlainLen > 0 {
 			_ = os.Truncate(partPath(d.cfg.Dir, o.ID), st.PlainLen)
 		} else {
@@ -252,9 +221,8 @@ func (d *Daemon) receiveResumable(pc *protocol.Conn, o *protocol.Offer, resume i
 	return size, true
 }
 
-// finishPart verifies the assembled plaintext against the announced
-// digest, moves the part file into the inbox under a unique name, and
-// drops the partial-receive state.
+// finishPart verifies the digest, moves the part into the inbox, drops
+// the sidecar.
 func (d *Daemon) finishPart(o *protocol.Offer, plainLen int64) (int64, error) {
 	src := partPath(d.cfg.Dir, o.ID)
 	fi, err := os.Stat(src)

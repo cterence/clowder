@@ -1,12 +1,9 @@
 package daemon
 
-// pairingWords is the wordlist for invite/join pairing codes: 1024
-// short, lowercase, easily-readable words. Eight words give 80 bits of
-// entropy against active guessing (wrong words fail the WireGuard
-// handshake); eight, not five, because the words also derive the
-// pairing tunnel's static keys and a recorded handshake's MAC1 is an
-// offline oracle (see pairing_mac1_test.go) — a precomputed 2^80
-// candidate table is out of anyone's reach. TestPairingWords locks in
+// pairingWords is the wordlist for pairing codes: 1024 short lowercase words
+// (8 words = 80 bits). Eight, not five, because the words also derive the
+// pairing tunnel's static keys and a recorded handshake's MAC1 is an offline
+// oracle — see AGENTS.md and pairing_mac1_test.go. TestPairingWords locks in
 // the count and uniqueness.
 var pairingWords = []string{
 	"able", "acorn", "acre", "act", "adobe", "agora", "airy", "alarm",

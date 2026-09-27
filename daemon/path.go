@@ -1,10 +1,8 @@
 package daemon
 
-// Path probing: whether traffic to a cat flows direct (peer-to-peer
-// UDP) or via a DERP relay. `clow status` reads the background cache
-// (pathSnapshot); refreshPaths keeps it warm, and a disco ping also
-// triggers direct-path discovery, so the refresh loop upgrades
-// relayed paths to direct ones on its own.
+// Path probing: direct (peer-to-peer UDP) or via a DERP relay. refreshPaths
+// keeps the background cache warm (`clow status` never probes); a disco
+// ping also triggers direct-path discovery, upgrading relayed paths.
 
 import (
 	"context"
@@ -15,20 +13,12 @@ import (
 )
 
 const (
-	// pathProbeTimeout bounds one background probe: a direct LAN path
-	// answers in single-digit milliseconds, a DERP-relayed one in a
-	// few hundred, so a full second is generous headroom.
+	// Bounds one background probe (a DERP-relayed answer is a few hundred ms).
 	pathProbeTimeout = time.Second
 )
 
-// refreshPaths probes the path of every roster cat, in parallel, and
-// swaps the results into the paths cache. Probing runs in the
-// background (never on the status path), so an unreachable cat costs
-// nothing user-visible: its ping just times out and it drops out of
-// the cache for another round. Probing every cat — not just recently
-// seen ones — means routes appear within one refresh of daemon start,
-// before any handshake has had a chance to record liveness.
-// Called once at startup and on every poll tick.
+// refreshPaths probes every roster cat in parallel and swaps the results
+// into the cache. Runs only in the background, at startup and per poll tick.
 func (d *Daemon) refreshPaths(ctx context.Context) {
 	p, ok := d.tr.(Pinger)
 	if !ok {
@@ -60,9 +50,7 @@ func (d *Daemon) refreshPaths(ctx context.Context) {
 	d.mu.Unlock()
 }
 
-// pathSnapshot copies the cached path info for the status op. It
-// never probes and never blocks on the network: a status call answers
-// instantly with whatever the last background refresh collected.
+// pathSnapshot copies the cache; it never probes or blocks.
 func (d *Daemon) pathSnapshot() map[string]*PathInfo {
 	d.mu.Lock()
 	defer d.mu.Unlock()

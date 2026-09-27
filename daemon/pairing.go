@@ -1,21 +1,12 @@
 package daemon
 
-// Pairing lets two cats exchange their real tailcat identities by
-// reading a few words to each other instead of copy-pasting ~100-byte
-// addresses. `clow invite` derives two ephemeral tailcat identities and
-// a shared PSK from eight random words; the invitee runs `clow join` with
-// the same words, derives the same material, and the two daemons meet on
-// a fixed DERP region. Over that throwaway WireGuard tunnel each sends
-// a PairIntro carrying its real name and address, and both add each
-// other to their rosters. The words never travel, and no private key is
-// ever derived by the "wrong" side. Active guessing is hopeless (a
-// wrong-word join dies in the WireGuard handshake, invisible to the
-// daemon layer, before any protocol byte is exchangeable). But guessing
-// is NOT purely active: the handshake's MAC1 is keyed by the inviter's
-// word-derived static public key, so a recorded pairing handshake is
-// an offline oracle for candidate word codes — see
-// pairing_mac1_test.go and the "Why 8 words" invariant in AGENTS.md
-// for the finding, the window math, and the pairing-v2 fix.
+// Pairing: two cats exchange real tailcat identities by reading eight
+// words to each other. Both sides derive ephemeral keys and a shared PSK
+// from the words, meet on a fixed DERP region, and swap PairIntros over
+// the throwaway tunnel; the words never travel. Wrong words die in the
+// WireGuard handshake — but its MAC1 is keyed by the word-derived static
+// key, so a recorded handshake is an offline oracle for candidate codes;
+// see the "Why 8 words" invariant in AGENTS.md and pairing_mac1_test.go.
 
 import (
 	"context"
@@ -45,23 +36,14 @@ import (
 )
 
 const (
-	// pairWordCount is the number of words in a pairing code: 80 bits
-	// (10 bits per word, 1024-word list). Eight because the code is
-	// the only secret: the words also derive the pairing tunnel's
-	// static keys, whose MAC1 is an offline oracle for a recorded
-	// handshake (see pairing_mac1_test.go) — the extra words put even
-	// a precomputed 2^80 candidate table out of reach, and eight short
-	// words stay read-over-the-phone friendly.
+	// 80 bits. Eight also because MAC1 makes a recorded handshake an
+	// offline oracle (see AGENTS.md).
 	pairWordCount = 8
-	// pairTTL is how long an invite stays valid.
-	pairTTL = 5 * time.Minute
-	// discoDerivationLabel replicates tailcat's disco key derivation
-	// (discoPrivateForNode) so the joiner can compute the inviter's
-	// pairing disco public key from the words alone.
+	pairTTL       = 5 * time.Minute
+	// Replicates tailcat's disco key derivation (discoPrivateForNode).
 	discoDerivationLabel = "github.com/tailscale/tailcat disco key v1"
 )
 
-// pairingKeys is the key material both sides derive from the words.
 type pairingKeys struct {
 	inviterPriv  key.NodePrivate
 	inviterPub   key.NodePublic
@@ -71,8 +53,6 @@ type pairingKeys struct {
 	psk          tailcat.PresharedKey
 }
 
-// derivePairing derives both pairing identities and the shared PSK from
-// the code words. Deterministic: both sides derive identical material.
 func derivePairing(words []string) (*pairingKeys, error) {
 	if _, err := deriveCheckWords(words); err != nil {
 		return nil, err
@@ -103,8 +83,6 @@ func derivePairing(words []string) (*pairingKeys, error) {
 	return k, nil
 }
 
-// nodePrivateFromBytes builds a node private key from 32 raw bytes via
-// its text form.
 func nodePrivateFromBytes(b []byte) (key.NodePrivate, error) {
 	var k key.NodePrivate
 	if err := k.UnmarshalText([]byte("privkey:" + hex.EncodeToString(b))); err != nil {
@@ -113,8 +91,7 @@ func nodePrivateFromBytes(b []byte) (key.NodePrivate, error) {
 	return k, nil
 }
 
-// discoPublicForNode replicates tailcat's discoPrivateForNode, deriving
-// the disco public key that belongs to a node private key.
+// discoPublicForNode replicates tailcat's discoPrivateForNode.
 func discoPublicForNode(k key.NodePrivate) tailcat.DiscoPublic {
 	raw := k.Raw32()
 	mac := hmac.New(sha256.New, raw[:])
@@ -126,7 +103,6 @@ func discoPublicForNode(k key.NodePrivate) tailcat.DiscoPublic {
 	return tailcat.DiscoPublic{DiscoPublic: key.DiscoPrivateFromRaw32(go4mem.B(discoRaw)).Public()}
 }
 
-// generatePairWords picks the random pairing code words.
 func generatePairWords() ([]string, error) {
 	words := make([]string, pairWordCount)
 	for i := range words {
@@ -141,10 +117,8 @@ func generatePairWords() ([]string, error) {
 	return words, nil
 }
 
-// parsePairCode parses a user-supplied pairing code: eight words plus
-// the inviter's DERP region as a numeric suffix, with words separated
-// by spaces, dashes, or other punctuation (e.g.
-// "hazel-meadow-quartz-amber-ember-petal-ivory-cedar-303").
+// parsePairCode parses eight words plus the inviter's DERP region as a
+// numeric suffix, punctuation-tolerant (e.g. hazel-meadow-...-cedar-303).
 func parsePairCode(code string) (words []string, region int, err error) {
 	fields := strings.FieldsFunc(strings.ToLower(code), func(r rune) bool {
 		isWord := r >= 'a' && r <= 'z'
@@ -177,13 +151,7 @@ func deriveCheckWords(words []string) ([]string, error) {
 	return words, nil
 }
 
-// ---- invite side (daemon state) ----
-
-// Daemon pairing state is in pair.go fields: pairMu, pairSrv, pairLn,
-// pairDone.
-
-// fetchDERPMap fetches the DERP map from url, or from tailcat's
-// default map URL when url is empty.
+// fetchDERPMap fetches the map from url, or tailcat's default when empty.
 func fetchDERPMap(ctx context.Context, url string) (*tailcfg.DERPMap, error) {
 	if url == "" {
 		return tailcat.FetchDERPMap(ctx)
@@ -191,10 +159,9 @@ func fetchDERPMap(ctx context.Context, url string) (*tailcfg.DERPMap, error) {
 	return tailcat.FetchDERPMap(ctx, tailcat.DERPMapURL(url))
 }
 
-// StartInvite creates a pairing code, starts listening for one joiner
-// on the pairing identity, and returns the code. The invite expires
-// after [pairTTL] or the first successful join, and a new invite
-// replaces an older one.
+// StartInvite creates a code and listens for one joiner on the pairing
+// identity. A new invite replaces an older one; expiry is pairTTL or the
+// first successful join.
 func (d *Daemon) StartInvite(ctx context.Context) (string, error) {
 	words, err := generatePairWords()
 	if err != nil {
@@ -207,9 +174,7 @@ func (d *Daemon) StartInvite(ctx context.Context) (string, error) {
 
 	d.stopInvite()
 
-	// Pick our nearest DERP region explicitly: the joiner must be told
-	// which region to meet on, and a resolved tailcat address does not
-	// carry its region ID (the wire format zeroes it).
+	// The joiner must be told the region; a resolved address does not carry it.
 	dm, err := fetchDERPMap(ctx, d.cfg.DERPMapURL)
 	if err != nil {
 		return "", fmt.Errorf("daemon: fetching DERP map: %w", err)
@@ -268,7 +233,6 @@ func (d *Daemon) StartInvite(ctx context.Context) (string, error) {
 	return code, nil
 }
 
-// stopInvite tears down any active pairing listener.
 func (d *Daemon) stopInvite() {
 	d.pairMu.Lock()
 	defer d.pairMu.Unlock()
@@ -286,8 +250,6 @@ func (d *Daemon) stopInvite() {
 	d.pairDone = nil
 }
 
-// servePairConn exchanges PairIntros with a joiner on the pairing
-// channel and adds the peer to our roster.
 func (d *Daemon) servePairConn(conn net.Conn) {
 	pc := protocol.NewConn(conn)
 	defer func() { _ = pc.Close() }()
@@ -300,11 +262,8 @@ func (d *Daemon) servePairConn(conn net.Conn) {
 		d.cfg.logf("clowder: pairing exchange failed: %v", err)
 		return
 	}
-	// Names are the human handle within a clowder: refuse a join that
-	// would claim a name another key already has (duplicate names make
-	// every name-based lookup a coin flip — see roster Get). The
-	// refusal is an explicit message, so the joiner knows not to
-	// retry, and the invite stays active for other joiners.
+	// Refuse a name another key already claims (name lookups would be a coin
+	// flip); the refusal is explicit and the invite stays active.
 	claim, err := roster.NewCat(peer.Name, peer.Addr, time.Now().Unix())
 	if err == nil && d.ros.NameTaken(claim.Name, claim.Key) {
 		reason := fmt.Sprintf("name %q is already taken by another cat (re-init with a different name and re-pair)", claim.Name)
@@ -312,19 +271,13 @@ func (d *Daemon) servePairConn(conn net.Conn) {
 			d.cfg.logf("clowder: refusing duplicate name %s: %v", claim.Name, err)
 		}
 		d.cfg.logf("clowder: refused pairing with %s: %s", claim.Name, reason)
-		// The joiner races its ack against this refusal. Drain it
-		// before closing: a close with unread data in flight sends an
-		// RST that destroys the refusal still on the wire (CI's Linux
-		// runner), and the joiner must get to read the refusal.
+		// Drain the joiner's racing ack before closing: an RST would destroy
+		// the refusal still on the wire.
 		_ = pc.SetDeadline(time.Now().Add(2 * time.Second))
 		_, _ = pc.ReadMsg()
 		return
 	}
-	// Commit only on the joiner's confirmation: a reply it never saw
-	// must leave the invite alive for its next attempt. CI lost the
-	// inviter's reply on flapping relay paths; committing on the
-	// unconfirmed exchange paired the inviter and retired the invite
-	// while the joiner was stranded with nothing to retry against.
+	// Commit only on the joiner's ack, so a lost reply leaves the invite alive.
 	if err := pairAckOf(pc); err != nil {
 		d.cfg.logf("clowder: pairing with %s not confirmed, invite stays active: %v", peer.Name, err)
 		return
@@ -334,21 +287,17 @@ func (d *Daemon) servePairConn(conn net.Conn) {
 		return
 	}
 	d.cfg.logf("clowder: paired with %s", peer.Name)
-	// Confirm the commit, so the joiner returns knowing the pairing is
-	// durable on both sides. A lost confirmation does not un-pair it:
-	// the joiner commits optimistically once its own ack was written.
+	// Confirm the commit. A lost confirmation does not un-pair: the joiner
+	// commits optimistically once its ack was written.
 	if err := pc.WriteMsg(&protocol.Message{PairAck: &protocol.PairAck{}}); err != nil {
 		d.cfg.logf("clowder: confirming pairing with %s: %v", peer.Name, err)
 	}
-	// One confirmed pairing: retire the invite.
 	d.goBg(d.stopInvite)
 }
 
-// addPeerCat records a cat from a PairIntro in the roster and allows it
-// to connect. A pairing is the trust root: the peer's sign key is
-// pinned here, any old leave tombstone for it is cleared (the local
-// half of a re-join), and a cat that had left the clowder merges
-// again — this pairing seeds its new clowder.
+// addPeerCat records a paired cat. The pairing is the trust root: the
+// peer's sign key is pinned here, any old tombstone is cleared, and a cat
+// that had left merges again.
 func (d *Daemon) addPeerCat(p *protocol.PairIntro) error {
 	c, err := roster.NewCat(p.Name, p.Addr, time.Now().Unix())
 	if err != nil {
@@ -366,21 +315,13 @@ func (d *Daemon) addPeerCat(p *protocol.PairIntro) error {
 	d.left = false
 	d.mu.Unlock()
 	d.allowCat(c)
-	// We just talked to this cat over the pairing channel: it is very
-	// much "seen".
 	d.markSeen(c.Key)
 	return nil
 }
 
-// ---- join side ----
-
-// pairRegions returns the DERP regions a joiner should try to reach an
-// inviter on, in order. The encoded region leads and is RETRIED
-// between every other region: a pairing server still attaching to its
-// relay (slow machines) is caught by the next encoded-region retry, a
-// server whose relay presence flapped onto another region is caught
-// when that region's turn comes, and a healthy meeting still answers
-// on the first attempt. Other regions follow ascending by ID.
+// pairRegions returns the regions a joiner should try, in order: the
+// encoded region leads and is retried between every other region
+// (ascending), catching slow relay attaches and flapped presence.
 func pairRegions(ctx context.Context, derpMapURL string, encoded int) ([]int, error) {
 	dm, err := fetchDERPMap(ctx, derpMapURL)
 	if err != nil {
@@ -401,23 +342,15 @@ func pairRegions(ctx context.Context, derpMapURL string, encoded int) ([]int, er
 	return out, nil
 }
 
-// pairingAnswerID fills the Answer's ID on the pairing channel, where
-// there is no transfer to identify — the joiner reads only OK/Reason.
 const pairingAnswerID = "pairing"
 
-// errPairRefused marks an inviter's definitive refusal (e.g. the
-// joiner's name is already claimed): retrying other regions or
-// reconnects cannot help, so the join aborts instead of sweeping.
+// A definitive inviter refusal: abort instead of sweeping regions.
 var errPairRefused = errors.New("inviter refused the pairing")
 
-// joinTimeout bounds a whole join attempt: the encoded-region try plus
-// however much of the sweep fits.
 const joinTimeout = 2 * time.Minute
 
-// Join connects to the inviter's pairing channel with the given code
-// and exchanges real identities. It tries the region encoded in the
-// code first, then sweeps the other regions (see pairRegions): each
-// attempt is bounded, and the whole join gives up after joinTimeout.
+// Join tries the encoded region first, then the sweep (pairRegions); the
+// whole join gives up after joinTimeout.
 func (d *Daemon) Join(ctx context.Context, code string) error {
 	words, region, err := parsePairCode(code)
 	if err != nil {
@@ -430,8 +363,7 @@ func (d *Daemon) Join(ctx context.Context, code string) error {
 
 	regions, err := pairRegions(ctx, d.cfg.DERPMapURL, region)
 	if err != nil {
-		// No map to sweep with: fall back to the encoded region only,
-		// the pre-sweep behavior.
+		// No map to sweep with: encoded region only.
 		d.cfg.logf("clowder: fetching DERP map for the pairing sweep: %v", err)
 		regions = []int{region}
 	}
@@ -454,9 +386,7 @@ func (d *Daemon) Join(ctx context.Context, code string) error {
 		if err := d.addPeerCat(peer); err != nil {
 			return err
 		}
-		// Discover the rest of the clowder now: the protocol handshake
-		// exchanges full rosters, so this sync pulls in every cat the
-		// inviter knows instead of waiting for the next poll tick.
+		// Pull the inviter's full roster now instead of waiting for a poll tick.
 		d.goBg(func() { d.syncPeers(context.WithoutCancel(ctx)) })
 		d.cfg.logf("clowder: paired with %s", peer.Name)
 		return nil
@@ -467,9 +397,6 @@ func (d *Daemon) Join(ctx context.Context, code string) error {
 	return errors.New("daemon: could not reach the inviter before the invite expired (is `clow invite` still active?)")
 }
 
-// pairOnRegion reaches the inviter's pairing channel on one DERP
-// region and exchanges intros over it. Each stage is bounded so a
-// region where the inviter is absent costs seconds, not minutes.
 func (d *Daemon) pairOnRegion(ctx context.Context, keys *pairingKeys, region int, overall time.Time) (*protocol.PairIntro, error) {
 	ci := tailcat.ConnInfo{
 		ServerPublic:      tailcat.NodePublic{NodePublic: keys.inviterPub},
@@ -485,11 +412,8 @@ func (d *Daemon) pairOnRegion(ctx context.Context, keys *pairingKeys, region int
 	}
 	defer func() { _ = c.Close() }()
 
-	// A meow ping answers only where the inviter's pairing server is
-	// actually connected, so a wrong region fails here in seconds. A
-	// live server answers in well under a second; the bound only needs
-	// to cover the relay round trip, not server startup (the sweep
-	// retries the encoded region instead).
+	// A wrong region fails the ping in seconds; the sweep retries the
+	// encoded region.
 	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if _, err := c.Ping(pingCtx); err != nil {
@@ -503,12 +427,8 @@ func (d *Daemon) pairOnRegion(ctx context.Context, keys *pairingKeys, region int
 	}
 	pc := protocol.NewConn(conn)
 	defer func() { _ = pc.Close() }()
-	// Bound the exchange, but generously: a slow inviter can take tens
-	// of seconds to answer (CI showed ~35s between accept and reply),
-	// so a tight deadline strands the joiner. And since the inviter no
-	// longer commits — or retires its invite — until the exchange is
-	// confirmed, a timed-out attempt can be retried on a fresh
-	// connection instead of eating the whole join budget.
+	// Generous bound: a slow inviter takes tens of seconds; an unconfirmed
+	// attempt stays retryable on a fresh connection.
 	exchangeDeadline := time.Now().Add(45 * time.Second)
 	if overall.Before(exchangeDeadline) {
 		exchangeDeadline = overall
@@ -521,12 +441,9 @@ func (d *Daemon) pairOnRegion(ctx context.Context, keys *pairingKeys, region int
 	return peer, err
 }
 
-// joinExchange runs the joiner's half of a confirmed pairing exchange:
-// intro out, the inviter's intro in, an ack telling the inviter its reply
-// arrived, and the inviter's confirmation that it committed. The inviter
-// commits only after our ack, and confirms with its own; losing that
-// confirmation does not un-pair us — our ack was written, so the inviter
-// has everything it needs — so the exchange reports complete either way.
+// joinExchange is the joiner's half: intro out, their intro in, our ack,
+// their confirmation. A lost confirmation still pairs us — our ack was
+// written.
 func joinExchange(pc *protocol.Conn, me roster.Cat) (*protocol.PairIntro, bool, error) {
 	peer, err := pairIntroOf(pc, me)
 	if err != nil {
@@ -538,24 +455,14 @@ func joinExchange(pc *protocol.Conn, me roster.Cat) (*protocol.PairIntro, bool, 
 	case readErr == nil:
 		return peer, true, nil
 	case errors.Is(readErr, errPairRefused):
-		// The refusal may have raced our ack write; what we read is
-		// the accurate diagnosis.
 		return nil, false, readErr
 	case ackErr != nil:
-		// The ack never landed (the inviter likely refused and closed
-		// while we were writing), so there is nothing to commit
-		// optimistically on.
 		return nil, false, fmt.Errorf("%w (ack write: %v)", readErr, ackErr)
 	default:
-		// Our ack was written, so the inviter has everything it needs
-		// to commit; a lost confirmation does not un-pair us.
 		return peer, false, nil
 	}
 }
 
-// pairAckOf waits for the peer's confirmation on the pairing channel:
-// a PairAck from the joiner, or — on the joiner's side — the inviter's
-// commit confirmation, or its explicit refusal.
 func pairAckOf(pc *protocol.Conn) error {
 	m, err := pc.ReadMsg()
 	if err != nil {
@@ -570,7 +477,6 @@ func pairAckOf(pc *protocol.Conn) error {
 	return fmt.Errorf("expected pair ack, got %s", m.Kind())
 }
 
-// pairIntroOf sends our intro and returns the peer's.
 func pairIntroOf(pc *protocol.Conn, me roster.Cat) (*protocol.PairIntro, error) {
 	if err := pc.WriteMsg(&protocol.Message{Pair: &protocol.PairIntro{
 		Name:      me.Name,

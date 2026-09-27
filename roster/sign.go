@@ -1,14 +1,11 @@
 package roster
 
-// Entry signing and leave tombstones. Each cat derives an Ed25519
-// keypair from its node key seed; the public half is announced in
-// Hello and in roster entries, and signs two things: every roster
-// entry it authors (so a trusted cat cannot inject or override
-// another cat's entry via LWW) and its own leave tombstone (so only
-// the leaver can remove the leaver). Merge enforces the signature
-// against the locally pinned sign key; tombstones are carried by
-// roster sync and always outrank unsigned re-adds — only a newer
-// entry signed by the leaver's own sign key (a re-pair) resurrects.
+// Entry signing and leave tombstones. Each cat derives an Ed25519 keypair
+// from its node key seed; the public half rides Hello and roster entries,
+// and signs both (so no trusted cat can inject or override entries via LWW)
+// and the cat's own leave (so only the leaver can remove the leaver).
+// Tombstones ride roster sync and outrank unsigned re-adds; only a re-pair
+// (newer entry signed by the leaver) resurrects.
 
 import (
 	"crypto/ed25519"
@@ -22,18 +19,16 @@ import (
 	"clowder/persist"
 )
 
-// SignCat stamps c with the Ed25519 sign key derived from priv and
-// signs it, returning the signed entry. The signature covers every
-// field except Sig itself (see entryBytes).
+// SignCat stamps c with the sign key derived from priv and signs it. The
+// signature covers every field except Sig.
 func SignCat(priv ed25519.PrivateKey, c Cat) Cat {
 	c.SignKey = hex.EncodeToString(priv.Public().(ed25519.PublicKey))
 	c.Sig = ed25519.Sign(priv, entryBytes(c))
 	return c
 }
 
-// entryBytes is the canonical form an entry signature covers: the
-// entry JSON with Sig cleared. encoding/json marshals struct fields
-// in declaration order, so this is stable across builds.
+// entryBytes is the canonical form a signature covers: entry JSON with
+// Sig cleared (encoding/json field order is stable).
 func entryBytes(c Cat) []byte {
 	c.Sig = nil
 	b, err := json.Marshal(c)
@@ -57,11 +52,9 @@ func verifyEntry(c Cat) bool {
 	return ed25519.Verify(ed25519.PublicKey(pub), entryBytes(c), c.Sig)
 }
 
-// Tombstone is a signed forget-me: the leaver's key, its sign key,
-// the leave time, and the leaver's Ed25519 signature over the three.
-// It rides roster sync so offline peers catch up, and it outlives
-// unsigned re-adds: a key with a tombstone is only resurrected by a
-// newer entry signed by the same sign key (the leaver re-pairing).
+// Tombstone is a signed forget-me (Key, SignKey, Time, Sig). It rides roster
+// sync and outlives unsigned re-adds; only the leaver's re-pair resurrects
+// the key.
 type Tombstone struct {
 	Key     string `json:"key" cbor:"k"`
 	SignKey string `json:"sign_key" cbor:"g"`
@@ -98,14 +91,11 @@ func (t Tombstone) verified() bool {
 	return ed25519.Verify(ed25519.PublicKey(pub), t.payload(), t.Sig)
 }
 
-// ApplyTombstones verifies and applies incoming leave tombstones,
-// removing the leavers' entries. A tombstone is applied only when
-// its sign key is pinned — it must match the sign key of the entry
-// it removes, or of a tombstone already recorded for that key; a
-// sign key asserted by the tombstone alone would let anyone forge
-// anyone's leave. A stale tombstone (its leaver already rejoined
-// with a newer signed entry) is skipped. It returns the tombstones
-// that changed local state.
+// ApplyTombstones verifies and applies incoming tombstones, removing the
+// leavers' entries. The sign key must be pinned — by the entry it removes or
+// a tombstone already recorded — since one asserted by the tombstone alone
+// would let anyone forge anyone's leave. Stale tombstones (leaver rejoined
+// newer) are skipped.
 func (r *Roster) ApplyTombstones(ts []Tombstone) []Tombstone {
 	r.mu.Lock()
 	var applied []Tombstone
@@ -155,8 +145,6 @@ func (r *Roster) Tombstones() []Tombstone {
 	return out
 }
 
-// sortTombstones orders tombstones by leaver key, for stable output
-// and stable persistence.
 func sortTombstones(ts []Tombstone) {
 	slices.SortFunc(ts, func(a, b Tombstone) int {
 		if a.Key != b.Key {

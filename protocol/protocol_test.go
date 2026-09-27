@@ -69,6 +69,20 @@ func TestOversizedFrameRejected(t *testing.T) {
 	}
 }
 
+// TestMultiFieldMessageRejected: exactly one union field may be set —
+// a message carrying two would be processed as whichever Kind()
+// matches first, so it is refused at the read boundary.
+func TestMultiFieldMessageRejected(t *testing.T) {
+	m := &Message{Hello: &Hello{Name: "fluff"}, Ack: &Ack{ID: "id1", Kind: AckStored}}
+	var buf bytes.Buffer
+	if err := WriteMsg(&buf, m); err != nil {
+		t.Fatalf("WriteMsg: %v", err)
+	}
+	if _, err := ReadMsg(&buf); err == nil {
+		t.Fatal("ReadMsg of a two-field message succeeded, want error")
+	}
+}
+
 func TestConnStreamRoundTrip(t *testing.T) {
 	c1, c2 := newPipe(t)
 	defer func() { _ = c1.Close() }()

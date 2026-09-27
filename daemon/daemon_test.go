@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
@@ -172,11 +174,14 @@ func offlineCat(t *testing.T) (roster.Cat, string) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
+	signPub := env.SignPriv.Public().(ed25519.PublicKey)
 	return roster.Cat{
-		Name:    name,
-		Addr:    "127.0.0.1:1", // nothing listens here
-		Key:     env.Identity.Public.ServerPublic.String(),
-		Updated: time.Now().Unix(),
+		Name:      name,
+		Addr:      "127.0.0.1:1", // nothing listens here
+		Key:       env.Identity.Public.ServerPublic.String(),
+		ClientKey: env.ClientIdentity.Public().String(),
+		SignKey:   hex.EncodeToString(signPub),
+		Updated:   time.Now().Unix(),
 	}, dir
 }
 

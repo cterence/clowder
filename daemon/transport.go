@@ -7,11 +7,8 @@ import (
 	"tailscale.com/types/key"
 )
 
-// Transport abstracts how the daemon reaches other cats. The production
-// implementation (TailcatTransport) runs a tailcat server and dials peers
-// through tailcat clients over the DERP-relayed WireGuard data plane. The
-// loopback implementation in transport_test.go runs the same protocol over
-// plain TCP for tests.
+// Transport abstracts how the daemon reaches other cats (tailcat in
+// production, loopback TCP in tests — transport_test.go).
 type Transport interface {
 	// Listen starts accepting connections from allowed peers. MyAddr
 	// becomes valid after Listen returns.

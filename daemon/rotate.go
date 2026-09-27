@@ -1,12 +1,8 @@
 package daemon
 
-// Address rotation: a cat can replace its tailcat address (new
-// pre-shared key, same identity key) and announce it to the clowder.
-// The announcement rides the normal roster sync, where entries are
-// last-write-wins: peers simply learn our entry with a newer address.
-// Rotation must reach at least one cat, or it fails and nothing
-// changes — otherwise the rotator would strand itself with an address
-// nobody knows.
+// Address rotation: a new pre-shared key under the same identity, announced
+// via roster sync (LWW: peers learn our newer entry). Must reach at least one
+// cat, or nothing changes — the rotator would strand itself.
 
 import (
 	"context"
@@ -20,11 +16,8 @@ import (
 	"clowder/roster"
 )
 
-// RotateAddress replaces this cat's pre-shared key — and thus its
-// tailcat address — and announces the new address to every reachable
-// peer. It fails without changing anything if no peer acknowledged.
-// The running daemon keeps serving under the old address; restart it
-// to use the new one.
+// RotateAddress rotates and announces the new address; the running daemon
+// keeps serving under the old one until restarted.
 func (d *Daemon) RotateAddress(ctx context.Context) (string, error) {
 	me := d.Me()
 	all := d.ros.All()
@@ -63,8 +56,7 @@ func (d *Daemon) prospectiveAddr(psk tailcat.PresharedKey) tailcat.Addr {
 		ServerDiscoPublic: discoPublicForNode(d.env.Identity.Private),
 		PresharedKey:      psk,
 	}
-	// Keep the region we are on now, if the transport reports a tailcat
-	// address; else fall back to the identity's region hint.
+	// Keep the current region, else the identity's region hint.
 	if cur, err := tailcat.ParseAddr(tailcat.Addr(d.tr.MyAddr())); err == nil {
 		ci.Region = cur.Region
 		ci.RegionID = cur.RegionID
@@ -74,8 +66,6 @@ func (d *Daemon) prospectiveAddr(psk tailcat.PresharedKey) tailcat.Addr {
 	return ci.Addr()
 }
 
-// announceTo pushes a roster sync presenting newMe (our rotated entry)
-// to one peer over an established connection.
 func (d *Daemon) announceTo(ctx context.Context, cat roster.Cat, newMe roster.Cat) error {
 	pc, err := d.connect(ctx, cat)
 	if err != nil {

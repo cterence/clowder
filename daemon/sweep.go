@@ -1,11 +1,8 @@
 package daemon
 
-// Storer push sweep: a storer does not wait for its targets to poll.
-// It periodically tries to deliver every held file whose target is in
-// its roster, and retries right after accepting a new deposit, so a
-// target that comes online receives its files within a poll interval.
-// The sealed stream was sealed by the original sender to the target,
-// so the storer relays it without being able to read it.
+// Storer push sweep: deliver every held file whose target is reachable, per
+// poll tick and right after a new deposit. The stream stays opaque to the
+// storer.
 
 import (
 	"context"
@@ -19,8 +16,6 @@ import (
 	"clowder/store"
 )
 
-// sweepSpool attempts delivery of every held file whose target is a
-// known, reachable cat. Called from the poll ticker.
 func (d *Daemon) sweepSpool(ctx context.Context) {
 	targets := map[string]bool{}
 	for _, m := range d.spool.All() {
@@ -31,7 +26,6 @@ func (d *Daemon) sweepSpool(ctx context.Context) {
 	}
 }
 
-// sweepSpoolFor attempts delivery of the files held for one target.
 func (d *Daemon) sweepSpoolFor(ctx context.Context, targetKey string) {
 	cat, ok := d.ros.GetByKey(targetKey)
 	if !ok {
@@ -45,9 +39,7 @@ func (d *Daemon) sweepSpoolFor(ctx context.Context, targetKey string) {
 	}
 }
 
-// deliverHeld pushes one spooled file to its target over a fresh
-// connection, using the same Offer/stream/Ack flow as a direct send.
-// The spool entry is deleted once the target acknowledges delivery.
+// deliverHeld pushes one spooled file; the entry is deleted on delivery ack.
 func (d *Daemon) deliverHeld(ctx context.Context, cat roster.Cat, m store.Meta) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -72,8 +64,7 @@ func (d *Daemon) deliverHeld(ctx context.Context, cat roster.Cat, m store.Meta) 
 	if err := pc.WriteMsg(&protocol.Message{Offer: offer}); err != nil {
 		return err
 	}
-	// The target may already have the file (racing its own pull): it
-	// answers no and we leave the entry for the pull path to reconcile.
+	// A refusal may mean the target already has the file; leave the entry.
 	resp, err := pc.ReadMsg()
 	if err != nil {
 		return err
@@ -90,11 +81,8 @@ func (d *Daemon) deliverHeld(ctx context.Context, cat roster.Cat, m store.Meta) 
 	}
 	defer blob.Close()
 	_ = pc.SetDeadline(time.Now().Add(streamTimeout))
-	// A resumable answer names the sealed offset the target already
-	// holds: replay the stored header plus the stream from that
-	// offset onward (a pure byte skip — the stream stays opaque).
-	// The header must be re-sent so the target can recover the
-	// per-stream secret, exactly like a sender's resumed attempt.
+	// A resumable answer names the offset the target already holds: replay the
+	// stored header (so the target recovers the secret) plus the suffix.
 	resume := resp.Answer.Resume
 	if resume > 0 {
 		if _, err := io.CopyN(pc.Writer(), blob, envelope.HeaderLen); err != nil {
