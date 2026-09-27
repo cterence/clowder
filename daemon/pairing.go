@@ -347,6 +347,10 @@ const pairingAnswerID = "pairing"
 // A definitive inviter refusal: abort instead of sweeping regions.
 var errPairRefused = errors.New("inviter refused the pairing")
 
+// The inviter's name collides with one we already hold: also definitive,
+// no region can help.
+var errNameTaken = errors.New("name already claimed by another cat")
+
 const joinTimeout = 2 * time.Minute
 
 // Join tries the encoded region first, then the sweep (pairRegions); the
@@ -376,7 +380,7 @@ func (d *Daemon) Join(ctx context.Context, code string) error {
 		}
 		peer, err := d.pairOnRegion(ctx, keys, reg, deadline)
 		if err != nil {
-			if errors.Is(err, errPairRefused) {
+			if errors.Is(err, errPairRefused) || errors.Is(err, errNameTaken) {
 				return fmt.Errorf("daemon: %w", err)
 			}
 			lastErr = err
@@ -434,7 +438,9 @@ func (d *Daemon) pairOnRegion(ctx context.Context, keys *pairingKeys, region int
 		exchangeDeadline = overall
 	}
 	_ = pc.SetDeadline(exchangeDeadline)
-	peer, confirmed, err := joinExchange(pc, d.Me())
+	peer, confirmed, err := joinExchange(pc, d.Me(), func(name, key string) bool {
+		return d.ros.NameTaken(name, key)
+	})
 	if err == nil && !confirmed {
 		d.cfg.logf("clowder: pairing confirmation lost after our ack; committing optimistically")
 	}
@@ -442,12 +448,22 @@ func (d *Daemon) pairOnRegion(ctx context.Context, keys *pairingKeys, region int
 }
 
 // joinExchange is the joiner's half: intro out, their intro in, our ack,
-// their confirmation. A lost confirmation still pairs us — our ack was
-// written.
-func joinExchange(pc *protocol.Conn, me roster.Cat) (*protocol.PairIntro, bool, error) {
+// their confirmation. nameTaken, when set, refuses the pairing before
+// the ack — the inviter commits on it, so a refusal must precede it —
+// when the inviter's name collides with one we already hold. A lost
+// confirmation still pairs us: our ack was written.
+func joinExchange(pc *protocol.Conn, me roster.Cat, nameTaken func(name, key string) bool) (*protocol.PairIntro, bool, error) {
 	peer, err := pairIntroOf(pc, me)
 	if err != nil {
 		return nil, false, err
+	}
+	if nameTaken != nil {
+		// Same skip-on-parse as the inviter side (servePairConn): the
+		// key derives from the address, so an unparseable one (never
+		// in production) leaves nothing to check.
+		if claim, err := roster.NewCat(peer.Name, peer.Addr, time.Now().Unix()); err == nil && nameTaken(claim.Name, claim.Key) {
+			return nil, false, fmt.Errorf("%w: %q is already claimed by another cat (re-init with a fresh name)", errNameTaken, claim.Name)
+		}
 	}
 	ackErr := pc.WriteMsg(&protocol.Message{PairAck: &protocol.PairAck{}})
 	readErr := pairAckOf(pc)

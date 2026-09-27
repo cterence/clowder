@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -24,11 +25,12 @@ func TestHealthHandler(t *testing.T) {
 		{"pprof disabled", false, "/debug/pprof/", http.StatusNotFound, ""},
 		{"pprof index", true, "/debug/pprof/", http.StatusOK, ""},
 		{"pprof heap profile", true, "/debug/pprof/heap", http.StatusOK, ""},
+		{"no stats func: /stats 404s", false, "/stats", http.StatusNotFound, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			healthHandler(tt.pprof).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tt.path, nil))
+			healthHandler(tt.pprof, nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tt.path, nil))
 			if rec.Code != tt.code {
 				t.Fatalf("GET %s: status = %d, want %d", tt.path, rec.Code, tt.code)
 			}
@@ -36,6 +38,25 @@ func TestHealthHandler(t *testing.T) {
 				t.Fatalf("GET %s: body = %q, want %q", tt.path, rec.Body.String(), tt.body)
 			}
 		})
+	}
+}
+
+// TestHealthStatsEndpoint pins /stats: JSON snapshot from the provided
+// func, 404 without one.
+func TestHealthStatsEndpoint(t *testing.T) {
+	want := HealthStats{Spool: 2, SpoolBytes: 4096, Outbox: 1, Transfers: 3}
+	rec := httptest.NewRecorder()
+	healthHandler(false, func() HealthStats { return want }).
+		ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stats", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /stats: status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	var got HealthStats
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("parsing /stats body %q: %v", rec.Body.String(), err)
+	}
+	if got != want {
+		t.Fatalf("/stats = %+v, want %+v", got, want)
 	}
 }
 

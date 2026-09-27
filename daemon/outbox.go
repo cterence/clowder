@@ -21,6 +21,12 @@ type Entry struct {
 	SourcePath string `json:"source_path"`
 	FileName   string `json:"file_name"`
 	AddedAt    int64  `json:"added_at"`
+	// SourceSHA256/SourceSize/SourceModNs cache the source file's
+	// digest and stat, so delivery retries skip the re-hash while the
+	// file is unchanged.
+	SourceSHA256 string `json:"source_sha256,omitempty"`
+	SourceSize   int64  `json:"source_size,omitempty"`
+	SourceModNs  int64  `json:"source_mod_ns,omitempty"`
 	// Fixed per-stream secret (hex envelope.SecretLen bytes) generated at Send
 	// time, so retried attempts re-emit identical sealed frames and a receiver
 	// can resume. Empty for pre-resume entries: fresh random secret per attempt.

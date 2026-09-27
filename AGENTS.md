@@ -138,16 +138,19 @@ One line each; the pinning tests carry the details.
   the leave tombstone; tombstones ride sync and outrank unsigned
   re-adds — only a re-pair resurrects.
 - **Resumable transfers**: a fixed per-stream seal secret in the outbox
-  entry makes retried attempts byte-identical; receivers checkpoint per
-  64 KiB chunk and clamp through envelope.LastResumeBoundary; all legs
-  covered (direct, storer push, storer deposit).
+  entry makes retried attempts byte-identical; receivers checkpoint
+  every 4 MiB (and the first chunk — a sidecar write is an atomic
+  rename, so one per 64 KiB chunk would multiply disk I/O) and clamp
+  through envelope.LastResumeBoundary; all legs covered (direct, storer
+  push, storer deposit). Delivery retries skip the source re-hash while
+  the file is unchanged (digest and stat cached in the outbox entry).
 - **Delivery receipts**: sealed to the ORIGINAL sender's node key,
   signed by the receiver and verified against the pinned roster sign key
   (an unpinned pre-signing entry accepts — same seam as entries); relays
   only see the flag and size; 4 KiB cap, digest-checked; ledger in
   `clow status`.
 - **Transfer hardening**: receive-time free-space check (64 MiB
-  reserve), 4 concurrent streams max, idle tailcat-client eviction that
+  reserve; on Windows via GetDiskFreeSpaceEx), 4 concurrent streams max, idle tailcat-client eviction that
   spares clients with an open dial, in-flight claims against duplicate
   transfers, a strict 32-hex transfer-ID guard (spool and parts paths
   are built from IDs), size-lie enforcement.
@@ -160,8 +163,11 @@ One line each; the pinning tests carry the details.
 - **Local trust commands**: `clow distrust`/`trust` (never propagated),
   `clow forget` (roster + outbox; refused by roster merge, so it sticks
   against re-adds — re-pairing is the way back), `clow rotate` (new
-  PSK/address under the same identity), duplicate-name tagging (LWW is
-  per-key, so collisions persist; resolution is social).
+  PSK/address under the same identity), and duplicate-name hardening:
+  sends to a name claimed by two keys are refused, and both pairing
+  sides refuse a name another key already claims — collisions can still
+  arrive via parallel invites through different inviters, `clow status`
+  tags them, and one cat re-inits with a fresh name to resolve.
 - **Daemon lifecycle**: single-instance lock on the config dir; drain
   at shutdown — after Run returns the daemon touches no disk, network,
   or logs; in-flight work is uncancelable by design.
@@ -172,7 +178,9 @@ One line each; the pinning tests carry the details.
   probe (meow Ping is one-shot per client), allocation-bounded
   OpenStream.
 - **Packaging and ops**: nix flake `packages.default`, Dockerfile with
-  auto-init and CLOWDER_NAME/CLOWDER_STORER, HTTP health endpoint,
+  auto-init and CLOWDER_NAME/CLOWDER_STORER, HTTP health endpoint (with
+  a JSON /stats snapshot: spool depth and bytes, outbox and in-flight
+  counts — watchdogs can alert on a filling storer, not just liveness),
   opt-in pprof, self-hosted DERP map.
 - **Test harness**: a black-box end-to-end integration test at the repo
   root (the test binary re-execs itself as the real clow binary; run

@@ -38,6 +38,11 @@ type partState struct {
 // How long an unfinished part survives without progress.
 const partTTL = 7 * 24 * time.Hour
 
+// partCheckpointBytes is how much sealed stream must flow between
+// sidecar checkpoints; the first chunk always checkpoints, so a cut
+// early in the transfer still resumes.
+const partCheckpointBytes = 4 << 20
+
 func partsDir(dir string) string          { return filepath.Join(dir, "parts") }
 func partPath(dir, id string) string      { return filepath.Join(dir, "parts", id+".part") }
 func partStatePath(dir, id string) string { return filepath.Join(dir, "parts", id+".part.json") }
@@ -188,12 +193,26 @@ func (d *Daemon) receiveResumable(pc *protocol.Conn, o *protocol.Offer, resume i
 		return 0, false
 	}
 	var suffixPlain int64
+	// Checkpoint the sidecar every checkpointBytes of stream (and on
+	// the first chunk), not per chunk: a sidecar write is an atomic
+	// rename, and one per 64 KiB chunk multiplies disk I/O on large
+	// transfers. A cut discards only the uncheckpointed tail.
+	var sinceCkpt int64 = partCheckpointBytes
+	prevOff := resume
+	if prevOff < envelope.HeaderLen {
+		prevOff = envelope.HeaderLen
+	}
 	openErr := func() error {
 		defer f.Close()
 		var err error
 		_, _, err = envelope.OpenStreamAt(d.env.Identity.Private, ex, f, resume, func(nextOff, plainLen int64) {
 			suffixPlain += plainLen
-			d.checkpointPart(o, nextOff, plainKept+suffixPlain)
+			sinceCkpt += nextOff - prevOff
+			prevOff = nextOff
+			if sinceCkpt >= partCheckpointBytes {
+				d.checkpointPart(o, nextOff, plainKept+suffixPlain)
+				sinceCkpt = 0
+			}
 		})
 		return err
 	}()

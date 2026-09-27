@@ -22,6 +22,10 @@ import (
 // DefaultTTL is how long a spooled file survives undelivered.
 const DefaultTTL = 7 * 24 * time.Hour
 
+// checkpointBytes is how much stream must flow between deposit
+// sidecar checkpoints; the first frame always checkpoints.
+const checkpointBytes = 4 << 20
+
 // ErrNotFound is returned when no spooled file matches the request.
 var ErrNotFound = errors.New("store: no such spooled file")
 
@@ -213,6 +217,11 @@ func (s *Spool) PutResume(meta Meta, resume int64, r io.Reader) error {
 		offset = envelope.HeaderLen
 	}
 	remaining := meta.Size - offset
+	// Checkpoint every checkpointBytes (and after the first frame): a
+	// sidecar write is an atomic rename, and one per frame multiplies
+	// disk I/O. A cut re-derives the true boundary from the blob
+	// itself (truncatePartToBoundary), so lag is safe.
+	sinceCkpt := int64(checkpointBytes)
 	var frame [4]byte
 	for remaining > 0 {
 		if _, err := io.ReadFull(r, frame[:]); err != nil {
@@ -230,7 +239,11 @@ func (s *Spool) PutResume(meta Meta, resume int64, r io.Reader) error {
 		}
 		offset += 4 + int64(n)
 		remaining -= 4 + int64(n)
-		checkpoint(offset)
+		sinceCkpt += 4 + int64(n)
+		if sinceCkpt >= checkpointBytes {
+			checkpoint(offset)
+			sinceCkpt = 0
+		}
 	}
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("store: closing part blob: %w", err)

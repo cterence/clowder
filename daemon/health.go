@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -9,9 +10,18 @@ import (
 	"time"
 )
 
-// healthHandler serves GET / and /healthz (200 "ok"), 404 elsewhere.
-// pprof is an explicit opt-in — profiling endpoints leak internals.
-func healthHandler(pprof bool) http.Handler {
+// HealthStats is the /stats snapshot: the depths a watchdog alerts on.
+type HealthStats struct {
+	Spool      int   `json:"spool"`       // entries held
+	SpoolBytes int64 `json:"spool_bytes"` // sealed bytes held
+	Outbox     int   `json:"outbox"`      // pending sends
+	Transfers  int   `json:"transfers"`   // in flight
+}
+
+// healthHandler serves GET / and /healthz (200 "ok"); /stats answers
+// JSON when a snapshot func is provided. pprof is an explicit opt-in —
+// profiling endpoints leak internals.
+func healthHandler(pprof bool, stats func() HealthStats) http.Handler {
 	mux := http.NewServeMux()
 	ok := func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -19,6 +29,12 @@ func healthHandler(pprof bool) http.Handler {
 		_, _ = io.WriteString(w, "ok\n")
 	}
 	mux.HandleFunc("/healthz", ok)
+	if stats != nil {
+		mux.HandleFunc("/stats", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(stats())
+		})
+	}
 	// "/" is a catch-all pattern in ServeMux, so the root handler
 	// answers only "/" exactly; other paths 404.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -38,13 +54,25 @@ func healthHandler(pprof bool) http.Handler {
 	return mux
 }
 
-func listenHealth(addr string, pprof bool) (net.Listener, *http.Server, error) {
+// healthStats snapshots the depths a watchdog alerts on. It never
+// touches the network: the spool, outbox and progress keepers are
+// local.
+func (d *Daemon) healthStats() HealthStats {
+	return HealthStats{
+		Spool:      d.spool.Count(),
+		SpoolBytes: d.spool.Usage(),
+		Outbox:     len(d.ob.All()),
+		Transfers:  len(d.prog.snapshot()),
+	}
+}
+
+func listenHealth(addr string, pprof bool, stats func() HealthStats) (net.Listener, *http.Server, error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, nil, fmt.Errorf("daemon: health endpoint: %w", err)
 	}
 	srv := &http.Server{
-		Handler:           healthHandler(pprof),
+		Handler:           healthHandler(pprof, stats),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,

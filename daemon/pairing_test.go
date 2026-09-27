@@ -123,7 +123,7 @@ func TestPairIntroExchange(t *testing.T) {
 		defer wg.Done()
 		defer func() { _ = c2.Close() }()
 		pc := protocol.NewConn(c2)
-		peer, confirmed, err := joinExchange(pc, joiner.Me())
+		peer, confirmed, err := joinExchange(pc, joiner.Me(), nil)
 		if err != nil {
 			t.Errorf("joiner exchange: %v", err)
 			return
@@ -338,7 +338,7 @@ func TestPairingRefusesDuplicateName(t *testing.T) {
 		defer wg.Done()
 		defer func() { _ = c2.Close() }()
 		pc := protocol.NewConn(c2)
-		if _, _, err := joinExchange(pc, pretender.Me()); !errors.Is(err, errPairRefused) {
+		if _, _, err := joinExchange(pc, pretender.Me(), nil); !errors.Is(err, errPairRefused) {
 			t.Errorf("duplicate-name join error = %v, want errPairRefused", err)
 		}
 	}()
@@ -364,7 +364,7 @@ func TestPairingRefusesDuplicateName(t *testing.T) {
 		defer wg.Done()
 		defer func() { _ = c4.Close() }()
 		pc := protocol.NewConn(c4)
-		if _, _, err := joinExchange(pc, niche.Me()); err != nil {
+		if _, _, err := joinExchange(pc, niche.Me(), nil); err != nil {
 			t.Errorf("post-refusal join: %v", err)
 		}
 	}()

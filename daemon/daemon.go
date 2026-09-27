@@ -347,7 +347,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	var healthLn net.Listener
 	var healthSrv *http.Server
 	if d.cfg.HealthAddr != "" {
-		healthLn, healthSrv, err = listenHealth(d.cfg.HealthAddr, d.cfg.Pprof)
+		healthLn, healthSrv, err = listenHealth(d.cfg.HealthAddr, d.cfg.Pprof, d.healthStats)
 		if err != nil {
 			_ = ln.Close()
 			_ = ipcLn.Close()
@@ -410,7 +410,10 @@ func (d *Daemon) Send(targetName, path string) (string, error) {
 		return "", fmt.Errorf("distrusted cat %q (run: clow trust %s)", targetName, targetName)
 	}
 	if slices.Contains(d.ros.Duplicates(), targetName) {
-		d.cfg.logf("clowder: %q is claimed by more than one cat; sending to the newest", targetName)
+		// A name claimed by two keys is not a safe send target:
+		// LWW picks the newest silently. Refuse; one of the two cats
+		// should re-init with a fresh name and re-pair.
+		return "", fmt.Errorf("cat name %q is claimed by more than one cat; one of them should re-init with a fresh name", targetName)
 	}
 	if _, err := os.Stat(path); err != nil {
 		return "", fmt.Errorf("reading file: %w", err)
@@ -851,8 +854,38 @@ func (d *Daemon) deliver(e Entry) {
 	d.cfg.logf("clowder: %s to %s still pending", e.FileName, e.TargetName)
 }
 
-func (d *Daemon) deliverStream(ctx context.Context, peer roster.Cat, e Entry, targetKey, targetName, wantAck string) error {
+// sourceDigest returns the source file's digest and size, hashing only
+// when the file changed since the last attempt (or on the first one);
+// the cached values ride the outbox entry, so retries over a stable
+// file never re-read it. A file changed mid-send still fails the
+// end-to-end check in sendSealed.
+func (d *Daemon) sourceDigest(e *Entry) (string, int64, error) {
+	fi, err := os.Stat(e.SourcePath)
+	if err != nil {
+		return "", 0, err
+	}
+	if e.SourceSHA256 != "" && e.SourceSize == fi.Size() && e.SourceModNs == fi.ModTime().UnixNano() {
+		return e.SourceSHA256, e.SourceSize, nil
+	}
 	digest, size, err := fileDigest(e.SourcePath)
+	if err != nil {
+		return "", 0, err
+	}
+	after, err := os.Stat(e.SourcePath)
+	if err != nil {
+		return "", 0, err
+	}
+	if after.Size() == fi.Size() && after.ModTime().Equal(fi.ModTime()) {
+		e.SourceSHA256, e.SourceSize, e.SourceModNs = digest, size, fi.ModTime().UnixNano()
+		if err := d.ob.Put(*e); err != nil {
+			d.cfg.logf("clowder: caching digest for %s: %v", e.ID, err)
+		}
+	}
+	return digest, size, nil
+}
+
+func (d *Daemon) deliverStream(ctx context.Context, peer roster.Cat, e Entry, targetKey, targetName, wantAck string) error {
+	digest, size, err := d.sourceDigest(&e)
 	if err != nil {
 		return err
 	}
