@@ -745,7 +745,9 @@ fun InboxScreen() {
                         MediaStore.MediaColumns.DATE_ADDED,
                     ),
                     "${MediaStore.MediaColumns.RELATIVE_PATH}=?",
-                    arrayOf("Download/clowder"),
+                    // MediaProvider stores the bucket WITH a trailing
+                    // slash; matching without it lists nothing.
+                    arrayOf("Download/clowder/"),
                     "${MediaStore.MediaColumns.DATE_ADDED} DESC",
                 )?.use { c ->
                     while (c.moveToNext()) {

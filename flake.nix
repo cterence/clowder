@@ -180,7 +180,9 @@
           # Hypervisor.framework and can exec the app's arm64-only
           # daemon. Create the AVD once (it lives in ~/.android):
           #   avdmanager create avd -n clowder \
-          #     -k "system-images;android-34;default;${imageArch.${system}}"
+          #     -k "system-images;android-34;default;x86_64"  # arm64-v8a on macOS;
+          #     the -k arch is avdmanager's spelling, which on Linux is
+          #     x86_64, not the imageArch package suffix x86-64
           # then run it:
           #   emulator -avd clowder
           emulator =
