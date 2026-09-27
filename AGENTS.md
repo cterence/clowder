@@ -113,7 +113,20 @@ Update this list and the README when something ships.
    app; then boot-receive, delivery notifications, and the storer-role
    UI. Termux is explicitly NOT a goal (the foreground-service app is
    the answer); on-device builds blocked until Termux ships go >= 1.27.1.
-2. **Pairing and roster UX** — dogfooding surfaced three friction
+2. **Simplification pass — cut four shipped features** — the product
+   is names + e2e + storers for async delivery; these cost more in
+   concept surface than they return (about -1,300 lines, three fewer
+   concepts). Cut, with what covers each: receipts (sealed/signed/
+   ledger, ~430 lines — the delivered Ack settles the outbox; the
+   daemon log line covers delivery history), `clow rotate` (~130 —
+   reset + re-pair), distrust/trust (~150 — keep forget and the
+   blocked-keys mechanism it rides, plus the signed leave; drop the
+   freeze verb pair), /stats JSON snapshot (~70 — keep /healthz;
+   nothing in-tree consumes it). All four are wire-visible (the
+   Receipt offer flag and receipt messages), so removal is a
+   protocol break: the mesh re-pairs, same seam as the two-keypair
+   fix. Update the Shipped list, README and docs/specs as they go.
+3. **Pairing and roster UX** — dogfooding surfaced three friction
    points. (a) Right after `clow join`, the joiner sees every cat
    "never seen" until syncs connect: pairing must make the fresh
    roster visibly alive (e.g. the inviter pushes roster+liveness with
@@ -130,7 +143,7 @@ Update this list and the README when something ships.
    name leaves the stale entry riding in from peers that never
    forgot it. Status should identify duplicates (short node key,
    updated time) and forget should accept a key, not just a name.
-3. **Multiple clowders** — named clowders: per-clowder roster files,
+4. **Multiple clowders** — named clowders: per-clowder roster files,
    `--clowder` on invite/join/send, Hello carries the clowder name so a
    connection routes to the right roster. One identity, one daemon,
    clowders stay disjoint. Largest refactor; do last, design tombstones
