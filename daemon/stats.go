@@ -28,8 +28,8 @@ func loadStats(dir string) Stats {
 	return s
 }
 
-// statsMu guards the stats field; kept separate so hot transfer paths
-// never contend with roster state.
+// statsKeeper guards the counters with their own mutex, kept separate
+// so hot transfer paths never contend with roster state.
 type statsKeeper struct {
 	mu   sync.Mutex
 	s    Stats

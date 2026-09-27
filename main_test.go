@@ -1,7 +1,6 @@
 package main
 
 import (
-	"flag"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,38 +71,6 @@ func TestReset(t *testing.T) {
 	}
 }
 
-func TestFlagsFirst(t *testing.T) {
-	newFS := func() *flag.FlagSet {
-		fs := flag.NewFlagSet("t", flag.ContinueOnError)
-		fs.String("name", "", "")
-		fs.Bool("dry", false, "")
-		return fs
-	}
-	tests := []struct {
-		in, want []string
-	}{
-		{[]string{"addr", "--name", "milo"}, []string{"--name", "milo", "addr"}},
-		{[]string{"--name", "milo", "addr"}, []string{"--name", "milo", "addr"}},
-		{[]string{"--name=milo", "addr"}, []string{"--name=milo", "addr"}},
-		{[]string{"a", "b", "-x"}, []string{"-x", "a", "b"}},
-		{[]string{"addr", "--dry", "other"}, []string{"--dry", "addr", "other"}},
-		{nil, nil},
-	}
-	for _, tt := range tests {
-		got := flagsFirst(newFS(), tt.in)
-		if len(got) != len(tt.want) {
-			t.Errorf("flagsFirst(%v) = %v, want %v", tt.in, got, tt.want)
-			continue
-		}
-		for i := range got {
-			if got[i] != tt.want[i] {
-				t.Errorf("flagsFirst(%v) = %v, want %v", tt.in, got, tt.want)
-				break
-			}
-		}
-	}
-}
-
 func TestInboxSetWithoutDaemon(t *testing.T) {
 	// `clow inbox --set` must not need the daemon: persist locally for
 	// the next start, instead of failing on the IPC socket.
@@ -138,6 +105,20 @@ func TestRemovedCommands(t *testing.T) {
 		if !strings.Contains(err.Error(), "unknown command") {
 			t.Errorf("%s: %v, want unknown-command error", cmd, err)
 		}
+	}
+}
+
+// TestStorerFlagParses pins the flags-first order (`clow storer
+// --max 10G on`): without a daemon the command must fail on the IPC
+// dial, not on flag parsing or the usage check.
+func TestStorerFlagParses(t *testing.T) {
+	t.Setenv("CLOWDER_DIR", t.TempDir())
+	err := run([]string{"storer", "--max", "10G", "on"})
+	if err == nil {
+		t.Fatal("storer succeeded without a daemon, want IPC error")
+	}
+	if strings.Contains(err.Error(), "flag provided but not defined") || strings.Contains(err.Error(), "usage:") {
+		t.Fatalf("storer --max 10G on no longer parses: %v", err)
 	}
 }
 

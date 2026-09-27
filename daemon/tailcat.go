@@ -124,27 +124,17 @@ func (t *TailcatTransport) clientFor(addr string) *tailcat.Client {
 	return c
 }
 
-// idleKeys returns the addresses unused for longer than maxIdle: the
-// eviction candidates. Each candidate holds a live WireGuard engine,
-// and engines accumulate per peer without this.
-func idleKeys(lastUse map[string]time.Time, now time.Time, maxIdle time.Duration) []string {
-	var out []string
-	for addr, last := range lastUse {
-		if now.Sub(last) > maxIdle {
-			out = append(out, addr)
-		}
-	}
-	return out
-}
-
 // evictIdle closes clients idle beyond maxIdle. Called from the
 // sweeper goroutine started at Listen; a later dial rebuilds the
 // client from the current roster entry (the peer may have rotated its
 // address).
 func (t *TailcatTransport) evictIdle(maxIdle time.Duration) {
 	t.mu.Lock()
-	idle := idleKeys(t.lastUse, time.Now(), maxIdle)
-	for _, addr := range idle {
+	now := time.Now()
+	for addr, last := range t.lastUse {
+		if now.Sub(last) <= maxIdle {
+			continue
+		}
 		if c, ok := t.clients[addr]; ok {
 			_ = c.Close()
 		}
@@ -227,7 +217,7 @@ func (t *TailcatTransport) Ping(ctx context.Context, addr string) (PathInfo, err
 	if res.Endpoint != "" {
 		return PathInfo{Direct: true, Endpoint: res.Endpoint}, nil
 	}
-	return PathInfo{DERPRegionID: int(res.DERPRegionID), DERPRegionCode: res.DERPRegionCode}, nil
+	return PathInfo{}, nil
 }
 
 // PeerKey returns the authenticated node key of a connected peer.

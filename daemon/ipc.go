@@ -41,10 +41,6 @@ type Response struct {
 	Liveness map[string]int64 `json:"liveness,omitempty"`
 	// Progress lists the in-flight transfers (status op).
 	Progress []Progress `json:"progress,omitempty"`
-	// Parts are checkpointed partial receives with no attempt in
-	// flight: the bytes already on disk that a retry resumes from
-	// (status op).
-	Parts []partState `json:"parts,omitempty"`
 	// Distrusted names the roster cats whose keys are on the local
 	// blocklist (distrust, and forgotten cats), for cats/status tags.
 	Distrusted []string `json:"distrusted,omitempty"`
@@ -232,7 +228,6 @@ func (d *Daemon) handleIPC(req Request) Response {
 			Stats:      &st,
 			Liveness:   d.livenessSnapshot(),
 			Progress:   d.prog.snapshot(),
-			Parts:      d.partSnapshot(),
 			Paths:      d.pathSnapshot(),
 		}
 

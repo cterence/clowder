@@ -38,10 +38,6 @@ type PathInfo struct {
 	Direct bool `json:"direct,omitempty"`
 	// Endpoint is the "ip:port" of a direct path.
 	Endpoint string `json:"endpoint,omitempty"`
-	// DERPRegionID and DERPRegionCode identify the relay carrying a
-	// non-direct path.
-	DERPRegionID   int    `json:"derp_region_id,omitempty"`
-	DERPRegionCode string `json:"derp_region_code,omitempty"`
 }
 
 // Pinger is an optional Transport capability: probing whether the

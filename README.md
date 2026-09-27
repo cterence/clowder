@@ -75,7 +75,7 @@ path if lost — except the identity.
     clow join <CODE>                                    pair with the inviter
     clow send <CAT> <FILE>                              async send (queues if offline)
     clow inbox [--set DIR]                              list received files / change inbox
-    clow storer on|off|dropbox                          volunteer to hold files for others
+    clow storer [--max SIZE] on|off|dropbox                           volunteer to hold files for others
                                                         (dropbox: third parties only)
     clow outbox clear                                   drop pending sends
     clow rotate                                         new address, announced to the clowder
@@ -180,7 +180,7 @@ files for offline targets and pushes them as soon as the target is
 online. Pair the third
 machine as above, then:
 
-    server$  clow storer on --max 10G
+    server$  clow storer --max 10G on
     storer duty on: 10.0 GiB capacity
 
 Two things to know about the role:

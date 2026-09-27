@@ -293,10 +293,10 @@ func TestStorerRelayForOfflineCat(t *testing.T) {
 	// CI failure where the receipt rode the push back into the
 	// storer's own ledger and never reached milo.
 	waitFor(t, func() bool {
-		r, ok := milo.receipts.get(id)
+		r, ok := findReceipt(milo.receipts, id)
 		return ok && r.From == "niko" && r.FileName == "nap.txt"
 	}, "the push-path receipt to reach milo, not the storer")
-	if _, ok := storer.receipts.get(id); ok {
+	if _, ok := findReceipt(storer.receipts, id); ok {
 		t.Fatal("storer recorded a receipt meant for the original sender")
 	}
 }

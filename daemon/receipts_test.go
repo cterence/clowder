@@ -7,6 +7,17 @@ import (
 	"testing"
 )
 
+// findReceipt looks a ledger entry up through the recent() view, so
+// the keeper needs no production accessor that only tests use.
+func findReceipt(k *receiptKeeper, id string) (Receipt, bool) {
+	for _, r := range k.recent(1000) {
+		if r.ID == id {
+			return r, true
+		}
+	}
+	return Receipt{}, false
+}
+
 // TestDeliveryReceipts covers the receipt loop: a direct delivery
 // confirms in the sender's ledger, and a receipt for a storer-relayed
 // delivery rides the storer while the sender is offline and lands
@@ -28,7 +39,7 @@ func TestDeliveryReceipts(t *testing.T) {
 		return ok
 	}, "the direct send to arrive")
 	waitFor(t, func() bool {
-		r, ok := milo.receipts.get(id)
+		r, ok := findReceipt(milo.receipts, id)
 		return ok && r.FileName == "nap.txt" && r.From == "fluff" && r.DeliveredAt > 0
 	}, "the direct receipt to land in milo's ledger")
 
@@ -83,7 +94,7 @@ func TestDeliveryReceipts(t *testing.T) {
 		"the storer to hand over the held receipt (spool %d)", box.Spool().Count())
 	t.Logf("milo2 inbox: %v", inboxFiles(t, milo2))
 	waitFor(t, func() bool {
-		r, ok := milo2.receipts.get(id2)
+		r, ok := findReceipt(milo2.receipts, id2)
 		return ok && r.From == "niko" && r.FileName == "nap.txt"
 	}, "the relayed receipt to land in milo's ledger after his return")
 }
@@ -99,11 +110,11 @@ func TestReceiptsSurviveRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool {
-		r, ok := milo.receipts.get(id)
+		r, ok := findReceipt(milo.receipts, id)
 		return ok && r.DeliveredAt > 0
 	}, "the receipt to land")
 	stopDaemon(milo)
-	if _, ok := startDaemonAt(t, milo.cfg.Dir).receipts.get(id); !ok {
+	if _, ok := findReceipt(startDaemonAt(t, milo.cfg.Dir).receipts, id); !ok {
 		t.Fatal("receipts ledger did not survive restart")
 	}
 }
@@ -167,9 +178,10 @@ func TestReceiveBusyRefused(t *testing.T) {
 	trust(t, milo, fluff)
 	trust(t, fluff, milo)
 
-	fluff.gauge.max = 1
-	if !fluff.gauge.tryStart() {
-		t.Fatal("could not occupy the single transfer slot")
+	// Take every transfer slot: the receiver must refuse instead of
+	// stacking another stream.
+	for len(fluff.slots) < cap(fluff.slots) {
+		fluff.slots <- struct{}{}
 	}
 	src := writeSource(t, "while busy")
 	id, err := milo.Send("fluff", src)
@@ -184,7 +196,9 @@ func TestReceiveBusyRefused(t *testing.T) {
 		}
 		return false
 	}, "the send to stay queued while the receiver is busy")
-	fluff.gauge.done()
+	for len(fluff.slots) > 0 {
+		<-fluff.slots
+	}
 
 	waitFor(t, func() bool {
 		_, ok := inboxFile(t, fluff, "nap.txt")

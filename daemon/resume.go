@@ -227,7 +227,6 @@ func (d *Daemon) receiveResumable(pc *protocol.Conn, o *protocol.Offer, resume i
 		})
 		return err
 	}()
-	_ = suffixPlain
 	if openErr != nil {
 		// Cut the part back to the recorded prefix: a stream that
 		// died mid-chunk must not leave a torn tail appended.
@@ -244,71 +243,48 @@ func (d *Daemon) receiveResumable(pc *protocol.Conn, o *protocol.Offer, resume i
 		return 0, false
 	}
 
-	size, name, err := d.finishPart(o, plainKept+suffixPlain)
+	size, err := d.finishPart(o, plainKept+suffixPlain)
 	if err != nil {
 		d.cfg.logf("clowder: receiving %s: %v", o.FileName, err)
 		d.dropPart(o.ID)
 		return 0, false
 	}
-	_ = name
 	return size, true
 }
 
 // finishPart verifies the assembled plaintext against the announced
 // digest, moves the part file into the inbox under a unique name, and
 // drops the partial-receive state.
-func (d *Daemon) finishPart(o *protocol.Offer, plainLen int64) (int64, string, error) {
+func (d *Daemon) finishPart(o *protocol.Offer, plainLen int64) (int64, error) {
 	src := partPath(d.cfg.Dir, o.ID)
 	fi, err := os.Stat(src)
 	if err != nil {
-		return 0, "", err
+		return 0, err
 	}
 	if fi.Size() != plainLen {
-		return 0, "", fmt.Errorf("part file holds %d bytes, accounted %d", fi.Size(), plainLen)
+		return 0, fmt.Errorf("part file holds %d bytes, accounted %d", fi.Size(), plainLen)
 	}
 	pf, err := os.Open(src)
 	if err != nil {
-		return 0, "", err
+		return 0, err
 	}
 	h := sha256.New()
 	if _, err := io.Copy(h, pf); err != nil {
 		_ = pf.Close()
-		return 0, "", err
+		return 0, err
 	}
 	_ = pf.Close()
 	gotSha := hex.EncodeToString(h.Sum(nil))
 	if gotSha != o.SHA256 {
-		return 0, "", fmt.Errorf("digest mismatch: got %s, announced %s", gotSha, o.SHA256)
+		return 0, fmt.Errorf("digest mismatch: got %s, announced %s", gotSha, o.SHA256)
 	}
 	inbox := d.InboxDir()
 	if err := os.MkdirAll(inbox, 0o700); err != nil {
-		return 0, "", err
+		return 0, err
 	}
-	name := inboxPath(inbox, o.FileName)
-	if err := os.Rename(src, name); err != nil {
-		return 0, "", err
+	if err := os.Rename(src, inboxPath(inbox, o.FileName)); err != nil {
+		return 0, err
 	}
 	_ = os.Remove(partStatePath(d.cfg.Dir, o.ID))
-	return plainLen, name, nil
-}
-
-// partSnapshot lists partial receives for `clow status`.
-func (d *Daemon) partSnapshot() []partState {
-	des, err := os.ReadDir(partsDir(d.cfg.Dir))
-	if err != nil {
-		return nil
-	}
-	cutoff := time.Now().Add(-partTTL).Unix()
-	var out []partState
-	for _, de := range des {
-		if !strings.HasSuffix(de.Name(), ".part.json") {
-			continue
-		}
-		id := strings.TrimSuffix(de.Name(), ".part.json")
-		st, ok := loadPart(d.cfg.Dir, id)
-		if ok && st.UpdatedAt >= cutoff {
-			out = append(out, st)
-		}
-	}
-	return out
+	return plainLen, nil
 }

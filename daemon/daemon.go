@@ -95,8 +95,10 @@ type Daemon struct {
 	stats    *statsKeeper
 	prog     *progressKeeper
 	receipts *receiptKeeper
-	gauge    *transferGauge
-	inbox    string
+	// slots is the transfer semaphore: a buffered channel of capacity
+	// maxConcurrentTransfers; taking a slot claims one.
+	slots chan struct{}
+	inbox string
 
 	// bg drains Run's background work at shutdown: receipt relays,
 	// spool sweeps, deliveries, roster syncs and accepted connections
@@ -134,13 +136,13 @@ type Daemon struct {
 	// blocked.json.
 	blocked map[string]bool
 
-	// inflightDelivery guards outbox entries against concurrent
+	// deliveryClaims guards outbox entries against concurrent
 	// delivery attempts (the retry ticker must not start a second
-	// transfer while a big one is still streaming).
-	inflightDelivery map[string]bool
-	// inflightReceive refuses a second stream for a transfer ID we are
-	// already receiving (retry/sweep/pull races).
-	inflightReceive map[string]bool
+	// transfer while a big one is still streaming); receiveClaims
+	// refuses a second stream for a transfer ID we are already
+	// receiving (retry/sweep/pull races).
+	deliveryClaims *claimSet
+	receiveClaims  *claimSet
 	// resMu guards reserved: spool bytes promised to in-flight
 	// deposits. The capacity check and the claim are one atomic
 	// operation, so many deposits arriving at once are accepted
@@ -173,21 +175,21 @@ func New(cfg Config, tr Transport) (*Daemon, error) {
 		return nil, fmt.Errorf("daemon: creating inbox: %w", err)
 	}
 	d := &Daemon{
-		cfg:              cfg,
-		tr:               tr,
-		env:              env,
-		ros:              ros,
-		spool:            store.New(filepath.Join(cfg.Dir, "spool"), 0),
-		ob:               newOutbox(filepath.Join(cfg.Dir, "outbox")),
-		stats:            newStatsKeeper(cfg.Dir),
-		prog:             newProgressKeeper(),
-		liveness:         map[string]int64{},
-		blocked:          loadBlocked(cfg.Dir),
-		receipts:         loadReceipts(cfg.Dir),
-		gauge:            &transferGauge{max: maxConcurrentTransfers},
-		inflightDelivery: map[string]bool{},
-		inflightReceive:  map[string]bool{},
-		inbox:            inbox,
+		cfg:            cfg,
+		tr:             tr,
+		env:            env,
+		ros:            ros,
+		spool:          store.New(filepath.Join(cfg.Dir, "spool"), 0),
+		ob:             newOutbox(filepath.Join(cfg.Dir, "outbox")),
+		stats:          newStatsKeeper(cfg.Dir),
+		prog:           newProgressKeeper(),
+		liveness:       map[string]int64{},
+		blocked:        loadBlocked(cfg.Dir),
+		receipts:       loadReceipts(cfg.Dir),
+		slots:          make(chan struct{}, maxConcurrentTransfers),
+		deliveryClaims: newClaimSet(),
+		receiveClaims:  newClaimSet(),
+		inbox:          inbox,
 	}
 	d.meCat = roster.Cat{
 		Name:      env.Me.Name,
@@ -288,41 +290,33 @@ func (d *Daemon) livenessSnapshot() map[string]int64 {
 	return out
 }
 
-// claimDelivery reports whether a delivery for the entry may start,
-// claiming it if so. A second attempt for an already-streaming entry
-// (from the retry ticker racing a slow transfer) returns false.
-func (d *Daemon) claimDelivery(id string) bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.inflightDelivery[id] {
+// claimSet is a set of transfer IDs with an in-flight claim. A second
+// claim for an ID already in it (the retry ticker racing a slow
+// transfer, or a duplicate stream for an ID we are already receiving)
+// is refused.
+type claimSet struct {
+	mu sync.Mutex
+	m  map[string]bool
+}
+
+func newClaimSet() *claimSet { return &claimSet{m: map[string]bool{}} }
+
+// claim reports whether id may start, recording the claim if so.
+func (c *claimSet) claim(id string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.m[id] {
 		return false
 	}
-	d.inflightDelivery[id] = true
+	c.m[id] = true
 	return true
 }
 
-func (d *Daemon) releaseDelivery(id string) {
-	d.mu.Lock()
-	delete(d.inflightDelivery, id)
-	d.mu.Unlock()
-}
-
-// claimReceive reports whether a transfer ID may start being received,
-// claiming it if so.
-func (d *Daemon) claimReceive(id string) bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.inflightReceive[id] {
-		return false
-	}
-	d.inflightReceive[id] = true
-	return true
-}
-
-func (d *Daemon) releaseReceive(id string) {
-	d.mu.Lock()
-	delete(d.inflightReceive, id)
-	d.mu.Unlock()
+// release returns a finished claim to the set.
+func (c *claimSet) release(id string) {
+	c.mu.Lock()
+	delete(c.m, id)
+	c.mu.Unlock()
 }
 
 // SetStorer declares or retracts this cat's storer role and persists it.
@@ -660,16 +654,18 @@ func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *proto
 	if free, ok := freeSpace(d.InboxDir()); ok && free < uint64(o.Size)+recvReserve {
 		return refuse(fmt.Sprintf("receiver is low on disk (%s free)", HumanBytes(int64(free))))
 	}
-	if !d.claimReceive(o.ID) {
+	if !d.receiveClaims.claim(o.ID) {
 		// A duplicate stream for a transfer already in flight (the
 		// sender retried, or the sweep raced the pull): refuse it.
 		return refuse("transfer already in progress")
 	}
-	defer d.releaseReceive(o.ID)
-	if !d.gauge.tryStart() {
+	defer d.receiveClaims.release(o.ID)
+	select {
+	case d.slots <- struct{}{}:
+		defer func() { <-d.slots }()
+	default:
 		return refuse("receiver busy, try again soon")
 	}
-	defer d.gauge.done()
 	if o.Resumable && !o.Receipt {
 		// A resumable transfer: answer with how far we already are
 		// (if at all) and receive into the partial-receive path.
@@ -918,32 +914,6 @@ func inboxPath(dir, name string) string {
 	}
 }
 
-// transferGauge caps concurrent streaming transfers (sends and
-// receives) across the whole daemon: claims are per-ID only, so
-// without a global cap a flood of concurrent offers can pin every
-// core and exhaust memory in sealing buffers.
-type transferGauge struct {
-	mu     sync.Mutex
-	active int
-	max    int
-}
-
-func (g *transferGauge) tryStart() bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.active >= g.max {
-		return false
-	}
-	g.active++
-	return true
-}
-
-func (g *transferGauge) done() {
-	g.mu.Lock()
-	g.active--
-	g.mu.Unlock()
-}
-
 // ---- outbound ----
 
 // retryOutbox attempts delivery of every pending entry. Each attempt
@@ -957,15 +927,17 @@ func (d *Daemon) retryOutbox() {
 // deliver tries the target directly, then each known storer, and removes
 // the outbox entry on success.
 func (d *Daemon) deliver(e Entry) {
-	if !d.claimDelivery(e.ID) {
+	if !d.deliveryClaims.claim(e.ID) {
 		return // already streaming this entry
 	}
-	defer d.releaseDelivery(e.ID)
-	if !d.gauge.tryStart() {
+	defer d.deliveryClaims.release(e.ID)
+	select {
+	case d.slots <- struct{}{}:
+		defer func() { <-d.slots }()
+	default:
 		d.cfg.logf("clowder: %s to %s deferred: %d transfers already in flight", e.FileName, e.TargetName, maxConcurrentTransfers)
 		return
 	}
-	defer d.gauge.done()
 
 	ctx, cancel := context.WithTimeout(context.Background(), streamTimeout)
 	defer cancel()
@@ -975,7 +947,7 @@ func (d *Daemon) deliver(e Entry) {
 		return
 	}
 	if cat, ok := d.ros.GetByKey(e.TargetKey); ok {
-		if err := d.deliverDirect(ctx, cat, e); err == nil {
+		if err := d.deliverStream(ctx, cat, e, cat.Key, cat.Name, protocol.AckDelivered); err == nil {
 			_ = d.ob.Delete(e.ID)
 			return
 		} else {
@@ -986,7 +958,7 @@ func (d *Daemon) deliver(e Entry) {
 		if s.Key == e.TargetKey || d.isBlockedKey(s.Key) {
 			continue // never relay through a cat we distrust
 		}
-		if err := d.deliverViaStorer(ctx, s, e); err == nil {
+		if err := d.deliverStream(ctx, s, e, e.TargetKey, e.TargetName, protocol.AckStored); err == nil {
 			_ = d.ob.Delete(e.ID)
 			return
 		} else {
@@ -994,17 +966,6 @@ func (d *Daemon) deliver(e Entry) {
 		}
 	}
 	d.cfg.logf("clowder: %s to %s still pending", e.FileName, e.TargetName)
-}
-
-// deliverDirect streams a sealed file straight to its target.
-func (d *Daemon) deliverDirect(ctx context.Context, cat roster.Cat, e Entry) error {
-	return d.deliverStream(ctx, cat, e, cat.Key, cat.Name, protocol.AckDelivered)
-}
-
-// deliverViaStorer streams a sealed file to a storer for an offline
-// target.
-func (d *Daemon) deliverViaStorer(ctx context.Context, storer roster.Cat, e Entry) error {
-	return d.deliverStream(ctx, storer, e, e.TargetKey, e.TargetName, protocol.AckStored)
 }
 
 // deliverStream performs one Offer/stream/Ack exchange toward peer,
@@ -1093,14 +1054,23 @@ func (d *Daemon) sendSealed(ctx context.Context, peer roster.Cat, o *protocol.Of
 		defer d.prog.end(o.ID)
 		w = countingWriter{k: d.prog, id: o.ID, w: pc.Writer()}
 	}
-	plainSize, sealedSha, err := sealAttempt(d.env.Identity.Private, targetPub, secret, resume, w, src)
+	// A resumable attempt (secret non-nil) continues from the resume
+	// offset the receiver reported; a non-resumable one (receipts,
+	// pre-resume outbox entries) seals the whole payload with a fresh
+	// random secret. Resumable sealing repositions the plaintext
+	// source, so src must be an io.Seeker.
+	var sealedSha string
+	if secret == nil {
+		_, sealedSha, err = envelope.SealStream(d.env.Identity.Private, targetPub, w, src)
+	} else {
+		_, sealedSha, err = envelope.SealStreamAt(d.env.Identity.Private, targetPub, secret, resume, w, src)
+	}
 	if err != nil {
 		return err
 	}
 	if sealedSha != o.SHA256 {
 		return errors.New("payload changed during send")
 	}
-	_ = plainSize
 	_ = pc.SetDeadline(time.Now().Add(msgTimeout))
 	m, err = pc.ReadMsg()
 	if err != nil {
@@ -1111,19 +1081,6 @@ func (d *Daemon) sendSealed(ctx context.Context, peer roster.Cat, o *protocol.Of
 	}
 	d.cfg.logf("clowder: sent %s (%s) to %s", o.FileName, HumanBytes(o.Size), o.TargetName)
 	return nil
-}
-
-// sealAttempt seals one attempt of a transfer. A resumable transfer
-// (secret non-nil) continues from the resume offset the receiver
-// reported; a non-resumable one (receipts, pre-resume outbox entries)
-// seals the whole payload with a fresh random secret. Resumable
-// sealing needs to reposition the plaintext source, so src must be
-// an io.Seeker.
-func sealAttempt(sender key.NodePrivate, recipient key.NodePublic, secret []byte, resume int64, dst io.Writer, src io.Reader) (int64, string, error) {
-	if secret == nil {
-		return envelope.SealStream(sender, recipient, dst, src)
-	}
-	return envelope.SealStreamAt(sender, recipient, secret, resume, dst, src)
 }
 
 // syncPeers connects to every roster peer in parallel, exchanging

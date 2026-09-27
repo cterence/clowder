@@ -8,30 +8,11 @@ package daemon
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"sync"
 	"time"
 
 	"clowder/roster"
 )
-
-// Path probes the route to the named cat, waiting for the answer.
-// Requires a transport that implements Pinger (the tailcat
-// transport; the loopback test transport does not).
-func (d *Daemon) Path(ctx context.Context, name string) (PathInfo, error) {
-	cat, ok := d.ros.Get(name)
-	if !ok {
-		return PathInfo{}, fmt.Errorf("unknown cat %q", name)
-	}
-	p, ok := d.tr.(Pinger)
-	if !ok {
-		return PathInfo{}, errors.New("path probing not supported by this transport")
-	}
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	return p.Ping(ctx, cat.Addr)
-}
 
 const (
 	// pathProbeTimeout bounds one background probe: a direct LAN path

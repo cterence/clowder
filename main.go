@@ -92,7 +92,7 @@ usage:
   clow join <CODE>                         pair with the cat that invited
   clow send <CAT> <FILE>                   send a file asynchronously
   clow inbox [--set DIR]                   list received files, or move the inbox
-  clow storer on|off|dropbox               storer duty; dropbox = third parties only
+  clow storer [--max SIZE] on|off|dropbox                storer duty; dropbox = third parties only
   clow outbox clear                        drop all pending sends
   clow distrust <CAT>                     block a cat locally, both ways (no gossip)
   clow trust <CAT>                         undo distrust
@@ -130,7 +130,7 @@ func cmdInit(args []string) error {
 	name := fs.String("name", defaultName(), "this cat's declared name")
 	dir := fs.String("dir", configDir(), "config directory")
 	inbox := fs.String("inbox", "", "directory received files land in (default: ~/Downloads/clowder)")
-	if err := fs.Parse(flagsFirst(fs, args)); err != nil {
+	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *name == "" {
@@ -180,7 +180,7 @@ func cmdDaemon(args []string) error {
 	health := fs.String("health", os.Getenv("CLOWDER_HEALTH_ADDR"), "HTTP health endpoint for container probes, e.g. :8080 (empty disables)")
 	derpMap := fs.String("derp-map", os.Getenv("CLOWDER_DERPMAP_URL"), "URL of a JSON DERP map to use instead of tailcat's default (for self-hosted relays)")
 	pprofOn := fs.Bool("pprof", os.Getenv("CLOWDER_PPROF") == "1", "serve net/http/pprof on the health endpoint (requires --health)")
-	if err := fs.Parse(flagsFirst(fs, args)); err != nil {
+	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	dir := configDir()
@@ -272,7 +272,7 @@ func cmdOutbox(args []string) error {
 // cmdForget drops a cat from the roster.
 func cmdForget(args []string) error {
 	fs := flag.NewFlagSet("forget", flag.ContinueOnError)
-	if err := fs.Parse(flagsFirst(fs, args)); err != nil {
+	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -284,7 +284,7 @@ func cmdForget(args []string) error {
 // cmdDistrust blocks a cat locally, both ways, without gossip.
 func cmdDistrust(args []string) error {
 	fs := flag.NewFlagSet("distrust", flag.ContinueOnError)
-	if err := fs.Parse(flagsFirst(fs, args)); err != nil {
+	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -296,7 +296,7 @@ func cmdDistrust(args []string) error {
 // cmdTrust undoes cmdDistrust.
 func cmdTrust(args []string) error {
 	fs := flag.NewFlagSet("trust", flag.ContinueOnError)
-	if err := fs.Parse(flagsFirst(fs, args)); err != nil {
+	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -311,7 +311,7 @@ func cmdTrust(args []string) error {
 func cmdReset(args []string) error {
 	fs := flag.NewFlagSet("reset", flag.ContinueOnError)
 	yes := fs.Bool("yes", false, "skip the confirmation prompt")
-	if err := fs.Parse(flagsFirst(fs, args)); err != nil {
+	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	dir := configDir()
@@ -338,39 +338,6 @@ func cmdReset(args []string) error {
 	}
 	fmt.Printf("cat reset; run \"clow init\" to create a new one\n")
 	return nil
-}
-
-// flagsFirst reorders args so flags precede positionals, letting Go's
-// flag package (which stops at the first positional) parse
-// `clow add <addr> --name x` as well as `clow add --name x <addr>`.
-// A flag that takes a value keeps the token after it attached; boolean
-// flags do not.
-func flagsFirst(fs *flag.FlagSet, args []string) []string {
-	var flags, pos []string
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		if a == "-" || !strings.HasPrefix(a, "-") {
-			pos = append(pos, a)
-			continue
-		}
-		flags = append(flags, a)
-		if strings.Contains(a, "=") {
-			continue // --flag=value carries its own value
-		}
-		name := strings.TrimPrefix(strings.TrimPrefix(a, "--"), "-")
-		if fl := fs.Lookup(name); fl != nil && !isBoolFlag(fl) && i+1 < len(args) {
-			i++
-			flags = append(flags, args[i])
-		}
-	}
-	return append(flags, pos...)
-}
-
-// isBoolFlag reports whether a flag's value is boolean, which never
-// consumes the following argument.
-func isBoolFlag(fl *flag.Flag) bool {
-	bv, ok := fl.Value.(interface{ IsBoolFlag() bool })
-	return ok && bv.IsBoolFlag()
 }
 
 // dupTag marks names claimed by more than one cat.
@@ -426,11 +393,11 @@ func cmdSend(args []string) error {
 func cmdStorer(args []string) error {
 	fs := flag.NewFlagSet("storer", flag.ContinueOnError)
 	max := fs.String("max", "", "spool capacity, e.g. 500M or 10G (required to enable)")
-	if err := fs.Parse(flagsFirst(fs, args)); err != nil {
+	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: clow storer on|off|dropbox [--max SIZE]")
+		return fmt.Errorf("usage: clow storer [--max SIZE] on|off|dropbox")
 	}
 	mode := fs.Arg(0)
 	switch mode {
@@ -440,7 +407,7 @@ func cmdStorer(args []string) error {
 		}
 	case "off":
 	default:
-		return fmt.Errorf("usage: clow storer on|off|dropbox [--max SIZE]")
+		return fmt.Errorf("usage: clow storer [--max SIZE] on|off|dropbox")
 	}
 	return printResp(call(daemon.Request{
 		Op:      "storer",
@@ -453,7 +420,7 @@ func cmdStorer(args []string) error {
 func cmdStatus(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	addresses := fs.Bool("addresses", false, "also print each cat's tailcat address")
-	if err := fs.Parse(flagsFirst(fs, args)); err != nil {
+	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	resp, err := call(daemon.Request{Op: "status"})
@@ -530,9 +497,9 @@ func cmdStatus(args []string) error {
 	// Queued but not in flight.
 	fmt.Printf("\noutbox: %d pending\n", len(resp.Outbox))
 	for _, e := range resp.Outbox {
-		queue := age(e.AddedAt)
+		queue := sinceStr(e.AddedAt) + " old"
 		if p, ok := sendingID(resp.Progress, e.ID); ok {
-			queue = fmt.Sprintf("%s, sending %.0f%%", age(e.AddedAt), p.Percent()*100)
+			queue = fmt.Sprintf("%s, sending %.0f%%", sinceStr(e.AddedAt)+" old", p.Percent()*100)
 		}
 		fmt.Printf("  %s -> %s (%s)\n", e.FileName, e.TargetName, queue)
 	}
@@ -551,7 +518,7 @@ func cmdStatus(args []string) error {
 		fmt.Printf("\nreceipts: %d shown\n", len(resp.Receipts))
 		for i := len(resp.Receipts) - 1; i >= 0; i-- {
 			r := resp.Receipts[i]
-			fmt.Printf("  %-24s from %-16s delivered %s\n", r.FileName, r.From, age(r.DeliveredAt))
+			fmt.Printf("  %-24s from %-16s delivered %s\n", r.FileName, r.From, sinceStr(r.DeliveredAt)+" old")
 		}
 	}
 
@@ -584,7 +551,6 @@ func plural(n int, one, many string) string {
 	return many
 }
 
-// age renders a coarse "x ago" for pending entries.
 // rateSuffix renders an in-flight transfer's current rate, when enough
 // of a window has elapsed to measure one.
 func rateSuffix(p daemon.Progress) string {
@@ -592,11 +558,6 @@ func rateSuffix(p daemon.Progress) string {
 		return ""
 	}
 	return fmt.Sprintf(" at %s/s", daemon.HumanBytes(int64(p.Bps)))
-}
-
-func age(unix int64) string {
-	d := time.Since(time.Unix(unix, 0)).Round(time.Second)
-	return d.String() + " old"
 }
 
 // sinceStr renders how long ago a unix time was, e.g. "4s" or "1m20s".
@@ -612,7 +573,7 @@ func inboxDir() string { return daemon.InboxDir(configDir()) }
 func cmdInbox(args []string) error {
 	fs := flag.NewFlagSet("inbox", flag.ContinueOnError)
 	set := fs.String("set", "", "change the directory received files land in")
-	if err := fs.Parse(flagsFirst(fs, args)); err != nil {
+	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *set != "" {

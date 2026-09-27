@@ -123,7 +123,6 @@ func (r *Roster) saveLocked() error {
 	return nil
 }
 
-// Get returns the cat with the given declared name.
 // Get returns the cat with the given declared name. Names are not
 // unique (identity is the key); when more than one cat claims the
 // name, the newest entry wins so lookups are deterministic — see

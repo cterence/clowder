@@ -15,6 +15,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
+	"path/filepath"
 	"slices"
 	"sync"
 	"time"
@@ -67,7 +68,7 @@ func loadReceipts(dir string) *receiptKeeper {
 	return k
 }
 
-func receiptsPath(dir string) string { return dir + "/receipts.json" }
+func receiptsPath(dir string) string { return filepath.Join(dir, "receipts.json") }
 
 // record remembers a confirmed delivery (idempotent by transfer ID)
 // and reports whether the ledger changed.
@@ -81,14 +82,6 @@ func (k *receiptKeeper) record(r Receipt) bool {
 	k.m[r.ID] = r
 	_ = persist.SaveJSON(k.path, k.m) // persist failure keeps the ledger in memory
 	return true
-}
-
-// get returns one ledger entry.
-func (k *receiptKeeper) get(id string) (Receipt, bool) {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	r, ok := k.m[id]
-	return r, ok
 }
 
 // recent returns up to n entries, newest first.

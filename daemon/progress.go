@@ -6,6 +6,7 @@ package daemon
 // ID: the outbox entry ID for sends, the offer ID for receives.
 
 import (
+	"io"
 	"slices"
 	"sync"
 	"time"
@@ -160,10 +161,8 @@ func (k *progressKeeper) rateLocked(id string, now time.Time) float64 {
 type countingWriter struct {
 	k  *progressKeeper
 	id string
-	w  writeOnly
+	w  io.Writer
 }
-
-type writeOnly interface{ Write([]byte) (int, error) }
 
 func (c countingWriter) Write(p []byte) (int, error) {
 	n, err := c.w.Write(p)
@@ -175,10 +174,8 @@ func (c countingWriter) Write(p []byte) (int, error) {
 type countingReader struct {
 	k  *progressKeeper
 	id string
-	r  readOnly
+	r  io.Reader
 }
-
-type readOnly interface{ Read([]byte) (int, error) }
 
 func (c countingReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)

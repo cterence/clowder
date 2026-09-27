@@ -15,9 +15,9 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"time"
 
+	"clowder/envelope"
 	"clowder/persist"
 )
 
@@ -168,7 +168,7 @@ func (s *Spool) PutResume(meta Meta, resume int64, r io.Reader) error {
 	// is consumed and verified against the blob's own header: a
 	// mismatch means the sender is not re-sending the same stream,
 	// and the deposit restarts from zero rather than mixing bytes.
-	var header [envelopeHeaderLen]byte
+	var header [envelope.HeaderLen]byte
 	if _, err := io.ReadFull(r, header[:]); err != nil {
 		return fmt.Errorf("store: reading re-sent header: %w", err)
 	}
@@ -185,12 +185,12 @@ func (s *Spool) PutResume(meta Meta, resume int64, r io.Reader) error {
 			_ = f.Close()
 			return fmt.Errorf("store: writing part header: %w", err)
 		}
-		if _, err := f.Seek(envelopeHeaderLen, io.SeekStart); err != nil {
+		if _, err := f.Seek(envelope.HeaderLen, io.SeekStart); err != nil {
 			_ = f.Close()
 			return fmt.Errorf("store: seeking part blob: %w", err)
 		}
 	} else {
-		var existing [envelopeHeaderLen]byte
+		var existing [envelope.HeaderLen]byte
 		if _, err := f.ReadAt(existing[:], 0); err != nil {
 			_ = f.Close()
 			return fmt.Errorf("store: reading part header: %w", err)
@@ -210,9 +210,6 @@ func (s *Spool) PutResume(meta Meta, resume int64, r io.Reader) error {
 			_ = f.Close()
 			return fmt.Errorf("store: seeking part blob: %w", err)
 		}
-	}
-	if err != nil {
-		return fmt.Errorf("store: opening part blob: %w", err)
 	}
 	fail := func(err error) error {
 		_ = f.Close()
@@ -235,8 +232,8 @@ func (s *Spool) PutResume(meta Meta, resume int64, r io.Reader) error {
 	// the header precedes the frames on both a fresh and a resumed
 	// attempt, and was consumed above.
 	offset := resume
-	if offset < envelopeHeaderLen {
-		offset = envelopeHeaderLen
+	if offset < envelope.HeaderLen {
+		offset = envelope.HeaderLen
 	}
 	remaining := meta.Size - offset
 	var frame [4]byte
@@ -273,12 +270,6 @@ func (s *Spool) PutResume(meta Meta, resume int64, r io.Reader) error {
 	return nil
 }
 
-// envelopeHeaderLen mirrors envelope.HeaderLen: the sealed stream
-// header the sender re-emits on every attempt. The store package
-// does not depend on envelope (it never opens streams), so the
-// constant is local and pinned by TestPutResumeRoundTrip.
-const envelopeHeaderLen = 115
-
 // truncatePartToBoundary shrinks a partial deposit's part blob back
 // to the last complete frame boundary: the offset a retry can safely
 // resume from. The walk starts after the header and stops at a zero
@@ -292,7 +283,7 @@ func (s *Spool) truncatePartToBoundary(meta Meta) {
 		return
 	}
 	defer f.Close()
-	var offset int64 = envelopeHeaderLen
+	var offset int64 = envelope.HeaderLen
 	var frame [4]byte
 	best := int64(0)
 	for {
@@ -326,45 +317,12 @@ func (s *Spool) truncatePartToBoundary(meta Meta) {
 	}
 }
 
-// PartsUsage returns the total bytes held in partial deposits, which
-// count toward the spool's capacity like completed blobs.
-func (s *Spool) PartsUsage() int64 {
-	des, err := os.ReadDir(s.dir)
-	if err != nil {
-		return 0
-	}
-	var total int64
-	for _, de := range des {
-		if strings.HasSuffix(de.Name(), ".blob.part") {
-			if fi, err := de.Info(); err == nil {
-				total += fi.Size()
-			}
-		}
-	}
-	return total
-}
-
 // List returns the metadata of files held for the given target, sorted by
 // stored time, dropping expired entries.
 func (s *Spool) List(targetKey string) []Meta {
-	now := time.Now()
-	var metas []Meta
-	for _, m := range s.all() {
-		if m.TargetKey != targetKey {
-			continue
-		}
-		if m.ExpiresAt(s.ttl).Before(now) {
-			// An unremovable expired entry resurfaces on the next
-			// Sweep; keep listing the rest.
-			_ = s.Delete(m.ID)
-			continue
-		}
-		metas = append(metas, m)
-	}
-	slices.SortFunc(metas, func(a, b Meta) int {
-		return int(a.StoredAt - b.StoredAt)
+	return slices.DeleteFunc(s.All(), func(m Meta) bool {
+		return m.TargetKey != targetKey
 	})
-	return metas
 }
 
 // All returns the metadata of every held entry (expired entries

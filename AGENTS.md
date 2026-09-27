@@ -140,6 +140,7 @@ reason. Update this list and the README when something ships.
    override entries via LWW (brick an entry with a broken address, or
    duplicate a name to capture sends). Merge should require a valid
    signature on entries for keys already known.
+   Upon resetting a cat, a leave should be sent to the clowder.
 2. **Android app client** — architecture DECIDED, app scaffolded in
    android/. The daemon is the plain GOOS=android binary shipped as
    libclowder.so (nativeLibraryDir is executable), exec'd by
@@ -160,8 +161,7 @@ reason. Update this list and the README when something ships.
    delivery notifications, and the storer-role UI. Termux: running the CLI in
    Termux is explicitly NOT a goal (the foreground-service app is the
    answer); on-device builds are blocked until Termux ships
-   go >= 1.27.1; the linker64 argv quirk is already handled in
-   argvfix_termux.go.
+   go >= 1.27.1.
 3. **Multiple clowders** — named clowders: per-clowder roster files,
    `--clowder` on invite/join/send, Hello carries the clowder name so a
    connection routes to the right roster. One identity, one daemon,

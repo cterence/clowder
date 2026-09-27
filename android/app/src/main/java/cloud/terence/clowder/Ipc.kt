@@ -48,7 +48,7 @@ data class Status(
     val receivedBytes: Long,
 )
 
-data class PathInfo(val direct: Boolean, val endpoint: String, val derpRegionCode: String)
+data class PathInfo(val direct: Boolean, val endpoint: String)
 
 /** Builds the request JSON for an op, mirroring daemon.Request's fields. */
 private fun requestJson(op: String, target: String? = null, path: String? = null, words: String? = null): String {
@@ -96,7 +96,6 @@ fun parseStatus(r: JSONObject): Status {
                 paths[k] = PathInfo(
                     direct = info.optBoolean("direct", false),
                     endpoint = info.optString("endpoint", ""),
-                    derpRegionCode = info.optString("derp_region_code", ""),
                 )
             }
         }

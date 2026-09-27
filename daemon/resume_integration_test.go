@@ -113,13 +113,6 @@ func TestDirectSendResumesAfterCut(t *testing.T) {
 		return ok && st.PlainLen > 0
 	}, "the receiver to checkpoint partial progress")
 
-	// The dormant part is visible in status: checkpointed bytes with
-	// no attempt in flight, waiting for a retry to resume from.
-	waitFor(t, func() bool {
-		resp := fluff.handleIPC(Request{Op: "status"})
-		return resp.OK && len(resp.Parts) == 1 && resp.Parts[0].PlainLen > 0
-	}, "the partial receive to show in status")
-
 	// Release the kill: the next attempt must complete.
 	tr.quota.Store(1 << 40)
 	var got string

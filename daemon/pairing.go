@@ -74,13 +74,8 @@ type pairingKeys struct {
 // derivePairing derives both pairing identities and the shared PSK from
 // the code words. Deterministic: both sides derive identical material.
 func derivePairing(words []string) (*pairingKeys, error) {
-	if len(words) != pairWordCount {
-		return nil, fmt.Errorf("daemon: pairing code has %d words, want %d", len(words), pairWordCount)
-	}
-	for _, w := range words {
-		if !slices.Contains(pairingWords, w) {
-			return nil, fmt.Errorf("daemon: %q is not a pairing word", w)
-		}
+	if _, err := deriveCheckWords(words); err != nil {
+		return nil, err
 	}
 
 	seed := sha512.Sum512([]byte("clowder/pair/v1\x00" + strings.Join(words, " ")))
