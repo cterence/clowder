@@ -1226,6 +1226,12 @@ func (d *Daemon) mergeRemote(sync *protocol.RosterSync) {
 		if c.Key == "" || c.Key == me.Key {
 			continue
 		}
+		// A blocked cat (forgotten or distrusted) is out on purpose:
+		// its entry must not ride back in on another peer's sync.
+		// Re-pairing is the way back (addPeerCat bypasses the merge).
+		if d.isBlockedKey(c.Key) || d.isBlockedKey(c.ClientKey) {
+			continue
+		}
 		filtered = append(filtered, c)
 	}
 	changed, err := d.ros.Merge(filtered)

@@ -235,7 +235,7 @@ One line each; the pinning tests carry the details.
 - **Local trust commands**: `clow distrust`/`trust` (blocklist in
   blocked.json, never propagated), `clow forget` (roster entry plus
   outbox), `clow rotate` (new PSK/address under the same identity),
-  and duplicate-name hardening (LWW is per-key, so collisions persist;
+  forget that sticks (a forgotten cat's entry is refused by roster merge, so peers that still know it cannot re-add it locally — re-pairing is the way back), and duplicate-name hardening (LWW is per-key, so collisions persist;
   `clow status` tags them and resolution is social).
 - **Daemon lifecycle**: a single-instance lock on the config dir — a
   second Run refuses rather than wedging the two-keypair invariant

@@ -80,7 +80,9 @@ path if lost — except the identity.
     clow outbox clear                                   drop pending sends
     clow rotate                                         new address, announced to the clowder
     clow leave                                         depart: signed goodbye, cats drop you
-    clow forget <CAT>                                   drop a cat from the roster
+    clow forget <CAT>                                   drop a cat from the roster (it
+                                                        stays dropped: syncs re-adding
+                                                        it are refused)
     clow distrust <CAT>                                 block a cat locally (both ways, no gossip)
     clow trust <CAT>                                    undo distrust
     clow status [--addresses]                           config, stats, outbox, spool,
