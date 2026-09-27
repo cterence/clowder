@@ -5,6 +5,7 @@ import android.net.LocalSocket
 import android.net.LocalSocketAddress
 import android.net.Uri
 import android.os.Bundle
+import android.os.FileObserver
 import android.text.format.DateUtils
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -23,6 +24,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
@@ -30,17 +32,23 @@ import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Email
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -55,6 +63,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -107,6 +118,12 @@ fun ClowderApp() {
         Tab("Log", Icons.Outlined.Info),
     )
     var tab by remember { mutableIntStateOf(0) }
+    // The daemon is the app: it starts with the UI (this effect
+    // composes once the cat is initialized) and is stopped from the
+    // settings dialog.
+    LaunchedEffect(Unit) {
+        if (!ClowdService.running) ClowdService.start(ctx)
+    }
     Scaffold(
         bottomBar = {
             NavigationBar {
@@ -249,9 +266,58 @@ fun StatusScreen(onReset: () -> Unit) {
     val ctx = LocalContext.current
     var status by remember { mutableStateOf<Status?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    var showSettings by remember { mutableStateOf(false) }
     var showReset by remember { mutableStateOf(false) }
     var resetResult by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+
+    if (showSettings) {
+        AlertDialog(
+            onDismissRequest = { showSettings = false },
+            title = { Text("Settings") },
+            text = {
+                Column {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        LivenessDot(ClowdService.running)
+                        Text(
+                            if (ClowdService.running) "daemon running" else "daemon stopped",
+                            style = MaterialTheme.typography.titleSmall,
+                        )
+                        Spacer(Modifier.weight(1f))
+                        if (ClowdService.running) {
+                            OutlinedButton(onClick = {
+                                ClowdService.stop(ctx)
+                                showSettings = false
+                            }) { Text("Stop") }
+                        } else {
+                            FilledTonalButton(onClick = {
+                                ClowdService.start(ctx)
+                                showSettings = false
+                            }) {
+                                Icon(Icons.Outlined.PlayArrow, contentDescription = null)
+                                Text("Start")
+                            }
+                        }
+                    }
+                    HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                    TextButton(onClick = {
+                        ClowdService.clearLog()
+                        showSettings = false
+                    }) { Text("Clear daemon log") }
+                    TextButton(onClick = {
+                        showSettings = false
+                        showReset = true
+                    }) { Text("Reset this cat\u2026", color = MaterialTheme.colorScheme.error) }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showSettings = false }) { Text("Done") }
+            },
+        )
+    }
 
     if (showReset) {
         AlertDialog(
@@ -325,16 +391,8 @@ fun StatusScreen(onReset: () -> Unit) {
                     style = MaterialTheme.typography.titleMedium,
                 )
                 Spacer(Modifier.weight(1f))
-                IconButton(onClick = { showReset = true }) {
+                IconButton(onClick = { showSettings = true }) {
                     Icon(Icons.Outlined.Settings, contentDescription = "settings")
-                }
-                if (ClowdService.running) {
-                    OutlinedButton(onClick = { ClowdService.stop(ctx) }) { Text("Stop") }
-                } else {
-                    FilledTonalButton(onClick = { ClowdService.start(ctx) }) {
-                        Icon(Icons.Outlined.PlayArrow, contentDescription = null)
-                        Text("Start")
-                    }
                 }
             }
             error?.let {
@@ -499,9 +557,11 @@ fun PairScreen() {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SendScreen() {
     val ctx = LocalContext.current
+    var expanded by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     var cats by remember { mutableStateOf<List<Cat>>(emptyList()) }
     var target by remember { mutableStateOf<String?>(null) }
@@ -541,12 +601,34 @@ fun SendScreen() {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
-            cats.forEach { c ->
-                FilterChip(
-                    selected = target == c.name,
-                    onClick = { target = if (target == c.name) null else c.name },
-                    label = { Text(c.name) },
+            ExposedDropdownMenuBox(
+                expanded = expanded,
+                onExpandedChange = { expanded = it },
+            ) {
+                OutlinedTextField(
+                    value = target ?: "",
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("send to") },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .menuAnchor(MenuAnchorType.PrimaryNotEditable),
                 )
+                DropdownMenu(
+                    expanded = expanded,
+                    onDismissRequest = { expanded = false },
+                ) {
+                    cats.forEach { c ->
+                        DropdownMenuItem(
+                            text = { Text(c.name) },
+                            onClick = {
+                                target = c.name
+                                expanded = false
+                            },
+                        )
+                    }
+                }
             }
         }
         Button(
@@ -594,6 +676,26 @@ fun InboxScreen() {
         }
     }
 
+    // The daemon lands files in the inbox dir; watch it instead of a
+    // manual refresh. (The deprecated String constructor covers
+    // minSdk 26; the File one is API 29+.)
+    DisposableEffect(Unit) {
+        val dir = ClowdService.inboxDir(ctx)
+        if (!dir.isDirectory) dir.mkdirs()
+        @Suppress("DEPRECATION")
+        val observer = object : FileObserver(
+            dir.path,
+            FileObserver.CLOSE_WRITE or FileObserver.MOVED_TO or
+                FileObserver.MOVED_FROM or FileObserver.DELETE,
+        ) {
+            override fun onEvent(event: Int, path: String?) {
+                refreshKey++
+            }
+        }
+        observer.startWatching()
+        onDispose { observer.stopWatching() }
+    }
+
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier
@@ -602,10 +704,6 @@ fun InboxScreen() {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text("inbox", style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.weight(1f))
-            IconButton(onClick = { refreshKey++ }) {
-                Icon(Icons.Outlined.Refresh, contentDescription = "refresh")
-            }
         }
         if (files.isEmpty()) {
             Text(
@@ -649,15 +747,67 @@ fun LogScreen() {
         color = MaterialTheme.colorScheme.surfaceVariant,
         modifier = Modifier.fillMaxSize(),
     ) {
-        SelectionContainer {
-            LazyColumn(Modifier.padding(12.dp)) {
-                item {
-                    Text(
-                        ClowdService.recentLog(),
-                        fontFamily = FontFamily.Monospace,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+        var log by remember { mutableStateOf(ClowdService.recentLog()) }
+        val listState = rememberLazyListState()
+        val scope = rememberCoroutineScope()
+        // Follow the tail unless the user scrolled away from it; the
+        // Follow button pins back to the newest line.
+        var follow by remember { mutableStateOf(true) }
+
+        // Poll the service's ring buffer; while following, pin to the
+        // newest line.
+        LaunchedEffect(Unit) {
+            while (true) {
+                log = ClowdService.recentLog()
+                if (follow) {
+                    val n = listState.layoutInfo.totalItemsCount
+                    if (n > 0) listState.scrollToItem(n - 1)
                 }
+                delay(1000)
+            }
+        }
+
+        // A user scroll that leaves the newest line stops the pin.
+        LaunchedEffect(listState) {
+            snapshotFlow { listState.isScrollInProgress }
+                .collect { scrolling ->
+                    if (scrolling) {
+                        val info = listState.layoutInfo
+                        val last = info.visibleItemsInfo.lastOrNull()?.index ?: 0
+                        if (info.totalItemsCount > 0 && last < info.totalItemsCount - 1) {
+                            follow = false
+                        }
+                    }
+                }
+        }
+
+        Box(Modifier.fillMaxSize()) {
+            SelectionContainer {
+                LazyColumn(state = listState, modifier = Modifier.padding(12.dp)) {
+                    items(if (log.isEmpty()) emptyList() else log.split("\n")) { line ->
+                        Text(
+                            line,
+                            fontFamily = FontFamily.Monospace,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
+            if (!follow) {
+                ExtendedFloatingActionButton(
+                    text = { Text("Follow") },
+                    icon = { Icon(Icons.Outlined.KeyboardArrowDown, contentDescription = null) },
+                    onClick = {
+                        follow = true
+                        scope.launch {
+                            val n = listState.layoutInfo.totalItemsCount
+                            if (n > 0) listState.scrollToItem(n - 1)
+                        }
+                    },
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(16.dp),
+                )
             }
         }
     }

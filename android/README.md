@@ -52,7 +52,7 @@ arm64-only daemon; a device is the answer there.)
 | init | exec `libclowder.so init --name <name>` with `CLOWDER_DIR` and `HOME` pointing into the app sandbox |
 | status / pair / send / outbox | IPC ops (`status`, `invite`, `join`, `send`, `cats`) over `clow.sock`, the same wire the CLI speaks |
 | inbox | the daemon delivers into `$HOME/Downloads/clowder` inside the app's files dir; the app lists and shares it via FileProvider |
-| daemon lifecycle | `ClowdService`, a `dataSync` foreground service holding a partial wake lock, restarting the process with backoff if it dies |
+| daemon lifecycle | starts with the app (no manual start); `ClowdService`, a `dataSync` foreground service holding a partial wake lock, restarts the process with backoff if it dies; stop/start, clear the log and reset live in the Status screen's settings dialog |
 | reset | the Status screen's settings dialog: stops the daemon, waits out its IPC socket, then exec's `libclowder.so reset --yes` and returns to init |
 
 ## Notes and limits
@@ -66,5 +66,9 @@ arm64-only daemon; a device is the answer there.)
 - Battery: doze can still throttle network for background apps; the
   wake lock keeps transfers alive with the screen off, but this is a
   phone — expect the storer to matter.
+- The inbox updates live: a FileObserver watches the daemon's
+  inbox directory, so received files appear without a refresh. The
+  log screen tails the daemon's ring buffer and autoscrolls unless
+  you scroll up (a Follow button resumes).
 - Not implemented yet: start on boot, per-cat notification on
   delivery, the storer role UI.

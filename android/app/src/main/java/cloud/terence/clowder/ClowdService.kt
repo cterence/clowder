@@ -51,6 +51,8 @@ class ClowdService : Service() {
 
         fun recentLog(): String = synchronized(logLines) { logLines.joinToString("\n") }
 
+        fun clearLog() = synchronized(logLines) { logLines.clear() }
+
         fun configDir(ctx: Context): File = File(ctx.filesDir, "clowder")
         fun socketFile(ctx: Context): File = File(configDir(ctx), "clow.sock")
         fun inboxDir(ctx: Context): File = File(ctx.filesDir, "Downloads/clowder")
