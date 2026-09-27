@@ -31,8 +31,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Email
 import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.Info
-import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
@@ -46,7 +45,7 @@ import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.Icon
@@ -65,7 +64,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.derivedStateOf
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -115,9 +113,9 @@ fun ClowderApp() {
         Tab("Pair", Icons.Outlined.Add),
         Tab("Send", Icons.Outlined.Share),
         Tab("Inbox", Icons.Outlined.Email),
-        Tab("Log", Icons.Outlined.Info),
     )
     var tab by remember { mutableIntStateOf(0) }
+    var showLog by remember { mutableStateOf(false) }
     // The daemon is the app: it starts with the UI (this effect
     // composes once the cat is initialized) and is stopped from the
     // settings dialog.
@@ -140,14 +138,19 @@ fun ClowderApp() {
     ) { padding ->
         Box(Modifier.padding(padding)) {
             when (tab) {
-                0 -> StatusScreen(onReset = { initialized = false })
+                0 -> StatusScreen(
+                    onReset = { initialized = false },
+                    onShowLog = { showLog = true },
+                )
                 1 -> PairScreen()
                 2 -> SendScreen()
                 3 -> InboxScreen()
-                4 -> LogScreen()
             }
         }
     }
+    // The log opens from the settings dialog, covering the scaffold
+    // (bottom bar included) while it shows.
+    if (showLog) LogScreen(onClose = { showLog = false })
 }
 
 /** `clow init <name>` runs the binary directly (init is a local file
@@ -265,7 +268,7 @@ private fun LivenessDot(online: Boolean) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun StatusScreen(onReset: () -> Unit) {
+fun StatusScreen(onReset: () -> Unit, onShowLog: () -> Unit) {
     val ctx = LocalContext.current
     var status by remember { mutableStateOf<Status?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -306,6 +309,10 @@ fun StatusScreen(onReset: () -> Unit) {
                         }
                     }
                     HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                    TextButton(onClick = {
+                        showSettings = false
+                        onShowLog()
+                    }) { Text("View daemon log") }
                     TextButton(onClick = {
                         ClowdService.clearLog()
                         showSettings = false
@@ -745,48 +752,60 @@ private fun openFile(ctx: android.content.Context, f: File) {
 }
 
 @Composable
-fun LogScreen() {
+fun LogScreen(onClose: () -> Unit) {
     Surface(
         color = MaterialTheme.colorScheme.surfaceVariant,
         modifier = Modifier.fillMaxSize(),
     ) {
+        var follow by remember { mutableStateOf(true) }
         var log by remember { mutableStateOf(ClowdService.recentLog()) }
         val listState = rememberLazyListState()
         val scope = rememberCoroutineScope()
-        // Follow the tail unless the user scrolled away from it; the
-        // Follow button pins back to the newest line.
-        var follow by remember { mutableStateOf(true) }
 
-        // Poll the service's ring buffer; while following, pin to the
-        // newest line.
-        LaunchedEffect(Unit) {
-            while (true) {
-                log = ClowdService.recentLog()
-                if (follow) {
-                    val n = listState.layoutInfo.totalItemsCount
-                    if (n > 0) listState.scrollToItem(n - 1)
-                }
-                delay(1000)
-            }
-        }
-
-        // A user scroll that leaves the newest line stops the pin.
-        LaunchedEffect(listState) {
-            snapshotFlow { listState.isScrollInProgress }
-                .collect { scrolling ->
-                    if (scrolling) {
-                        val info = listState.layoutInfo
-                        val last = info.visibleItemsInfo.lastOrNull()?.index ?: 0
-                        if (info.totalItemsCount > 0 && last < info.totalItemsCount - 1) {
-                            follow = false
+        Column(Modifier.fillMaxSize()) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(start = 16.dp, end = 4.dp),
+            ) {
+                Text(
+                    "daemon log",
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.weight(1f),
+                )
+                Text("autoscroll", style = MaterialTheme.typography.bodySmall)
+                Checkbox(checked = follow, onCheckedChange = { on ->
+                    follow = on
+                    if (on) {
+                        scope.launch {
+                            val n = listState.layoutInfo.totalItemsCount
+                            if (n > 0) listState.scrollToItem(n - 1)
                         }
                     }
+                })
+                IconButton(onClick = onClose) {
+                    Icon(Icons.Outlined.Close, contentDescription = "Close")
                 }
-        }
-
-        Box(Modifier.fillMaxSize()) {
+            }
+            HorizontalDivider()
             SelectionContainer {
-                LazyColumn(state = listState, modifier = Modifier.padding(12.dp)) {
+                // Poll the service's ring buffer; while autoscroll is
+                // checked, pin to the newest line.
+                LaunchedEffect(Unit) {
+                    while (true) {
+                        log = ClowdService.recentLog()
+                        if (follow) {
+                            val n = listState.layoutInfo.totalItemsCount
+                            if (n > 0) listState.scrollToItem(n - 1)
+                        }
+                        delay(1000)
+                    }
+                }
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(12.dp),
+                ) {
                     items(if (log.isEmpty()) emptyList() else log.split("\n")) { line ->
                         Text(
                             line,
@@ -795,22 +814,6 @@ fun LogScreen() {
                         )
                     }
                 }
-            }
-            if (!follow) {
-                ExtendedFloatingActionButton(
-                    text = { Text("Follow") },
-                    icon = { Icon(Icons.Outlined.KeyboardArrowDown, contentDescription = null) },
-                    onClick = {
-                        follow = true
-                        scope.launch {
-                            val n = listState.layoutInfo.totalItemsCount
-                            if (n > 0) listState.scrollToItem(n - 1)
-                        }
-                    },
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(16.dp),
-                )
             }
         }
     }

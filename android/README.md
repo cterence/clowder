@@ -52,7 +52,7 @@ arm64-only daemon; a device is the answer there.)
 | init | exec `libclowder.so init --name <name>` with `CLOWDER_DIR` and `HOME` pointing into the app sandbox |
 | status / pair / send / outbox | IPC ops (`status`, `invite`, `join`, `send`, `cats`) over `clow.sock`, the same wire the CLI speaks |
 | inbox | the daemon delivers into `$HOME/Downloads/clowder` inside the app's files dir; the app lists and shares it via FileProvider |
-| daemon lifecycle | starts with the app (no manual start); `ClowdService`, a `dataSync` foreground service holding a partial wake lock, restarts the process with backoff if it dies; stop/start, clear the log and reset live in the Status screen's settings dialog |
+| daemon lifecycle | starts with the app (no manual start); `ClowdService`, a `dataSync` foreground service holding a partial wake lock, restarts the process with backoff if it dies; stop/start, view/clear the log and reset live in the Status screen's settings dialog |
 | reset | the Status screen's settings dialog: announces the leave (`leave` op, so the clowder learns this cat is gone), stops the daemon, waits out its IPC socket, then exec's `libclowder.so reset --yes` and returns to init |
 
 ## Notes and limits
@@ -68,7 +68,8 @@ arm64-only daemon; a device is the answer there.)
   phone — expect the storer to matter.
 - The inbox updates live: a FileObserver watches the daemon's
   inbox directory, so received files appear without a refresh. The
-  log screen tails the daemon's ring buffer and autoscrolls unless
-  you scroll up (a Follow button resumes).
+  log — opened from the settings dialog, not a tab — tails the
+  daemon's ring buffer in selectable text, with an autoscroll
+  checkbox to pin or free the tail.
 - Not implemented yet: start on boot, per-cat notification on
   delivery, the storer role UI.
