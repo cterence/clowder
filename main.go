@@ -458,11 +458,11 @@ func cmdStatus(args []string) error {
 		var life string
 		switch {
 		case !ok:
-			life = "never seen"
+			life = "offline (never seen)"
 		case time.Since(time.Unix(seen, 0)) < 2*time.Minute:
 			life = fmt.Sprintf("online (seen %s ago)", sinceStr(seen))
 		default:
-			life = fmt.Sprintf("seen %s ago", sinceStr(seen))
+			life = fmt.Sprintf("offline (seen %s ago)", sinceStr(seen))
 		}
 		route := ""
 		if p := resp.Paths[c.Key]; p != nil {
