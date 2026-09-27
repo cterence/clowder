@@ -81,8 +81,9 @@ have grown the same private helper, hoist it there.
   per-side PSKs cross-deliver handshakes and wedge unrecoverably.
 - Both sides of a pairing derive ephemeral keypairs from the words;
   real addresses ride the encrypted pairing channel.
-- Roster sync is add-only LWW; never delete entries outside the (pending)
-  tombstone mechanism.
+- Roster sync is add-only LWW; entries are removed only by signed
+  leave tombstones (see Shipped), which always outrank unsigned
+  re-adds.
 - Keep transferred files out of memory: stream everywhere; the sealed
   stream is opaque to storers by construction.
 - Loopback tests cannot catch transport-authentication bugs; run
@@ -128,20 +129,7 @@ module; a signed lease beats leader election at this scale.
 Ordered by complexity, easiest first; do not reorder without a
 reason. Update this list and the README when something ships.
 
-1. **Leave with signed forget-me gossip + roster entry signing** —
-   derive an Ed25519 keypair from the node key seed
-   (ed25519.NewKeyFromSeed(nodeRaw32)); announce the sign-public in
-   Hello/roster entries; `clow leave` broadcasts a signed {leaver,
-   timestamp} to all reachable peers; recipients drop the leaver
-   (roster, allowlist, spool) and re-broadcast once. Roster sync must
-   carry signed tombstones that always outrank later unsigned re-adds
-   (offline peers catch up on next sync). The SAME sign key must
-   authenticate roster entries: today any trusted cat can inject or
-   override entries via LWW (brick an entry with a broken address, or
-   duplicate a name to capture sends). Merge should require a valid
-   signature on entries for keys already known.
-   Upon resetting a cat, a leave should be sent to the clowder.
-2. **Android app client** — architecture DECIDED, app scaffolded in
+1. **Android app client** — architecture DECIDED, app scaffolded in
    android/. The daemon is the plain GOOS=android binary shipped as
    libclowder.so (nativeLibraryDir is executable), exec'd by
    ClowdService, a dataSync foreground service holding a partial wake
@@ -162,7 +150,7 @@ reason. Update this list and the README when something ships.
    Termux is explicitly NOT a goal (the foreground-service app is the
    answer); on-device builds are blocked until Termux ships
    go >= 1.27.1.
-3. **Multiple clowders** — named clowders: per-clowder roster files,
+2. **Multiple clowders** — named clowders: per-clowder roster files,
    `--clowder` on invite/join/send, Hello carries the clowder name so a
    connection routes to the right roster. One identity, one daemon,
    clowders stay disjoint (flat sync would otherwise merge them).
@@ -171,7 +159,7 @@ reason. Update this list and the README when something ships.
    every poll tick, so a full-roster exchange is O(N²) bytes per
    cycle — trivial at homelab scale, but a large-roster cadence
    belongs here.
-4. **Nix service packaging: systemd + launchd** — run the daemon as a
+3. **Nix service packaging: systemd + launchd** — run the daemon as a
    real service from the flake. Linux: a NixOS module
    (`nixosModules.default`) wrapping `packages.default` in a systemd
    unit — `StateDirectory` for the config dir, Restart=on-failure, the
@@ -190,6 +178,23 @@ reason. Update this list and the README when something ships.
 
 One line each; the pinning tests carry the details.
 
+- **Signed leave + roster entry signing**: each cat derives an
+  Ed25519 keypair from its node key seed; the public half rides
+  Hello, PairIntro and roster entries, and signs both (roster.SignCat
+  / verifyEntry — merge requires a valid signature from the pinned
+  sign key for keys already known, so no trusted cat can inject or
+  override entries via LWW; TestMergeRequiresValidSignatureForKnownKeys,
+  TestMergePinsSignKeyOfUnknownCats) and its leave. `clow leave`
+  broadcasts a signed tombstone to every reachable peer; recipients
+  drop the leaver (roster, allowlist, spool, outbox) and re-broadcast
+  once (claim-guarded); tombstones ride roster sync so offline peers
+  catch up, and always outrank unsigned re-adds — only a newer entry
+  signed by the leaver's own sign key (a re-pair, which clears the
+  tombstone on both sides) resurrects it
+  (TestTombstoneDropsEntryAndOutranksReadd,
+  TestLeaveDropsLeaverAndRebroadcasts, TestLeaveReachesOfflinePeerViaSync).
+  A reset announces the leave first while the daemon still runs (CLI
+  and the Android app's reset flow).
 - **Resumable transfers**: an interrupted transfer resumes from the
   chunks already on disk instead of restarting — every send carries a
   fixed per-stream seal secret persisted in its outbox entry, so every
@@ -263,3 +268,9 @@ size quota; rosters created before the two-keypair fix must be re-paired
 chunks already on disk, but the resume rides a retry: nothing probes
 for a checkpoint before the sender commits to an attempt, and a
 pre-resume outbox entry (or a receipt) restarts from chunk zero.
+Entry signing has an upgrade seam: a roster entry with no pinned sign
+key (pre-signing) accepts the first sign key it sees — from a sync or
+an authenticated Hello — so a cat upgrading mid-attack can still be
+pinned wrong once; and a tombstone for a key a cat never knew (and
+has no tombstone for) is unverifiable and dropped, so a brand-new
+member can be fed a stale pre-leave entry by a stale peer.

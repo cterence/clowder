@@ -32,7 +32,13 @@ type Cat struct {
 	Dropbox bool `json:"dropbox,omitempty" cbor:"d,omitempty"`
 	// Capacity is the storer's spool budget in bytes (storer only).
 	Capacity int64 `json:"capacity,omitempty" cbor:"p,omitempty"`
-	Updated  int64 `json:"updated" cbor:"u"`
+	// SignKey is the hex Ed25519 public key derived from the cat's
+	// node key seed; it signs the entry (Sig) and the cat's leave.
+	SignKey string `json:"sign_key,omitempty" cbor:"g,omitempty"`
+	// Sig is the cat's Ed25519 signature over the entry itself
+	// (Sig excluded), made with SignKey.
+	Sig     []byte `json:"sig,omitempty" cbor:"e,omitempty"`
+	Updated int64  `json:"updated" cbor:"u"`
 }
 
 // NewCat builds a Cat from a tailcat address, deriving the identity key
@@ -56,22 +62,24 @@ func NewCat(name, addr string, updated int64) (Cat, error) {
 // Roster is the set of known cats, safe for concurrent use. The zero value
 // is not usable; call New.
 type Roster struct {
-	mu   sync.Mutex
-	cats map[string]Cat // keyed by Cat.Key
-	path string         // persistence path, empty for in-memory rosters
+	mu         sync.Mutex
+	cats       map[string]Cat       // keyed by Cat.Key
+	tombstones map[string]Tombstone // keyed by Tombstone.Key
+	path       string               // persistence path, empty for in-memory rosters
 }
 
 // New returns an empty, in-memory roster. Call SetPath to enable
 // persistence.
 func New() *Roster {
-	return &Roster{cats: map[string]Cat{}}
+	return &Roster{cats: map[string]Cat{}, tombstones: map[string]Tombstone{}}
 }
 
 // SetPath names the JSON file the roster persists to and loads any
-// existing entries from it.
+// existing entries (and tombstones, kept next to it) from it.
 func (r *Roster) SetPath(path string) error {
 	r.mu.Lock()
 	r.path = path
+	r.tombstones = loadTombstones(tombstonePath(path))
 	r.mu.Unlock()
 	if err := r.Load(); err != nil {
 		return err
@@ -119,6 +127,14 @@ func (r *Roster) saveLocked() error {
 	sortCats(cats)
 	if err := persist.SaveJSON(r.path, cats); err != nil {
 		return fmt.Errorf("roster: saving: %w", err)
+	}
+	ts := make([]Tombstone, 0, len(r.tombstones))
+	for _, t := range r.tombstones {
+		ts = append(ts, t)
+	}
+	sortTombstones(ts)
+	if err := persist.SaveJSON(tombstonePath(r.path), ts); err != nil {
+		return fmt.Errorf("roster: saving tombstones: %w", err)
 	}
 	return nil
 }
@@ -228,12 +244,18 @@ func (r *Roster) Add(c Cat) error {
 // Merge applies incoming cats with last-write-wins semantics: an incoming
 // entry replaces the local one if its Updated is newer, or if Updated is
 // equal and its Addr sorts greater (a deterministic tie-break so all cats
-// converge). Entries with an empty Key are skipped. It returns the entries
-// that changed local state, so callers can react (e.g. allowing the new
-// keys). The roster is persisted if anything changed.
-// MaxClockSkew bounds how far an incoming entry's timestamp may lie in
-// the future: a malicious or broken-clocked cat must not win every
-// future merge with a far-future timestamp.
+// converge). Entries with an empty Key are skipped. A key carrying a
+// leave tombstone is refused unless the entry is a newer, validly signed
+// rejoin by the leaver itself (see ApplyTombstones). For keys already
+// known, the entry must be signed by the pinned sign key — the same
+// Ed25519 key announced in the local entry — so no trusted cat can
+// inject or override another cat's entry; a known key whose local entry
+// has no sign key yet (a pre-signing roster) pins the incoming one.
+// It returns the entries that changed local state, so callers can
+// react (e.g. allowing the new keys). The roster is persisted if
+// anything changed. MaxClockSkew bounds how far an incoming entry's
+// timestamp may lie in the future: a malicious or broken-clocked cat
+// must not win every future merge with a far-future timestamp.
 const MaxClockSkew = 5 * time.Minute
 
 func (r *Roster) Merge(cats []Cat) (changed []Cat, err error) {
@@ -246,7 +268,21 @@ func (r *Roster) Merge(cats []Cat) (changed []Cat, err error) {
 		if c.Updated > limit {
 			continue // impossible timestamp: never let it win
 		}
+		if t, ok := r.tombstones[c.Key]; ok {
+			// The leaver rejoining is the only resurrection: an
+			// entry newer than the leave, signed by the leaver's
+			// sign key (pinned in the tombstone itself).
+			if c.SignKey != t.SignKey || c.Updated <= t.Time || !verifyEntry(c) {
+				continue
+			}
+			delete(r.tombstones, c.Key)
+		}
 		old, ok := r.cats[c.Key]
+		if ok && old.SignKey != "" {
+			if c.SignKey != old.SignKey || !verifyEntry(c) {
+				continue // unsigned or foreign-signed: reject
+			}
+		}
 		if ok && !newerWins(c, old) {
 			continue
 		}

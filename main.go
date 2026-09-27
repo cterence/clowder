@@ -50,6 +50,8 @@ func run(args []string) error {
 		return cmdTrust(rest)
 	case "rotate":
 		return printResp(call(daemon.Request{Op: "rotate"}))
+	case "leave":
+		return printResp(call(daemon.Request{Op: "leave"}))
 	case "reset":
 		return cmdReset(rest)
 	case "help":
@@ -72,7 +74,7 @@ func shortUsage() error {
 	fmt.Fprint(os.Stderr, `usage: clow <command> [args]
 
   init, daemon, invite, join, send, inbox, storer, outbox,
-  forget, rotate, reset, status, help
+  forget, rotate, leave, reset, status, help
 
 run "clow help" for details.
 `)
@@ -98,6 +100,7 @@ usage:
   clow trust <CAT>                         undo distrust
   clow forget <CAT>                        drop a cat from the roster
   clow rotate                              new address, announced to the clowder
+  clow leave                               depart: signed goodbye, cats drop you
   clow reset [--yes]                       wipe this cat's identity and rosters
   clow status [--addresses]               config, outbox, spool and roster summary
                                            (--addresses also prints each cat's
@@ -307,7 +310,9 @@ func cmdTrust(args []string) error {
 
 // cmdReset wipes the cat's config dir: identity, rosters, spool and
 // outbox. Received files in the inbox dir are outside the config dir and
-// are kept. Refuses while the daemon is running.
+// are kept. Refuses while the daemon is running — but a confirmed reset
+// first tells the running daemon to announce a leave to the clowder,
+// while it can still reach anyone.
 func cmdReset(args []string) error {
 	fs := flag.NewFlagSet("reset", flag.ContinueOnError)
 	yes := fs.Bool("yes", false, "skip the confirmation prompt")
@@ -318,25 +323,47 @@ func cmdReset(args []string) error {
 
 	if conn, err := net.Dial("unix", daemon.IPCPath(dir)); err == nil {
 		_ = conn.Close()
-		return fmt.Errorf("daemon is running in %s; stop it before resetting", dir)
+		if err := confirmReset(dir, *yes); err != nil {
+			return err
+		}
+		// Best effort: the daemon broadcasts the signed forget-me; a
+		// cat nobody could reach is forgotten by nobody, but the
+		// reset still proceeds on the next, daemonless run.
+		resp, lerr := call(daemon.Request{Op: "leave"})
+		if lerr == nil && !resp.OK {
+			lerr = fmt.Errorf("%s", resp.Error)
+		}
+		if lerr != nil {
+			return fmt.Errorf("daemon is running in %s and announcing the leave failed (%v); stop it before resetting", dir, lerr)
+		}
+		return fmt.Errorf("leave announced to the clowder; stop the daemon in %s and run clow reset again to wipe the cat", dir)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "identity.json")); err != nil {
 		return fmt.Errorf("no cat to reset in %s", dir)
 	}
-	if !*yes {
-		fmt.Printf("reset the cat in %s? its identity, rosters, spool and outbox will be deleted [y/N] ", dir)
-		var answer string
-		if _, err := fmt.Scanln(&answer); err != nil {
-			return err
-		}
-		if answer != "y" && answer != "Y" && answer != "yes" {
-			return fmt.Errorf("aborted")
-		}
+	if err := confirmReset(dir, *yes); err != nil {
+		return err
 	}
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("resetting %s: %w", dir, err)
 	}
 	fmt.Printf("cat reset; run \"clow init\" to create a new one\n")
+	return nil
+}
+
+// confirmReset asks the user to confirm a reset unless yes is set.
+func confirmReset(dir string, yes bool) error {
+	if yes {
+		return nil
+	}
+	fmt.Printf("reset the cat in %s? its identity, rosters, spool and outbox will be deleted [y/N] ", dir)
+	var answer string
+	if _, err := fmt.Scanln(&answer); err != nil {
+		return err
+	}
+	if answer != "y" && answer != "Y" && answer != "yes" {
+		return fmt.Errorf("aborted")
+	}
 	return nil
 }
 

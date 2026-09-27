@@ -79,13 +79,16 @@ path if lost — except the identity.
                                                         (dropbox: third parties only)
     clow outbox clear                                   drop pending sends
     clow rotate                                         new address, announced to the clowder
+    clow leave                                         depart: signed goodbye, cats drop you
     clow forget <CAT>                                   drop a cat from the roster
     clow distrust <CAT>                                 block a cat locally (both ways, no gossip)
     clow trust <CAT>                                    undo distrust
     clow status [--addresses]                           config, stats, outbox, spool,
                                                         receipts, roster (--addresses
                                                         also prints tailcat addresses)
-    clow reset [--yes]                                  wipe this cat (identity, rosters)
+    clow reset [--yes]                                  wipe this cat (identity, rosters);
+                                                        announces a leave first if the
+                                                        daemon is running
 
 ## Running in a container
 
@@ -126,7 +129,9 @@ Things to know before running it on Kubernetes:
 - **Mount a persistent volume** on the config dir. The identity lives
   there; a pod that restarts with an empty volume comes back as a
   brand-new cat, and the old one stays as a zombie in everyone's
-  rosters (until signed-leave ships). A StatefulSet fits best.
+  rosters — run `clow leave` (or reset, which announces the leave
+  while the daemon still runs) before decommissioning a cat. A
+  StatefulSet fits best.
 - **One replica per cat**: clowder is a mesh of individual identities,
   not a horizontally-scaled service.
 - **DERP reachability**: the default DERP map is fetched from

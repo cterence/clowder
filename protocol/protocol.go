@@ -45,16 +45,22 @@ type Hello struct {
 	Name      string `cbor:"n"`
 	Key       string `cbor:"k"`
 	ClientKey string `cbor:"c,omitempty"`
-	Addr      string `cbor:"a"`
-	Storer    bool   `cbor:"s,omitempty"`
-	Dropbox   bool   `cbor:"d,omitempty"`
-	Version   uint16 `cbor:"v,omitempty"`
+	// SignKey is the sender's Ed25519 public key (hex), derived from
+	// its node key seed: it signs the sender's roster entries and
+	// its leave tombstone.
+	SignKey string `cbor:"g,omitempty"`
+	Addr    string `cbor:"a"`
+	Storer  bool   `cbor:"s,omitempty"`
+	Dropbox bool   `cbor:"d,omitempty"`
+	Version uint16 `cbor:"v,omitempty"`
 }
 
 // RosterSync carries the sender's full roster (including its own entry)
-// for union merge on the receiving side.
+// for union merge on the receiving side, plus the leave tombstones it
+// knows, so offline peers catch up on departed cats.
 type RosterSync struct {
-	Cats []roster.Cat `cbor:"c"`
+	Cats       []roster.Cat       `cbor:"c"`
+	Tombstones []roster.Tombstone `cbor:"b,omitempty"`
 }
 
 // Offer announces a sealed file stream. TargetKey/TargetName identify
@@ -113,8 +119,13 @@ type PairIntro struct {
 	Name      string `cbor:"n"`
 	Addr      string `cbor:"a"`
 	ClientKey string `cbor:"c,omitempty"`
-	Storer    bool   `cbor:"s,omitempty"`
-	Dropbox   bool   `cbor:"d,omitempty"`
+	// SignKey is the sender's Ed25519 public key (hex), pinned by
+	// the receiver: the pairing channel is the trust root, and the
+	// sign key authenticates the peer's later roster entries and
+	// its leave.
+	SignKey string `cbor:"g,omitempty"`
+	Storer  bool   `cbor:"s,omitempty"`
+	Dropbox bool   `cbor:"d,omitempty"`
 }
 
 // PairAck confirms the joiner received the inviter's intro. The
@@ -122,6 +133,18 @@ type PairIntro struct {
 // invite — only once this arrives, so a reply the joiner never saw
 // leaves the invite alive for its next attempt.
 type PairAck struct{}
+
+// LeaveMsg is a cat's signed forget-me: Key is the leaver's node
+// key, Time the leave's unix time, and Sig the leaver's Ed25519
+// signature (made with the SignKey it announced in Hello and its
+// roster entries). Recipients drop the leaver from roster,
+// allowlist and spool, and re-broadcast the leave once.
+type LeaveMsg struct {
+	Key     string `cbor:"k"`
+	SignKey string `cbor:"g"`
+	Time    int64  `cbor:"t"`
+	Sig     []byte `cbor:"s"`
+}
 
 // Message is the union of all protocol messages. Exactly one field is
 // non-nil on the wire.
@@ -133,6 +156,7 @@ type Message struct {
 	Ack     *Ack        `cbor:"k,omitempty"`
 	Pair    *PairIntro  `cbor:"j,omitempty"`
 	PairAck *PairAck    `cbor:"g,omitempty"`
+	Leave   *LeaveMsg   `cbor:"l,omitempty"`
 }
 
 // Kind returns a short label for the set message, for logging and errors.
@@ -152,6 +176,8 @@ func (m *Message) Kind() string {
 		return "pair"
 	case m.PairAck != nil:
 		return "pairack"
+	case m.Leave != nil:
+		return "leave"
 	}
 	return "empty"
 }

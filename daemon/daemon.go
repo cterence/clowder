@@ -124,6 +124,16 @@ type Daemon struct {
 	// successful connection, either direction. Guarded by mu.
 	liveness map[string]int64
 
+	// left is set by Leave: the cat has departed the clowder, so
+	// roster syncs no longer merge (peers would repopulate us with
+	// the clowder we just left). A new pairing clears it. Guarded
+	// by mu.
+	left bool
+	// leaveSeen remembers the newest leave time processed per leaver
+	// key, so each leave is applied and re-broadcast once, not once
+	// per peer per sync. Guarded by mu.
+	leaveSeen map[string]int64
+
 	// paths caches the last background path probe per cat key, so
 	// `clow status` answers from memory instead of probing (the
 	// refreshPaths background loop keeps it warm). Guarded by mu.
@@ -184,6 +194,7 @@ func New(cfg Config, tr Transport) (*Daemon, error) {
 		stats:          newStatsKeeper(cfg.Dir),
 		prog:           newProgressKeeper(),
 		liveness:       map[string]int64{},
+		leaveSeen:      map[string]int64{},
 		blocked:        loadBlocked(cfg.Dir),
 		receipts:       loadReceipts(cfg.Dir),
 		slots:          make(chan struct{}, maxConcurrentTransfers),
@@ -191,14 +202,14 @@ func New(cfg Config, tr Transport) (*Daemon, error) {
 		receiveClaims:  newClaimSet(),
 		inbox:          inbox,
 	}
-	d.meCat = roster.Cat{
+	d.meCat = roster.SignCat(env.SignPriv, roster.Cat{
 		Name:      env.Me.Name,
 		Key:       env.Identity.Public.ServerPublic.String(),
 		ClientKey: env.ClientIdentity.Public().String(),
 		Storer:    env.Me.Storer,
 		Dropbox:   env.Me.Dropbox,
 		Updated:   time.Now().Unix(),
-	}
+	})
 	return d, nil
 }
 
@@ -342,6 +353,7 @@ func (d *Daemon) setStorerMode(storer, dropbox bool, capacity int64) error {
 	d.meCat.Dropbox = dropbox
 	d.meCat.Capacity = capacity
 	d.meCat.Updated = time.Now().Unix()
+	d.meCat = roster.SignCat(d.env.SignPriv, d.meCat)
 	d.mu.Unlock()
 	me := d.env.Me
 	me.Storer = storer
@@ -368,6 +380,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	d.mu.Lock()
 	d.meCat.Addr = d.tr.MyAddr()
+	d.meCat = roster.SignCat(d.env.SignPriv, d.meCat)
 	me := d.meCat
 	d.mu.Unlock()
 	d.cfg.logf("clowder: cat %s listening at %s", me.Name, me.Addr)
@@ -586,6 +599,7 @@ func (d *Daemon) serveConn(pc *protocol.Conn, authKey key.NodePublic, authed boo
 		d.cfg.logf("clowder: %s speaks protocol version %d, newer than ours (%d); serving anyway", peer.Name, peer.Version, protocol.HelloVersion)
 	}
 	d.markSeen(peer.Key)
+	d.pinSignKey(peer)
 	if err := pc.WriteMsg(&protocol.Message{Hello: d.helloMsg()}); err != nil {
 		return
 	}
@@ -594,7 +608,7 @@ func (d *Daemon) serveConn(pc *protocol.Conn, authKey key.NodePublic, authed boo
 	if err != nil || m.Roster == nil {
 		return
 	}
-	d.mergeRemote(m.Roster.Cats)
+	d.mergeRemote(m.Roster)
 	if err := pc.WriteMsg(&protocol.Message{Roster: d.rosterMsg()}); err != nil {
 		return
 	}
@@ -613,7 +627,11 @@ func (d *Daemon) serveConn(pc *protocol.Conn, authKey key.NodePublic, authed boo
 		case m.Roster != nil:
 			// Post-handshake roster push (e.g. an address rotation
 			// announcement). Merged; no reply, to avoid sync ping-pong.
-			d.mergeRemote(m.Roster.Cats)
+			d.mergeRemote(m.Roster)
+		case m.Leave != nil:
+			// A peer's signed forget-me: drop it everywhere and
+			// re-broadcast once. The connection itself may continue.
+			d.handleLeave(m.Leave)
 		default:
 			d.cfg.logf("clowder: unexpected %s message from %s", m.Kind(), peer.Name)
 			return
@@ -1123,6 +1141,7 @@ func (d *Daemon) helloMsg() *protocol.Hello {
 		Name:      me.Name,
 		Key:       me.Key,
 		ClientKey: me.ClientKey,
+		SignKey:   me.SignKey,
 		Addr:      me.Addr,
 		Storer:    me.Storer,
 		Dropbox:   me.Dropbox,
@@ -1132,7 +1151,7 @@ func (d *Daemon) helloMsg() *protocol.Hello {
 
 func (d *Daemon) rosterMsg() *protocol.RosterSync {
 	cats := append([]roster.Cat{d.Me()}, d.ros.All()...)
-	return &protocol.RosterSync{Cats: cats}
+	return &protocol.RosterSync{Cats: cats, Tombstones: d.ros.Tombstones()}
 }
 
 // connect dials a peer and performs the hello and roster exchange.
@@ -1178,13 +1197,24 @@ func (d *Daemon) handshakeClient(pc *protocol.Conn) error {
 	if m.Roster == nil {
 		return errors.New("peer sent no roster")
 	}
-	d.mergeRemote(m.Roster.Cats)
+	d.mergeRemote(m.Roster)
 	return nil
 }
 
-// mergeRemote merges incoming roster cats (skipping our own entry) and
-// allows any new keys to connect.
-func (d *Daemon) mergeRemote(cats []roster.Cat) {
+// mergeRemote applies an incoming roster sync: tombstones first (a
+// leave must land before the stale entries that may ride along with
+// it), then the cats, and allows any new keys to connect. A cat that
+// has left the clowder merges nothing — peers would repopulate it
+// with the clowder it just discarded; a fresh pairing clears the
+// flag (see addPeerCat).
+func (d *Daemon) mergeRemote(sync *protocol.RosterSync) {
+	if d.hasLeft() {
+		return
+	}
+	for _, t := range sync.Tombstones {
+		d.handleTombstone(t, false)
+	}
+	cats := sync.Cats
 	// Capture duplicates before the merge: parallel invites from
 	// different inviters can both claim a name (the pairing check only
 	// sees the inviter's roster), and LWW is per-key so both entries
@@ -1210,6 +1240,31 @@ func (d *Daemon) mergeRemote(cats []roster.Cat) {
 		if !slices.Contains(before, name) {
 			d.cfg.logf("clowder: name %q is now claimed by more than one cat; name lookups pick the newest — one of them should re-init with a fresh name", name)
 		}
+	}
+}
+
+// pinSignKey records the sign key a directly connected peer announced
+// in its Hello, on the roster entry we hold for it. The connection is
+// transport-authenticated, so the Hello is the peer's own word; the
+// entry's signature is verified against this pin on every later merge.
+func (d *Daemon) pinSignKey(peer *protocol.Hello) {
+	if peer.SignKey == "" {
+		return
+	}
+	c, ok := d.ros.GetByKey(peer.Key)
+	if !ok {
+		return
+	}
+	if c.SignKey == "" {
+		c.SignKey = peer.SignKey
+		if err := d.ros.Add(c); err != nil {
+			d.cfg.logf("clowder: pinning %s's sign key: %v", peer.Name, err)
+		}
+	} else if c.SignKey != peer.SignKey {
+		// The sign key is derived from the node key: it cannot change
+		// legitimately. Their signed entries will fail verification
+		// and never land; say so.
+		d.cfg.logf("clowder: %s announced sign key %s, but we pinned %s; ignoring its roster updates", peer.Name, peer.SignKey, c.SignKey)
 	}
 }
 

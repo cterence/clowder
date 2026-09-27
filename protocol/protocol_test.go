@@ -14,9 +14,15 @@ import (
 func TestMessageRoundTrip(t *testing.T) {
 	msgs := []*Message{
 		{Hello: &Hello{Name: "fluff", Key: "nodekey:abc", Addr: "tcXXX", Storer: true}},
+		{Hello: &Hello{Name: "fluff", Key: "nodekey:abc", SignKey: "ed25519:abc", Addr: "tcXXX", Version: HelloVersion}},
 		{Roster: &RosterSync{Cats: []roster.Cat{
 			{Name: "fluff", Addr: "tcXXX", Key: "nodekey:abc", Storer: true, Updated: 42},
 			{Name: "milo", Addr: "tcYYY", Key: "nodekey:def", Updated: 43},
+		}}},
+		{Roster: &RosterSync{Cats: []roster.Cat{
+			{Name: "milo", Addr: "tcYYY", Key: "nodekey:def", Updated: 43},
+		}, Tombstones: []roster.Tombstone{
+			{Key: "nodekey:gone", SignKey: "ed25519:def", Time: 99, Sig: []byte{1, 2, 3}},
 		}}},
 		{Offer: &Offer{ID: "id1", FileName: "nap.txt", Size: 77, From: "fluff",
 			SHA256: "aa11", TargetKey: "nodekey:def", TargetName: "milo"}},
@@ -24,6 +30,7 @@ func TestMessageRoundTrip(t *testing.T) {
 		{Answer: &Answer{ID: "id1", OK: false, Reason: "not a storer"}},
 		{Ack: &Ack{ID: "id1", Kind: AckStored}},
 		{PairAck: &PairAck{}},
+		{Leave: &LeaveMsg{Key: "nodekey:gone", SignKey: "ed25519:def", Time: 99, Sig: []byte{4, 5, 6}}},
 	}
 
 	for _, m := range msgs {

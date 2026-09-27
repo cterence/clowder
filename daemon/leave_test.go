@@ -1,0 +1,128 @@
+package daemon
+
+import (
+	"context"
+	"strings"
+	"testing"
+	"time"
+
+	"clowder/store"
+)
+
+// leaveTopology builds a-b-c, with b in the middle: a knows only b,
+// c knows only b, so anything a says reaches c only through b's
+// re-broadcast or the tombstones riding b's roster sync.
+func TestLeaveDropsLeaverAndRebroadcasts(t *testing.T) {
+	a := startDaemon(t, "a")
+	b := startDaemon(t, "b")
+	c := startDaemon(t, "c")
+	trust(t, a, b)
+	trust(t, b, a)
+	trust(t, b, c)
+	trust(t, c, b)
+	aKey := a.Me().Key
+	waitFor(t, func() bool { _, ok := c.Roster().GetByKey(aKey); return ok },
+		"c to learn a via b's sync")
+
+	// b holds a file for a and owes a a send: both must die with the leave.
+	if err := b.spool.Put(store.Meta{ID: "sp1", FileName: "nap.txt", Size: 3,
+		TargetKey: aKey, TargetName: "a", From: "b"}, strings.NewReader("nap")); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.ob.Put(Entry{ID: "ob1", TargetKey: aKey, TargetName: "a",
+		FileName: "nap.txt", SourcePath: writeSource(t, "nap")}); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := a.Leave(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// All-peers sync makes the mesh complete within a tick, so a
+	// announces to both b and c; the isolation of the re-broadcast
+	// path is pinned by TestLeaveReachesOfflinePeerViaSync.
+	if n < 1 {
+		t.Fatalf("leave announced to %d cats, want at least 1", n)
+	}
+
+	waitFor(t, func() bool { _, ok := b.Roster().GetByKey(aKey); return !ok },
+		"b to drop the leaver")
+	// c only hears the leave through b's re-broadcast.
+	waitFor(t, func() bool { _, ok := c.Roster().GetByKey(aKey); return !ok },
+		"c to drop the leaver via b's re-broadcast")
+	if !b.isBlockedKey(aKey) {
+		t.Fatal("b still allows the leaver to connect")
+	}
+	if len(b.spool.List(aKey)) != 0 {
+		t.Fatal("spool kept a held file for the leaver")
+	}
+	for _, e := range b.ob.All() {
+		if e.TargetKey == aKey {
+			t.Fatal("outbox kept a pending send to the leaver")
+		}
+	}
+
+	// The leaver's own roster is wiped and stays wiped while b keeps
+	// syncing to it on every poll tick.
+	if len(a.Roster().All()) != 0 {
+		t.Fatal("leaver kept its roster")
+	}
+	time.Sleep(500 * time.Millisecond)
+	if len(a.Roster().All()) != 0 {
+		t.Fatal("b's syncs repopulated the leaver's roster")
+	}
+}
+
+// A peer that was offline through the whole leave learns it on wake:
+// the tombstone rides the roster sync, and the stale entry the sleeper
+// pushes back must not resurrect the leaver anywhere.
+func TestLeaveReachesOfflinePeerViaSync(t *testing.T) {
+	a := startDaemon(t, "a")
+	b := startDaemon(t, "b")
+	cDir := t.TempDir()
+	if err := Init(cDir, "c"); err != nil {
+		t.Fatal(err)
+	}
+	c := startDaemonAt(t, cDir)
+	trust(t, a, b)
+	trust(t, b, a)
+	trust(t, b, c)
+	trust(t, c, b)
+	aKey := a.Me().Key
+	waitFor(t, func() bool { _, ok := c.Roster().GetByKey(aKey); return ok },
+		"c to learn a via b's sync")
+	stopDaemon(c)
+
+	if _, err := a.Leave(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { _, ok := b.Roster().GetByKey(aKey); return !ok },
+		"b to drop the leaver")
+
+	// The same cat wakes up: its sync with b must deliver the
+	// tombstone, not a resurrection.
+	woken := startDaemonAt(t, cDir)
+	waitFor(t, func() bool { _, ok := woken.Roster().GetByKey(aKey); return !ok },
+		"woken c to drop the leaver")
+	time.Sleep(300 * time.Millisecond)
+	if _, ok := woken.Roster().GetByKey(aKey); ok {
+		t.Fatal("leaver resurrected on the woken cat")
+	}
+	if _, ok := b.Roster().GetByKey(aKey); ok {
+		t.Fatal("leaver resurrected on b")
+	}
+}
+
+// The IPC op the clow CLI drives.
+func TestLeaveIPCOp(t *testing.T) {
+	a := startDaemon(t, "a")
+	b := startDaemon(t, "b")
+	trust(t, a, b)
+	trust(t, b, a)
+	resp := a.handleIPC(Request{Op: "leave"})
+	if !resp.OK {
+		t.Fatalf("leave op: %+v", resp)
+	}
+	waitFor(t, func() bool { _, ok := b.Roster().GetByKey(a.Me().Key); return !ok },
+		"b to drop the leaver")
+}

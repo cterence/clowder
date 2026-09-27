@@ -1,10 +1,13 @@
 package main
 
 import (
+	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"clowder/daemon"
 )
@@ -68,6 +71,58 @@ func TestReset(t *testing.T) {
 	// A reset cat can be re-created.
 	if err := run([]string{"init", "--name", "milo2"}); err != nil {
 		t.Fatalf("re-init after reset: %v", err)
+	}
+}
+
+// A confirmed reset with a live daemon announces the leave over IPC
+// before refusing: the daemon is the only one that can still reach
+// the clowder.
+func TestResetAnnouncesLeaveWhenDaemonRuns(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLOWDER_DIR", dir)
+	if err := run([]string{"init", "--name", "milo"}); err != nil {
+		t.Fatal(err)
+	}
+
+	gotLeave := make(chan daemon.Request, 1)
+	ln, err := net.Listen("unix", daemon.IPCPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			var req daemon.Request
+			_ = json.NewDecoder(conn).Decode(&req)
+			if req.Op != "" {
+				gotLeave <- req
+			}
+			_ = json.NewEncoder(conn).Encode(daemon.Response{OK: true})
+			_ = conn.Close()
+		}
+	}()
+
+	err = run([]string{"reset", "--yes"})
+	if err == nil || !strings.Contains(err.Error(), "stop the daemon") {
+		t.Fatalf("reset with a running daemon: err = %v, want a stop-the-daemon refusal", err)
+	}
+	select {
+	case req := <-gotLeave:
+		if req.Op != "leave" {
+			t.Fatalf("reset sent op %q, want leave", req.Op)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reset never announced the leave")
+	}
+
+	// The identity survives: the wipe only happens once the daemon
+	// is gone (the second, daemonless run).
+	if _, err := os.Stat(filepath.Join(dir, "identity.json")); err != nil {
+		t.Fatalf("reset wiped the cat while its daemon runs: %v", err)
 	}
 }
 

@@ -212,11 +212,14 @@ fun InitScreen(onDone: () -> Unit) {
     }
 }
 
-/** `clow reset --yes` as the app runs it: stop the daemon service
- *  first and wait until its IPC socket stops answering (reset refuses
+/** `clow reset --yes` as the app runs it: announce the leave first (a
+ *  reset cat departs the clowder — the same op the CLI's reset drives,
+ *  sent while the daemon can still reach anyone), then stop the daemon
+ *  service and wait until its IPC socket stops answering (reset refuses
  *  while the daemon is up), then exec the binary against the same
  *  sandboxed config dir init uses. */
 private fun runReset(ctx: android.content.Context): String = try {
+    runCatching { ipc(ClowdService.socketFile(ctx), "leave") }
     ClowdService.stop(ctx)
     val sock = ClowdService.socketFile(ctx).absolutePath
     for (i in 0 until 40) {

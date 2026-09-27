@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"os"
@@ -110,7 +111,12 @@ type Env struct {
 	// different per-side pre-shared keys cross-deliver handshakes and
 	// wedge. Peers allowlist this key to authenticate our dials.
 	ClientIdentity key.NodePrivate
-	Me             Me
+	// SignPriv is the Ed25519 keypair derived from the node key seed.
+	// It is not stored: the identity regenerates it. Peers know its
+	// public half from Hello and roster entries; it signs the cat's
+	// roster entries and its leave.
+	SignPriv ed25519.PrivateKey
+	Me       Me
 }
 
 // clientKeyPath is where the client identity lives.
@@ -185,7 +191,9 @@ func Open(dir string) (*Env, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Env{Dir: dir, Identity: k, ClientIdentity: ck, Me: me}, nil
+	raw := k.Private.Raw32()
+	signPriv := ed25519.NewKeyFromSeed(raw[:])
+	return &Env{Dir: dir, Identity: k, ClientIdentity: ck, SignPriv: signPriv, Me: me}, nil
 }
 
 // writeClientKey persists an outbound client identity.

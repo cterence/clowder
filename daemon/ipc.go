@@ -159,6 +159,13 @@ func (d *Daemon) handleIPC(req Request) Response {
 		}
 		return okMsg(fmt.Sprintf("address rotated to %s; restart the daemon to use it", shortAddr(newAddr)))
 
+	case "leave":
+		n, err := d.Leave(ctx)
+		if err != nil {
+			return fail(err)
+		}
+		return okMsg(fmt.Sprintf("left the clowder (told %d cat(s)); your identity is kept — pair again with clow invite or clow join", n))
+
 	case "distrust":
 		if req.Target == "" {
 			return fail(fmt.Errorf("distrust needs a cat name"))

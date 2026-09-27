@@ -345,18 +345,26 @@ func (d *Daemon) servePairConn(conn net.Conn) {
 }
 
 // addPeerCat records a cat from a PairIntro in the roster and allows it
-// to connect.
+// to connect. A pairing is the trust root: the peer's sign key is
+// pinned here, any old leave tombstone for it is cleared (the local
+// half of a re-join), and a cat that had left the clowder merges
+// again — this pairing seeds its new clowder.
 func (d *Daemon) addPeerCat(p *protocol.PairIntro) error {
 	c, err := roster.NewCat(p.Name, p.Addr, time.Now().Unix())
 	if err != nil {
 		return err
 	}
 	c.ClientKey = p.ClientKey
+	c.SignKey = p.SignKey
 	c.Storer = p.Storer
 	c.Dropbox = p.Dropbox
 	if err := d.ros.Add(c); err != nil {
 		return err
 	}
+	d.ros.ClearTombstone(c.Key)
+	d.mu.Lock()
+	d.left = false
+	d.mu.Unlock()
 	d.allowCat(c)
 	// We just talked to this cat over the pairing channel: it is very
 	// much "seen".
@@ -568,6 +576,7 @@ func pairIntroOf(pc *protocol.Conn, me roster.Cat) (*protocol.PairIntro, error) 
 		Name:      me.Name,
 		Addr:      me.Addr,
 		ClientKey: me.ClientKey,
+		SignKey:   me.SignKey,
 		Storer:    me.Storer,
 		Dropbox:   me.Dropbox,
 	}}); err != nil {

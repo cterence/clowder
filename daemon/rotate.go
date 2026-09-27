@@ -34,6 +34,7 @@ func (d *Daemon) RotateAddress(ctx context.Context) (string, error) {
 	newMe := me
 	newMe.Addr = string(newAddr)
 	newMe.Updated = time.Now().Unix()
+	newMe = roster.SignCat(d.env.SignPriv, newMe)
 
 	announced := 0
 	for _, c := range all {
