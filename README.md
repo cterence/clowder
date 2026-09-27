@@ -99,6 +99,44 @@ TUN, no host routes, no root) and the mesh opens **no inbound ports** —
 it only needs outbound access to the DERP relays (TCP 443) and to
 peers' public endpoints. So no Service is needed for the mesh itself.
 
+## Running as a service
+
+NixOS gets a `services.clowder` module from the flake:
+
+    {
+      inputs.clowder.url = "git+ssh://git@github.com/cterence/clowder.git";
+      # in your NixOS config:
+      imports = [ clowder.nixosModules.default ];
+      services.clowder = {
+        enable = true;
+        name = "server-cat";          # optional, defaults to the hostname
+        storer = "on";                 # optional: on | off | dropbox
+        maxCapacity = "10G";           # optional, with storer
+        healthAddr = "127.0.0.1:8080"; # optional, GET /healthz + /stats
+      };
+    }
+
+The daemon runs as a `clowder` system user with its state in
+`/var/lib/clowder` (a fresh directory auto-inits a new cat), restarts on
+failure, and survives suspend/resume — no watchdog, because a watchdog's
+clock counts sleep time and would kill a healthy daemon on wake. Hang
+detection belongs to external probes of `healthAddr`. The CLI reaches
+the daemon through the same socket:
+
+    sudo -u clowder env CLOWDER_DIR=/var/lib/clowder clow status
+
+On macOS the flake ships a per-user launchd agent (`KeepAlive` +
+`RunAtLoad`, so it survives suspend/resume without restarts):
+
+    nix build .#launchd-agent
+    cp -f result/Library/LaunchAgents/dev.clowder.clow.plist \
+        ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/dev.clowder.clow.plist
+
+The plist pins the store path it was built with; rebuild and re-copy to
+upgrade. `clow invite`/`clow status` work as the same user as always —
+the agent shares your config dir and downloads inbox.
+
 ## Android
 
 An Android client lives in `android/`: the daemon ships as the same

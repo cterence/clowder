@@ -21,14 +21,13 @@
       supportedSystems = [
         "x86_64-linux"
         "aarch64-linux"
-        "x86_64-darwin"
         "aarch64-darwin"
       ];
-      # android-nixpkgs supports these three only (no aarch64-linux),
-      # so the android shells are generated over this subset.
+      # android-nixpkgs supports x86_64-linux and aarch64-darwin only
+      # (no aarch64-linux), so the android shells are generated over
+      # this subset.
       androidSystems = [
         "x86_64-linux"
-        "x86_64-darwin"
         "aarch64-darwin"
       ];
       forEachSupportedSystem =
@@ -53,34 +52,63 @@
       # Silicon it must be arm64-v8a — the daemon is arm64-only, an
       # x86_64 image could not exec it.
       imageArch = {
-        "x86_64-linux" = "x86_64";
-        "x86_64-darwin" = "x86_64";
+        "x86_64-linux" = "x86-64";
         "aarch64-darwin" = "arm64-v8a";
       };
+      # The launchd agent plist exists only on the macOS system; the
+      # packages attribute simply does not exist elsewhere, keeping the
+      # flake free of OS-conditional code.
+      launchdAgents = nixpkgs.lib.genAttrs [
+        "aarch64-darwin"
+      ] (
+        system:
+        {
+          launchd-agent = (import nixpkgs { inherit system; }).callPackage ./nix/launchd.nix {
+            clow = self.packages.${system}.default;
+          };
+        }
+      );
     in
     {
       # The clow binary. go.mod requires go >= 1.27.1 (tailcat and
       # tailscale.com declare it and own the floor), so the build pins
       # nixpkgs' go_1_27 rather than the default `go` alias, which may
       # still be a release behind.
-      packages = forEachSupportedSystem (
-        { pkgs }:
-        {
-          # buildGoModule's `go` attribute does not reach the
-          # go-modules fetch derivation; overriding the builder swaps
-          # the toolchain everywhere, module fetch included.
-          default = (pkgs.buildGoModule.override { go = pkgs.go_1_27; }) {
-            pname = "clow";
-            version = "unstable-2026-09-26";
-            src = self;
-            vendorHash = "sha256-B0NZyZgmJqKRNZ+9iHPPM1LBdx5UpVxkdEkOIlllXTc=";
-            # go names the binary after the module; users type clow.
-            postInstall = ''
-              mv $out/bin/clowder $out/bin/clow
-            '';
-          };
-        }
-      );
+      packages =
+        let
+          goPackages = forEachSupportedSystem (
+            { pkgs }:
+            {
+              # buildGoModule's `go` attribute does not reach the
+              # go-modules fetch derivation; overriding the builder swaps
+              # the toolchain everywhere, module fetch included.
+              default = (pkgs.buildGoModule.override { go = pkgs.go_1_27; }) {
+                pname = "clow";
+                version = "unstable-2026-09-26";
+                src = self;
+                vendorHash = "sha256-B0NZyZgmJqKRNZ+9iHPPM1LBdx5UpVxkdEkOIlllXTc=";
+                # go names the binary after the module; users type clow.
+                postInstall = ''
+                  mv $out/bin/clowder $out/bin/clow
+                '';
+              };
+            }
+          );
+        in
+        # Merge INSIDE each system (same rule as devShells below): a
+        # top-level `//` would replace the darwin package set with the
+        # plist wholesale.
+        nixpkgs.lib.mapAttrs (
+          system: go: go // (launchdAgents.${system} or { })
+        ) goPackages;
+
+      # NixOS: services.clowder, a systemd unit wrapping the flake
+      # package. The wrapper's pattern must name the standard module
+      # args (pkgs at minimum) — NixOS only injects them into
+      # pattern-named arguments — and `self` rides along so the module
+      # needs no specialArgs.
+      nixosModules.default =
+        { pkgs, ... }@args: import ./nix/nixos.nix (args // { inherit self; });
 
       # Merge the per-system shell sets INSIDE each system, never
       # with a top-level `//`: that merge is shallow, the android set

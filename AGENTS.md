@@ -33,6 +33,7 @@ path must be exercised by a daemon integration test.
     store/           storer spool: atomic writes, TTL, delete-on-ack
     daemon/          the runtime: serve/send/sync, pairing, IPC, stats,
                      TailcatTransport (production) + LocalTransport (tests)
+    nix/             service packaging: NixOS module, macOS launchd agent
     docs/specs/      the design doc (protocol, envelope, roster rules)
 
 ## Shared code — check before you write
@@ -118,15 +119,6 @@ Update this list and the README when something ships.
    against the final roster shape. Sync scaling lands here too: every
    peer is synced every poll tick, so a full-roster exchange is O(N²)
    bytes per cycle — fine at homelab scale.
-3. **Nix service packaging: systemd + launchd** — run the daemon as a
-   real service from the flake. Linux: a NixOS module wrapping
-   `packages.default` in a systemd unit — StateDirectory,
-   Restart=on-failure, health-endpoint watchdog probe,
-   CLOWDER_NAME/CLOWDER_STORER options, auto-init-on-first-start. macOS:
-   a launchd agent (per-user, not a daemon — the default inbox resolves
-   under $HOME/Downloads) with KeepAlive + RunAtLoad; keep the flake free
-   of OS-conditional deps (modules ship as passthrough attributes).
-   Must survive suspend/resume without restarts.
 
 ## Shipped
 
@@ -182,6 +174,14 @@ One line each; the pinning tests carry the details.
   a JSON /stats snapshot: spool depth and bytes, outbox and in-flight
   counts — watchdogs can alert on a filling storer, not just liveness),
   opt-in pprof, self-hosted DERP map.
+- **Service packaging**: NixOS module (`nixosModules.default`,
+  `services.clowder`: dedicated clowder user, StateDirectory
+  /var/lib/clowder — auto-init rides the daemon's own first-start init,
+  Restart=on-failure; deliberately NO WatchdogSec, since the watchdog
+  clock counts suspend time and would kill a healthy daemon on wake —
+  hang detection stays with external probes of healthAddr) and a
+  per-user macOS launchd agent (`packages.<darwin>.launchd-agent`,
+  KeepAlive + RunAtLoad); both survive suspend/resume without restarts.
 - **Test harness**: a black-box end-to-end integration test at the repo
   root (the test binary re-execs itself as the real clow binary; run
   with CLOWDER_INTEGRATION=1), and TestMain pointing TMPDIR at a short
