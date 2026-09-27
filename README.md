@@ -125,17 +125,16 @@ the daemon through the same socket:
 
     sudo -u clowder env CLOWDER_DIR=/var/lib/clowder clow status
 
-On macOS the flake ships a per-user launchd agent (`KeepAlive` +
-`RunAtLoad`, so it survives suspend/resume without restarts):
-
-    nix build .#launchd-agent
-    cp -f result/Library/LaunchAgents/dev.clowder.clow.plist \
-        ~/Library/LaunchAgents/
-    launchctl load ~/Library/LaunchAgents/dev.clowder.clow.plist
-
-The plist pins the store path it was built with; rebuild and re-copy to
-upgrade. `clow invite`/`clow status` work as the same user as always —
-the agent shares your config dir and downloads inbox.
+On macOS, nix-darwin gets the same `services.clowder` module from
+`clowder.darwinModules.default` — it wires a per-user launchd agent
+(`KeepAlive` + `RunAtLoad`, so it survives suspend/resume without
+restarts) and installs/loads it on switch. Home Manager gets
+`clowder.homeManagerModules.default`: a launchd agent on macOS, a
+systemd user unit on Linux, running as your own user so `clow
+invite`/`clow status` work as always — the daemon shares your config
+dir and downloads inbox. Don't enable the Home Manager module on a
+host that also runs the system-level NixOS service: two daemons are
+two cats.
 
 ## Android
 

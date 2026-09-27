@@ -55,30 +55,15 @@
         "x86_64-linux" = "x86-64";
         "aarch64-darwin" = "arm64-v8a";
       };
-      # The launchd agent plist exists only on the macOS system; the
-      # packages attribute simply does not exist elsewhere, keeping the
-      # flake free of OS-conditional code.
-      launchdAgents = nixpkgs.lib.genAttrs [
-        "aarch64-darwin"
-      ] (
-        system:
-        {
-          launchd-agent = (import nixpkgs { inherit system; }).callPackage ./nix/launchd.nix {
-            clow = self.packages.${system}.default;
-          };
-        }
-      );
     in
     {
       # The clow binary. go.mod requires go >= 1.27.1 (tailcat and
       # tailscale.com declare it and own the floor), so the build pins
       # nixpkgs' go_1_27 rather than the default `go` alias, which may
       # still be a release behind.
-      packages =
-        let
-          goPackages = forEachSupportedSystem (
-            { pkgs }:
-            {
+      packages = forEachSupportedSystem (
+        { pkgs }:
+        {
               # buildGoModule's `go` attribute does not reach the
               # go-modules fetch derivation; overriding the builder swaps
               # the toolchain everywhere, module fetch included.
@@ -94,13 +79,6 @@
               };
             }
           );
-        in
-        # Merge INSIDE each system (same rule as devShells below): a
-        # top-level `//` would replace the darwin package set with the
-        # plist wholesale.
-        nixpkgs.lib.mapAttrs (
-          system: go: go // (launchdAgents.${system} or { })
-        ) goPackages;
 
       # NixOS: services.clowder, a systemd unit wrapping the flake
       # package. The wrapper's pattern must name the standard module
@@ -109,6 +87,17 @@
       # needs no specialArgs.
       nixosModules.default =
         { pkgs, ... }@args: import ./nix/nixos.nix (args // { inherit self; });
+
+      # nix-darwin: services.clowder, a per-user launchd agent. Same
+      # wrapper pattern as nixosModules.
+      darwinModules.default =
+        { pkgs, ... }@args: import ./nix/darwin.nix (args // { inherit self; });
+
+      # Home Manager: services.clowder, a launchd agent on macOS, a
+      # systemd user unit on Linux. Same wrapper pattern as
+      # nixosModules.
+      homeManagerModules.default =
+        { pkgs, ... }@args: import ./nix/home-manager.nix (args // { inherit self; });
 
       # Merge the per-system shell sets INSIDE each system, never
       # with a top-level `//`: that merge is shallow, the android set

@@ -33,7 +33,8 @@ path must be exercised by a daemon integration test.
     store/           storer spool: atomic writes, TTL, delete-on-ack
     daemon/          the runtime: serve/send/sync, pairing, IPC, stats,
                      TailcatTransport (production) + LocalTransport (tests)
-    nix/             service packaging: NixOS module, macOS launchd agent
+    nix/             service modules: shared options, NixOS, nix-darwin,
+                     Home Manager
     docs/specs/      the design doc (protocol, envelope, roster rules)
 
 ## Shared code — check before you write
@@ -176,12 +177,18 @@ One line each; the pinning tests carry the details.
   opt-in pprof, self-hosted DERP map.
 - **Service packaging**: NixOS module (`nixosModules.default`,
   `services.clowder`: dedicated clowder user, StateDirectory
-  /var/lib/clowder — auto-init rides the daemon's own first-start init,
-  Restart=on-failure; deliberately NO WatchdogSec, since the watchdog
-  clock counts suspend time and would kill a healthy daemon on wake —
-  hang detection stays with external probes of healthAddr) and a
-  per-user macOS launchd agent (`packages.<darwin>.launchd-agent`,
-  KeepAlive + RunAtLoad); both survive suspend/resume without restarts.
+  /var/lib/clowder, HOME pointed there too (system users get
+  /var/empty, which would break the default inbox) — auto-init rides
+  the daemon's own first-start init, Restart=on-failure; deliberately
+  NO WatchdogSec, since the watchdog clock counts suspend time and
+  would kill a healthy daemon on wake — hang detection stays with
+  external probes of healthAddr) and, sharing one options.nix, a
+  per-user nix-darwin module (launchd user agent, KeepAlive +
+  RunAtLoad) and a Home Manager module (launchd agent on macOS,
+  systemd user unit on Linux); all survive suspend/resume without
+  restarts. Flake module wrappers must take pattern args
+  ({ pkgs, ... }@args): module args are injected only into
+  pattern-named parameters.
 - **Test harness**: a black-box end-to-end integration test at the repo
   root (the test binary re-execs itself as the real clow binary; run
   with CLOWDER_INTEGRATION=1), and TestMain pointing TMPDIR at a short
