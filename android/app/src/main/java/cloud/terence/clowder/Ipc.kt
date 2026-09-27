@@ -32,6 +32,13 @@ data class Transfer(
     val total: Long,
 )
 
+/** A delivery confirmation for a file we sent (daemon.Receipt). */
+data class Receipt(
+    val fileName: String,
+    val from: String,
+    val deliveredAt: Long,
+)
+
 data class Status(
     val ok: Boolean,
     val error: String,
@@ -42,6 +49,7 @@ data class Status(
     val paths: Map<String, PathInfo>,
     val outbox: List<OutboxEntry>,
     val transfers: List<Transfer>,
+    val receipts: List<Receipt>,
     val sentFiles: Long,
     val sentBytes: Long,
     val receivedFiles: Long,
@@ -124,6 +132,14 @@ fun parseStatus(r: JSONObject): Status {
             }
         }
     }
+    val receipts = ArrayList<Receipt>()
+    r.optJSONArray("receipts")?.let { arr ->
+        for (i in 0 until arr.length()) {
+            arr.getJSONObject(i).let { rc ->
+                receipts.add(Receipt(rc.optString("file_name"), rc.optString("from"), rc.optLong("delivered_at")))
+            }
+        }
+    }
     val stats = r.optJSONObject("stats")
     return Status(
         ok = r.optBoolean("ok", false),
@@ -139,6 +155,7 @@ fun parseStatus(r: JSONObject): Status {
         paths = paths,
         outbox = outbox,
         transfers = transfers,
+        receipts = receipts,
         sentFiles = stats?.optLong("sent", 0L) ?: 0L,
         sentBytes = stats?.optLong("sent_bytes", 0L) ?: 0L,
         receivedFiles = stats?.optLong("received", 0L) ?: 0L,

@@ -282,6 +282,106 @@ fun StatusScreen(onShowSettings: () -> Unit) {
     val ctx = LocalContext.current
     var status by remember { mutableStateOf<Status?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    // The cat tapped for its stats popup, and the one pending a
+    // forget confirmation.
+    var sheetCat by remember { mutableStateOf<Cat?>(null) }
+    var forgetTarget by remember { mutableStateOf<Cat?>(null) }
+    var forgetError by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    sheetCat?.let { c ->
+        AlertDialog(
+            onDismissRequest = {
+                sheetCat = null
+                forgetError = null
+            },
+            title = { Text(c.name) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    val seen = status?.liveness?.get(c.key)?.takeIf { it != 0L }
+                    val path = status?.paths?.get(c.key)
+                    Text(livenessText(seen), style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        when {
+                            path == null -> "route unknown"
+                            path.direct -> "direct · ${path.endpoint}"
+                            else -> "relayed via DERP"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    HorizontalDivider(Modifier.padding(vertical = 4.dp))
+                    // Receipts are delivery confirmations for our
+                    // sends; the ones naming this cat are the files
+                    // it received from us.
+                    val rs = status?.receipts?.filter { it.from == c.name }.orEmpty()
+                    if (rs.isEmpty()) {
+                        Text(
+                            "no deliveries yet",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        Text(
+                            "${rs.size} ${if (rs.size == 1) "file" else "files"} delivered here",
+                            style = MaterialTheme.typography.titleSmall,
+                        )
+                        rs.take(3).forEach { rc ->
+                            Text(
+                                "${rc.fileName} · ${DateUtils.getRelativeTimeSpanString(rc.deliveredAt)}",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                    forgetError?.let {
+                        Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    sheetCat = null
+                    forgetError = null
+                }) { Text("Close") }
+            },
+            dismissButton = {
+                TextButton(onClick = { forgetTarget = c }) {
+                    Text("Forget", color = MaterialTheme.colorScheme.error)
+                }
+            },
+        )
+    }
+
+    forgetTarget?.let { c ->
+        AlertDialog(
+            onDismissRequest = { forgetTarget = null },
+            title = { Text("Forget ${c.name}?") },
+            text = {
+                Text(
+                    "Drops ${c.name} from your roster and cancels any pending " +
+                        "sends to it. Local only: ${c.name} keeps you in its roster.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    forgetTarget = null
+                    scope.launch {
+                        val r = withContextOrNull {
+                            ipc(ClowdService.socketFile(ctx), "forget", target = c.name)
+                        }
+                        if (r == null || !r.optBoolean("ok")) {
+                            forgetError = r?.optString("error")?.ifEmpty { null } ?: "daemon not reachable"
+                        } else {
+                            forgetError = null
+                            sheetCat = null
+                        }
+                    }
+                }) { Text("Forget", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { forgetTarget = null }) { Text("Cancel") }
+            },
+        )
+    }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -358,6 +458,7 @@ fun StatusScreen(onShowSettings: () -> Unit) {
             val seen = st.liveness[c.key]?.takeIf { it != 0L }
             val path = st.paths[c.key]
             ListItem(
+                modifier = Modifier.clickable { sheetCat = c },
                 headlineContent = { Text(c.name) },
                 supportingContent = {
                     val role = when {
