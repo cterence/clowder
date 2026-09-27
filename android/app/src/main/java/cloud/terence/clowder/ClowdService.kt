@@ -4,13 +4,16 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.provider.MediaStore
 import android.util.Log
+import android.webkit.MimeTypeMap
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -118,6 +121,53 @@ class ClowdService : Service() {
         if (daemon?.isAlive == true) return
         stopping.set(false)
         Thread { runDaemon() }.start()
+        if (publisher?.isAlive != true) publisher = Thread { runPublisher() }.also { it.start() }
+    }
+
+    private var publisher: Thread? = null
+
+    /** Moves delivered files from the sandbox inbox into the system's
+     *  Downloads (Download/clowder), mirroring the desktop inbox: the
+     *  file manager and every other app see them natively. IS_PENDING
+     *  keeps each move invisible until the copy completes. */
+    private fun runPublisher() {
+        while (!stopping.get()) {
+            runCatching { publishInbox() }
+            var slept = 0L
+            while (!stopping.get() && slept < 4000) {
+                Thread.sleep(250)
+                slept += 250
+            }
+        }
+    }
+
+    private fun publishInbox() {
+        if (Build.VERSION.SDK_INT < 29) return // ponytail: no MediaStore.Downloads below API 29; files stay in the sandbox
+        val files = inboxDir(this).listFiles()?.filter { it.isFile } ?: return
+        for (f in files) {
+            val mime = MimeTypeMap.getSingleton()
+                .getMimeTypeFromExtension(f.extension) ?: "application/octet-stream"
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, f.name)
+                put(MediaStore.MediaColumns.MIME_TYPE, mime)
+                put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/clowder")
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: continue
+            val copied = runCatching {
+                contentResolver.openOutputStream(uri)?.use { out ->
+                    f.inputStream().use { it.copyTo(out) }
+                } != null
+            }.getOrDefault(false)
+            values.clear()
+            values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+            runCatching { contentResolver.update(uri, values, null, null) }
+            if (copied) {
+                f.delete()
+                appendLog("inbox: ${f.name} moved to Downloads/clowder")
+            }
+        }
     }
 
     /** Runs the daemon, restarting on unexpected exits with a simple

@@ -89,6 +89,9 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
+import android.content.ContentUris
+import android.os.Build
+import android.provider.MediaStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -713,21 +716,64 @@ private fun queryName(ctx: android.content.Context, uri: Uri): String? {
     return null
 }
 
+/** One inbox row: either a MediaStore Downloads item (the publisher
+ *  moves arrivals there on API 29+) or a sandbox file below that. */
+data class InboxItem(
+    val uri: Uri?,
+    val file: File?,
+    val name: String,
+    val size: Long,
+    val modified: Long,
+)
+
 @Composable
 fun InboxScreen() {
     val ctx = LocalContext.current
-    var files by remember { mutableStateOf(listOf<File>()) }
+    var items by remember { mutableStateOf(listOf<InboxItem>()) }
     var refreshKey by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(refreshKey) {
-        files = withContext(Dispatchers.IO) {
-            ClowdService.inboxDir(ctx).listFiles()?.sortedByDescending { it.lastModified() } ?: emptyList()
+        items = withContext(Dispatchers.IO) {
+            if (Build.VERSION.SDK_INT >= 29) {
+                val out = mutableListOf<InboxItem>()
+                ctx.contentResolver.query(
+                    MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                    arrayOf(
+                        MediaStore.MediaColumns._ID,
+                        MediaStore.MediaColumns.DISPLAY_NAME,
+                        MediaStore.MediaColumns.SIZE,
+                        MediaStore.MediaColumns.DATE_ADDED,
+                    ),
+                    "${MediaStore.MediaColumns.RELATIVE_PATH}=?",
+                    arrayOf("Download/clowder"),
+                    "${MediaStore.MediaColumns.DATE_ADDED} DESC",
+                )?.use { c ->
+                    while (c.moveToNext()) {
+                        out += InboxItem(
+                            uri = ContentUris.withAppendedId(
+                                MediaStore.Downloads.EXTERNAL_CONTENT_URI, c.getLong(0),
+                            ),
+                            file = null,
+                            name = c.getString(1),
+                            size = c.getLong(2),
+                            modified = c.getLong(3) * 1000,
+                        )
+                    }
+                }
+                out
+            } else {
+                ClowdService.inboxDir(ctx).listFiles()
+                    ?.sortedByDescending { it.lastModified() }
+                    ?.map { InboxItem(null, it, it.name, it.length(), it.lastModified()) }
+                    ?: emptyList()
+            }
         }
     }
 
-    // The daemon lands files in the inbox dir; watch it instead of a
-    // manual refresh. (The deprecated String constructor covers
-    // minSdk 26; the File one is API 29+.)
+    // The daemon lands files in the sandbox inbox; the service's
+    // publisher moves them into Downloads. Watch the sandbox — arrival
+    // is the refresh trigger either way. (The deprecated String
+    // constructor covers minSdk 26; the File one is API 29+.)
     DisposableEffect(Unit) {
         val dir = ClowdService.inboxDir(ctx)
         if (!dir.isDirectory) dir.mkdirs()
@@ -755,7 +801,7 @@ fun InboxScreen() {
             Text("inbox", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
             OutlinedButton(onClick = { openInFilesApp(ctx) }) { Text("open in files") }
         }
-        if (files.isEmpty()) {
+        if (items.isEmpty()) {
             Text(
                 "nothing received yet",
                 style = MaterialTheme.typography.bodyMedium,
@@ -764,18 +810,18 @@ fun InboxScreen() {
             )
         }
         LazyColumn {
-            items(files) { f ->
+            items(items) { f ->
                 ListItem(
                     headlineContent = { Text(f.name) },
                     supportingContent = {
                         Text(
-                            "${humanBytes(f.length())} · " +
-                                DateUtils.getRelativeTimeSpanString(f.lastModified()).toString(),
+                            "${humanBytes(f.size)} · " +
+                                DateUtils.getRelativeTimeSpanString(f.modified).toString(),
                         )
                     },
                     modifier = Modifier.fillMaxWidth(),
                     trailingContent = {
-                        TextButton(onClick = { openFile(ctx, f) }) { Text("open") }
+                        TextButton(onClick = { openInboxItem(ctx, f) }) { Text("open") }
                     },
                 )
             }
@@ -783,19 +829,18 @@ fun InboxScreen() {
     }
 }
 
-private fun openFile(ctx: android.content.Context, f: File) {
-    val uri: Uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", f)
+private fun openInboxItem(ctx: android.content.Context, item: InboxItem) {
+    val uri = item.uri ?: FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", item.file!!)
     val intent = Intent(Intent.ACTION_VIEW)
         .setDataAndType(uri, ctx.contentResolver.getType(uri) ?: "application/octet-stream")
         .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    runCatching { ctx.startActivity(Intent.createChooser(intent, f.name)) }
+    runCatching { ctx.startActivity(Intent.createChooser(intent, item.name)) }
 }
 
 /** Opens the phone's file manager. DocumentsUI is the platform's
- *  (AOSP and Pixel package names); the inbox shows up in it as a
- *  "Clowder inbox" root via our DocumentsProvider, because the
- *  sandbox keeps it invisible to every other file manager. Without
- *  a Files app at all, fall back to the downloads UI. */
+ *  (AOSP and Pixel package names); received files live in the real
+ *  Download/clowder directory, so any file manager shows them.
+ *  Without a Files app at all, fall back to the downloads UI. */
 private fun openInFilesApp(ctx: android.content.Context) {
     for (pkg in listOf("com.android.documentsui", "com.google.android.documentsui")) {
         val intent = ctx.packageManager.getLaunchIntentForPackage(pkg)

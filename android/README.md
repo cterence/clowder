@@ -51,7 +51,7 @@ arm64-only daemon; a device is the answer there.)
 |---|---|
 | init | exec `libclowder.so init --name <name>` with `CLOWDER_DIR` and `HOME` pointing into the app sandbox |
 | status / pair / send / outbox | IPC ops (`status`, `invite`, `join`, `send`, `cats`) over `clow.sock`, the same wire the CLI speaks; tapping a cat opens its stats (liveness, route, receipts) with a confirmed `forget` — the CLI's local-only forget |
-| inbox | the daemon delivers into `$HOME/Downloads/clowder` inside the app's files dir; the app lists and shares it via FileProvider, and `InboxDocumentsProvider` exposes it read-only to the system's file manager ("Clowder inbox" root — the sandbox is invisible to file managers otherwise); the inbox screen's "open in files" button launches the file manager |
+| inbox | the daemon delivers into `$HOME/Downloads/clowder` inside the app's sandbox; ClowdService's publisher then moves each file into the system's `Download/clowder` via `MediaStore.Downloads` (API 29+; below that files stay sandboxed), so the real Downloads and every file manager see them — no DocumentsProvider needed. The inbox screen lists the Downloads bucket; below API 29 it lists the sandbox |
 | daemon lifecycle | starts with the app (no manual start); `ClowdService`, a `dataSync` foreground service holding a partial wake lock, restarts the process with backoff if it dies; stop/start, view/clear the log and reset live on the Settings screen (gear on Status) |
 | reset | the Settings screen: announces the leave (`leave` op, so the clowder learns this cat is gone), stops the daemon, waits out its IPC socket, then exec's `libclowder.so reset --yes` and returns to init |
 
