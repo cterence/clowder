@@ -12,6 +12,12 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -101,6 +107,13 @@ class MainActivity : ComponentActivity() {
 
 private data class Tab(val label: String, val icon: androidx.compose.ui.graphics.vector.ImageVector)
 
+/** The overlay screens' short swipe: in from the right, out the same
+ *  way, 200 ms — a navigation push. */
+private val SwipeIn =
+    slideInHorizontally(animationSpec = tween(200)) { it } + fadeIn(tween(200))
+private val SwipeOut =
+    slideOutHorizontally(animationSpec = tween(200)) { it } + fadeOut(tween(200))
+
 @Composable
 fun ClowderApp() {
     val ctx = LocalContext.current
@@ -150,8 +163,13 @@ fun ClowderApp() {
         }
     }
     // Settings and the log open as full screens over the scaffold
-    // (bottom bar included) while they show.
-    if (showSettings) {
+    // (bottom bar included) while they show, with a short swipe —
+    // a navigation push, not a pop.
+    AnimatedVisibility(
+        visible = showSettings,
+        enter = SwipeIn,
+        exit = SwipeOut,
+    ) {
         SettingsScreen(
             onClose = { showSettings = false },
             onShowLog = { showLog = true },
@@ -160,7 +178,13 @@ fun ClowderApp() {
             onReset = { initialized = false },
         )
     }
-    if (showLog) LogScreen(onClose = { showLog = false })
+    AnimatedVisibility(
+        visible = showLog,
+        enter = SwipeIn,
+        exit = SwipeOut,
+    ) {
+        LogScreen(onClose = { showLog = false })
+    }
 }
 
 /** `clow init <name>` runs the binary directly (init is a local file
