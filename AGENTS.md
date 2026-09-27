@@ -113,7 +113,24 @@ Update this list and the README when something ships.
    app; then boot-receive, delivery notifications, and the storer-role
    UI. Termux is explicitly NOT a goal (the foreground-service app is
    the answer); on-device builds blocked until Termux ships go >= 1.27.1.
-2. **Multiple clowders** — named clowders: per-clowder roster files,
+2. **Pairing and roster UX** — dogfooding surfaced three friction
+   points. (a) Right after `clow join`, the joiner sees every cat
+   "never seen" until syncs connect: pairing must make the fresh
+   roster visibly alive (e.g. the inviter pushes roster+liveness with
+   the join confirmation, and the join triggers an immediate sync
+   round). (b) A join that straddles DERP congestion half-fails: the
+   CLI hangs or is Ctrl-C'd while the daemon still completes the
+   handshake, and a retry with the now-dead code reports "reaching
+   inviter: context deadline exceeded" — indistinguishable from an
+   unreachable inviter. The join should report daemon-side state
+   (in-progress, completed) instead of one blocking RPC, and the
+   dead-code path needs its own message. (c) Duplicate names in
+   `clow status` tag both entries "[duplicate name]" with no hint
+   WHICH cat to forget; re-creating a cat under a forgotten cat's
+   name leaves the stale entry riding in from peers that never
+   forgot it. Status should identify duplicates (short node key,
+   updated time) and forget should accept a key, not just a name.
+3. **Multiple clowders** — named clowders: per-clowder roster files,
    `--clowder` on invite/join/send, Hello carries the clowder name so a
    connection routes to the right roster. One identity, one daemon,
    clowders stay disjoint. Largest refactor; do last, design tombstones
