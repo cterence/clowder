@@ -71,6 +71,12 @@ func TestDeliveryReceipts(t *testing.T) {
 	// ledger closes the loop.
 	milo2 := startDaemonAt(t, milo.cfg.Dir)
 	trust(t, milo2, box)
+	// box is the dialer now (the push sweep), and the restarted milo
+	// serves a fresh LocalTransport port — box must re-learn the
+	// address, the way the mesh's roster sync would in production
+	// (where the tailcat address survives restarts and this cannot
+	// happen; the same pattern as TestDirectSendResumesAcrossRestart).
+	trust(t, box, milo2)
 	// The storer's sweep pushes the held receipt to the returning sender.
 	box.sweepSpoolFor(context.Background(), milo2.Me().Key)
 	waitFor(t, func() bool { return box.Spool().Count() == 0 },
