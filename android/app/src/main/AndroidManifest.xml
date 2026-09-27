@@ -41,5 +41,18 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+
+        <!-- Browses the sandboxed inbox from the system's file manager
+             (read-only); see InboxDocumentsProvider.kt. -->
+        <provider
+            android:name=".InboxDocumentsProvider"
+            android:authorities="${applicationId}.inbox"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
     </application>
 </manifest>

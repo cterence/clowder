@@ -13,6 +13,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,6 +32,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Email
 import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.KeyboardArrowLeft
+import androidx.compose.material.icons.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
@@ -115,6 +118,7 @@ fun ClowderApp() {
         Tab("Inbox", Icons.Outlined.Email),
     )
     var tab by remember { mutableIntStateOf(0) }
+    var showSettings by remember { mutableStateOf(false) }
     var showLog by remember { mutableStateOf(false) }
     // The daemon is the app: it starts with the UI (this effect
     // composes once the cat is initialized) and is stopped from the
@@ -138,18 +142,24 @@ fun ClowderApp() {
     ) { padding ->
         Box(Modifier.padding(padding)) {
             when (tab) {
-                0 -> StatusScreen(
-                    onReset = { initialized = false },
-                    onShowLog = { showLog = true },
-                )
+                0 -> StatusScreen(onShowSettings = { showSettings = true })
                 1 -> PairScreen()
                 2 -> SendScreen()
                 3 -> InboxScreen()
             }
         }
     }
-    // The log opens from the settings dialog, covering the scaffold
-    // (bottom bar included) while it shows.
+    // Settings and the log open as full screens over the scaffold
+    // (bottom bar included) while they show.
+    if (showSettings) {
+        SettingsScreen(
+            onClose = { showSettings = false },
+            onShowLog = { showLog = true },
+            // A reset that succeeds lands on init; everything above
+            // stops composing because initialized flips false first.
+            onReset = { initialized = false },
+        )
+    }
     if (showLog) LogScreen(onClose = { showLog = false })
 }
 
@@ -268,106 +278,10 @@ private fun LivenessDot(online: Boolean) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun StatusScreen(onReset: () -> Unit, onShowLog: () -> Unit) {
+fun StatusScreen(onShowSettings: () -> Unit) {
     val ctx = LocalContext.current
     var status by remember { mutableStateOf<Status?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
-    var showSettings by remember { mutableStateOf(false) }
-    var showReset by remember { mutableStateOf(false) }
-    var resetResult by remember { mutableStateOf<String?>(null) }
-    val scope = rememberCoroutineScope()
-
-    if (showSettings) {
-        AlertDialog(
-            onDismissRequest = { showSettings = false },
-            title = { Text("Settings") },
-            text = {
-                Column {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        LivenessDot(ClowdService.running)
-                        Text(
-                            if (ClowdService.running) "daemon running" else "daemon stopped",
-                            style = MaterialTheme.typography.titleSmall,
-                        )
-                        Spacer(Modifier.weight(1f))
-                        if (ClowdService.running) {
-                            OutlinedButton(onClick = {
-                                ClowdService.stop(ctx)
-                                showSettings = false
-                            }) { Text("Stop") }
-                        } else {
-                            FilledTonalButton(onClick = {
-                                ClowdService.start(ctx)
-                                showSettings = false
-                            }) {
-                                Icon(Icons.Outlined.PlayArrow, contentDescription = null)
-                                Text("Start")
-                            }
-                        }
-                    }
-                    HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                    TextButton(onClick = {
-                        showSettings = false
-                        onShowLog()
-                    }) { Text("View daemon log") }
-                    TextButton(onClick = {
-                        ClowdService.clearLog()
-                        showSettings = false
-                    }) { Text("Clear daemon log") }
-                    TextButton(onClick = {
-                        showSettings = false
-                        showReset = true
-                    }) { Text("Reset this cat\u2026", color = MaterialTheme.colorScheme.error) }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showSettings = false }) { Text("Done") }
-            },
-        )
-    }
-
-    if (showReset) {
-        AlertDialog(
-            onDismissRequest = { showReset = false },
-            title = { Text("Reset this cat?") },
-            text = {
-                Text(
-                    "Its identity, rosters, spool and outbox are deleted and " +
-                        "you will name a new cat. Received files are kept. " +
-                        "This cannot be undone.",
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    showReset = false
-                    scope.launch {
-                        val out = withContext(Dispatchers.IO) { runReset(ctx) }
-                        if (ClowdService.isInitialized(ctx)) {
-                            resetResult = out
-                        } else {
-                            onReset()
-                        }
-                    }
-                }) { Text("Reset", color = MaterialTheme.colorScheme.error) }
-            },
-            dismissButton = {
-                TextButton(onClick = { showReset = false }) { Text("Cancel") }
-            },
-        )
-    }
-    resetResult?.let {
-        AlertDialog(
-            onDismissRequest = { resetResult = null },
-            title = { Text("reset failed") },
-            text = { Text(it) },
-            confirmButton = {
-                TextButton(onClick = { resetResult = null }) { Text("ok") }
-            },
-        )
-    }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -401,7 +315,7 @@ fun StatusScreen(onReset: () -> Unit, onShowLog: () -> Unit) {
                     style = MaterialTheme.typography.titleMedium,
                 )
                 Spacer(Modifier.weight(1f))
-                IconButton(onClick = { showSettings = true }) {
+                IconButton(onClick = onShowSettings) {
                     Icon(Icons.Outlined.Settings, contentDescription = "settings")
                 }
             }
@@ -713,7 +627,8 @@ fun InboxScreen() {
                 .padding(start = 24.dp, end = 24.dp, top = 24.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("inbox", style = MaterialTheme.typography.titleMedium)
+            Text("inbox", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            OutlinedButton(onClick = { openInFilesApp(ctx) }) { Text("open in files") }
         }
         if (files.isEmpty()) {
             Text(
@@ -749,6 +664,141 @@ private fun openFile(ctx: android.content.Context, f: File) {
         .setDataAndType(uri, ctx.contentResolver.getType(uri) ?: "application/octet-stream")
         .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     runCatching { ctx.startActivity(Intent.createChooser(intent, f.name)) }
+}
+
+/** Opens the phone's file manager. DocumentsUI is the platform's
+ *  (AOSP and Pixel package names); the inbox shows up in it as a
+ *  "Clowder inbox" root via our DocumentsProvider, because the
+ *  sandbox keeps it invisible to every other file manager. Without
+ *  a Files app at all, fall back to the downloads UI. */
+private fun openInFilesApp(ctx: android.content.Context) {
+    for (pkg in listOf("com.android.documentsui", "com.google.android.documentsui")) {
+        val intent = ctx.packageManager.getLaunchIntentForPackage(pkg)
+        if (intent != null) {
+            runCatching { ctx.startActivity(intent) }
+            return
+        }
+    }
+    runCatching {
+        ctx.startActivity(Intent(android.app.DownloadManager.ACTION_VIEW_DOWNLOADS))
+    }
+}
+
+/** Settings as a full screen, not a popup: daemon lifecycle, the
+ *  daemon log, and reset. Reset keeps its confirmation dialog — a
+ *  destructive action should interrupt. */
+@Composable
+fun SettingsScreen(onClose: () -> Unit, onShowLog: () -> Unit, onReset: () -> Unit) {
+    val ctx = LocalContext.current
+    var showReset by remember { mutableStateOf(false) }
+    var resetResult by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    if (showReset) {
+        AlertDialog(
+            onDismissRequest = { showReset = false },
+            title = { Text("Reset this cat?") },
+            text = {
+                Text(
+                    "Its identity, rosters, spool and outbox are deleted and " +
+                        "you will name a new cat. Received files are kept. " +
+                        "This cannot be undone.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showReset = false
+                    scope.launch {
+                        val out = withContext(Dispatchers.IO) { runReset(ctx) }
+                        if (ClowdService.isInitialized(ctx)) {
+                            resetResult = out
+                        } else {
+                            onReset()
+                        }
+                    }
+                }) { Text("Reset", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showReset = false }) { Text("Cancel") }
+            },
+        )
+    }
+    resetResult?.let {
+        AlertDialog(
+            onDismissRequest = { resetResult = null },
+            title = { Text("reset failed") },
+            text = { Text(it) },
+            confirmButton = {
+                TextButton(onClick = { resetResult = null }) { Text("ok") }
+            },
+        )
+    }
+
+    Surface(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+            Row(
+                Modifier.padding(top = 16.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                IconButton(onClick = onClose) {
+                    Icon(Icons.Outlined.KeyboardArrowLeft, contentDescription = "back")
+                }
+                Text("Settings", style = MaterialTheme.typography.titleLarge)
+            }
+            HorizontalDivider(Modifier.padding(bottom = 8.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                LivenessDot(ClowdService.running)
+                Text(
+                    if (ClowdService.running) "daemon running" else "daemon stopped",
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Spacer(Modifier.weight(1f))
+                if (ClowdService.running) {
+                    OutlinedButton(onClick = { ClowdService.stop(ctx) }) { Text("Stop") }
+                } else {
+                    FilledTonalButton(onClick = { ClowdService.start(ctx) }) {
+                        Icon(Icons.Outlined.PlayArrow, contentDescription = null)
+                        Text("Start")
+                    }
+                }
+            }
+            HorizontalDivider(Modifier.padding(vertical = 8.dp))
+            MenuRow("View daemon log") { onShowLog() }
+            HorizontalDivider()
+            MenuRow("Clear daemon log") { ClowdService.clearLog() }
+            HorizontalDivider()
+            MenuRow("Reset this cat…", danger = true) { showReset = true }
+            HorizontalDivider()
+        }
+    }
+}
+
+/** One settings menu row: label, chevron, whole row clickable. */
+@Composable
+private fun MenuRow(label: String, danger: Boolean = false, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyLarge,
+            color = if (danger) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f),
+        )
+        Icon(
+            Icons.Outlined.KeyboardArrowRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }
 
 @Composable
