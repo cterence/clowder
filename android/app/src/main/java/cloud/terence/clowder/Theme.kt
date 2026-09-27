@@ -1,6 +1,7 @@
 package cloud.terence.clowder
 
 import android.os.Build
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
@@ -15,11 +16,8 @@ import androidx.compose.ui.platform.LocalContext
  * hand-tuned warm "ginger cat" scheme as the fallback for older
  * devices. The pattern is the one Google's Now in Android sample
  * uses: dynamic color when the platform offers it, an owned brand
- * scheme otherwise, dark variants for both.
- *
- * Dark is the default — a daemon dashboard reads best dark, and the
- * app does not follow the system setting; the parameter stays for a
- * future in-app toggle.
+ * scheme otherwise, dark variants for both, following the system
+ * theme setting.
  */
 
 private val LightColors = lightColorScheme(
@@ -54,7 +52,7 @@ private val DarkColors = darkColorScheme(
 
 @Composable
 fun ClowderTheme(
-    darkTheme: Boolean = true,
+    darkTheme: Boolean = isSystemInDarkTheme(),
     dynamicColor: Boolean = true,
     content: @Composable () -> Unit,
 ) {
