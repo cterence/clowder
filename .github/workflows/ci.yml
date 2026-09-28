@@ -65,3 +65,29 @@ jobs:
           cache: true
       - run: CLOWDER_INTEGRATION=1 go test ./daemon/ -run Integration -count=1 -timeout 10m -v
       - run: CLOWDER_INTEGRATION=1 go test . -run TestIntegrationEndToEnd -count=1 -timeout 10m -v
+
+  # Build the flake's package and push the results to the niks3 binary
+  # cache (S3-backed, GitHub-OIDC auth, no secrets). Fork PRs build but
+  # do not push: GitHub withholds id-token from them.
+  nix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v23
+        with:
+          extra-conf: |
+            extra-substituters = https://niks3.terence.cloud
+            extra-trusted-public-keys = niks3.terence.cloud-1:YBjuY7HeSjKk5wmvw8N+vq/us2GxQPCHRn871lL7XL4=
+      - run: nix build . --print-out-paths
+      - name: Push to niks3
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          nix build -o niks3 github:Mic92/niks3
+          niks3/bin/niks3 push \
+            --server-url https://niks3.terence.cloud \
+            --auth-token-script "$PWD/.github/scripts/niks3-token.sh" \
+            ./result ./niks3
