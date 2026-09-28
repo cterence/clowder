@@ -27,8 +27,8 @@ func main() {
 }
 
 func run(args []string) error {
-	if len(args) == 0 {
-		return shortUsage()
+	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
+		return usage()
 	}
 	cmd, rest := args[0], args[1:]
 	switch cmd {
@@ -40,22 +40,14 @@ func run(args []string) error {
 		return cmdInvite()
 	case "join":
 		return cmdJoin(rest)
-	case "outbox":
-		return cmdOutbox(rest)
+	case "cancel":
+		return cmdCancel(rest)
 	case "forget":
 		return cmdForget(rest)
-	case "distrust":
-		return cmdDistrust(rest)
-	case "trust":
-		return cmdTrust(rest)
-	case "rotate":
-		return printResp(call(daemon.Request{Op: "rotate"}))
 	case "leave":
 		return printResp(call(daemon.Request{Op: "leave"}))
 	case "reset":
 		return cmdReset(rest)
-	case "help":
-		return longUsage()
 	case "send":
 		return cmdSend(rest)
 	case "storer":
@@ -65,50 +57,51 @@ func run(args []string) error {
 	case "inbox":
 		return cmdInbox(rest)
 	default:
-		return fmt.Errorf("unknown command %q", cmd)
+		return fmt.Errorf("unknown command %q (run \"clow --help\" for usage)", cmd)
 	}
 }
 
-func shortUsage() error {
-	fmt.Fprint(os.Stderr, `usage: clow <command> [args]
-
-  init, daemon, invite, join, send, inbox, storer, outbox,
-  forget, rotate, leave, reset, status, help
-
-run "clow help" for details.
-`)
-	return nil
-}
-
-func longUsage() error {
+// usage is the whole help: grouped by what you are doing, one line per
+// command, printed for bare `clow` and `clow --help` alike.
+func usage() error {
 	fmt.Print(`clow - a member of a clowder, an async file-transfer mesh over tailcat
 
-usage:
-  clow init [--name NAME] [--dir CONFIG_DIR] [--inbox INBOX_DIR]
-                                           create this cat's identity
+usage: clow <command> [args]
+
+identity and lifecycle:
+  clow init [--name NAME] [--dir DIR] [--inbox DIR]  create this cat's identity
   clow daemon [--port N] [--health ADDR] [--derp-map URL]
-                                           run the mesh daemon
-  clow invite                              print a pairing code (8 words, 5 min)
-  clow join <CODE>                         pair with the cat that invited
-  clow send <CAT> <FILE>                   send a file asynchronously
-  clow inbox [--set DIR]                   list received files, or move the inbox
-  clow storer [--max SIZE] on|off|dropbox                storer duty; dropbox = third parties only
-  clow outbox clear                        drop all pending sends
-  clow distrust <CAT>                     block a cat locally, both ways (no gossip)
-  clow trust <CAT>                         undo distrust
-  clow forget <CAT>                        drop a cat from the roster
-  clow rotate                              new address, announced to the clowder
-  clow leave                               depart: signed goodbye, cats drop you
-  clow reset [--yes]                       wipe this cat's identity and rosters
-  clow status [--addresses]               config, outbox, spool and roster summary
-                                           (--addresses also prints each cat's
-                                           tailcat address)
+                                                      run the mesh daemon
+  clow leave                                          depart: signed goodbye, every cat drops you
+  clow reset [--yes]                                  wipe this cat's identity and rosters — a
+                                                      local wipe; depart with clow leave,
+                                                      stop the daemon first
+
+pairing (the only source of trust):
+  clow invite                                         print an 8-word pairing code (5 min, one use)
+  clow join <CODE>                                    pair with the cat that invited
+
+transferring files:
+  clow send [--async] <CAT> <FILE>                    send a file; watches progress until it is
+                                                      delivered or a storer holds it (--async
+                                                      queues and returns; Ctrl-C cancels)
+  clow inbox [--set DIR]                              list received files, or move the inbox
+  clow cancel [<ID>]                                  cancel one pending send by its id, or all
+
+roles:
+  clow storer [--max SIZE] on|off|dropbox             hold sealed files for others
+                                                      (dropbox: third parties only)
+
+mesh state:
+  clow status [--addresses]                           roster, liveness, transfers, outbox and spool
+                                                      (--addresses also prints tailcat addresses)
+  clow forget <CAT-OR-KEY>                            drop a cat from the roster for good (the
+                                                      key disambiguates duplicate names)
 
 config dir:  $CLOWDER_DIR, else the OS user config home (~/.config/clowder
              on Linux, ~/Library/Application Support/clowder on macOS)
 inbox:       ~/Downloads/clowder by default; "clow inbox --set DIR" moves it
-pairing:     trust comes only from "clow invite" / "clow join" pairing
-             codes, never from exchanging addresses
+pairing:     trust comes only from invite/join codes, never from exchanging addresses
 daemon:      every command except init and inbox needs it running
 `)
 	return nil
@@ -254,11 +247,19 @@ func cmdJoin(args []string) error {
 	return printResp(call(daemon.Request{Op: "join", Words: strings.Join(args, " ")}))
 }
 
-func cmdOutbox(args []string) error {
-	if len(args) != 1 || args[0] != "clear" {
-		return fmt.Errorf("usage: clow outbox clear")
+func cmdCancel(args []string) error {
+	fs := flag.NewFlagSet("cancel", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
-	return printResp(call(daemon.Request{Op: "outbox", Path: "clear"}))
+	if fs.NArg() > 1 {
+		return fmt.Errorf("usage: clow cancel [<ID>]")
+	}
+	target := ""
+	if fs.NArg() == 1 {
+		target = fs.Arg(0)
+	}
+	return printResp(call(daemon.Request{Op: "cancel", Target: target}))
 }
 
 func cmdForget(args []string) error {
@@ -267,36 +268,18 @@ func cmdForget(args []string) error {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: clow forget <CAT>")
+		return fmt.Errorf("usage: clow forget <CAT-OR-KEY>")
 	}
 	return printResp(call(daemon.Request{Op: "forget", Target: fs.Arg(0)}))
-}
-
-func cmdDistrust(args []string) error {
-	fs := flag.NewFlagSet("distrust", flag.ContinueOnError)
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: clow distrust <CAT>")
-	}
-	return printResp(call(daemon.Request{Op: "distrust", Target: fs.Arg(0)}))
-}
-
-func cmdTrust(args []string) error {
-	fs := flag.NewFlagSet("trust", flag.ContinueOnError)
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: clow trust <CAT>")
-	}
-	return printResp(call(daemon.Request{Op: "trust", Target: fs.Arg(0)}))
 }
 
 // cmdReset wipes the config dir (the inbox is kept). Refuses while the
 // daemon runs: a confirmed reset first tells it to announce a leave while
 // it can still reach anyone.
+// cmdReset wipes the config dir (the inbox is kept) — a purely local
+// operation. Departure is `clow leave`, the only thing that can still
+// sign a goodbye; reset refuses to run under a live daemon because it
+// owns the dir.
 func cmdReset(args []string) error {
 	fs := flag.NewFlagSet("reset", flag.ContinueOnError)
 	yes := fs.Bool("yes", false, "skip the confirmation prompt")
@@ -307,19 +290,7 @@ func cmdReset(args []string) error {
 
 	if conn, err := net.Dial("unix", daemon.IPCPath(dir)); err == nil {
 		_ = conn.Close()
-		if err := confirmReset(dir, *yes); err != nil {
-			return err
-		}
-		// Best effort: the leave is announced; the reset proceeds on the next,
-		// daemonless run.
-		resp, lerr := call(daemon.Request{Op: "leave"})
-		if lerr == nil && !resp.OK {
-			lerr = fmt.Errorf("%s", resp.Error)
-		}
-		if lerr != nil {
-			return fmt.Errorf("daemon is running in %s and announcing the leave failed (%v); stop it before resetting", dir, lerr)
-		}
-		return fmt.Errorf("leave announced to the clowder; stop the daemon in %s and run clow reset again to wipe the cat", dir)
+		return fmt.Errorf("the daemon is running in %s; stop it before resetting (run \"clow leave\" first if you want the clowder to drop you)", dir)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "identity.json")); err != nil {
 		return fmt.Errorf("no cat to reset in %s", dir)
@@ -349,11 +320,24 @@ func confirmReset(dir string, yes bool) error {
 	return nil
 }
 
-func dupTag(dup bool) string {
-	if dup {
-		return " [duplicate name]"
+// dupTag marks a name claimed by more than one key, naming this cat's
+// short key and entry age so `clow forget <KEY>` can disambiguate.
+func dupTag(c roster.Cat, dup bool) string {
+	if !dup {
+		return ""
 	}
-	return ""
+	return fmt.Sprintf(" [duplicate name · key %s · updated %s ago]", shortKey(c.Key), sinceStr(c.Updated))
+}
+
+// shortKey renders the identifying prefix of a node key ("nodekey:...").
+func shortKey(k string) string {
+	if i := strings.IndexByte(k, ':'); i >= 0 {
+		k = k[i+1:]
+	}
+	if len(k) > 8 {
+		k = k[:8]
+	}
+	return k
 }
 
 func nameCounts(cats []roster.Cat) map[string]int {
@@ -362,13 +346,6 @@ func nameCounts(cats []roster.Cat) map[string]int {
 		counts[c.Name]++
 	}
 	return counts
-}
-
-func distrustTag(on bool) string {
-	if on {
-		return " [distrusted]"
-	}
-	return ""
 }
 
 func storerTag(storer, dropbox bool) string {
@@ -383,17 +360,81 @@ func storerTag(storer, dropbox bool) string {
 
 func cmdSend(args []string) error {
 	fs := flag.NewFlagSet("send", flag.ContinueOnError)
+	async := fs.Bool("async", false, "queue the send and return (default: watch until delivered or a storer holds it)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 2 {
-		return fmt.Errorf("usage: clow send <CAT> <FILE>")
+		return fmt.Errorf("usage: clow send [--async] <CAT> <FILE>")
 	}
 	path, err := filepath.Abs(fs.Arg(1))
 	if err != nil {
 		return err
 	}
-	return printResp(call(daemon.Request{Op: "send", Target: fs.Arg(0), Path: path}))
+	resp, err := call(daemon.Request{Op: "send", Target: fs.Arg(0), Path: path})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("%s", resp.Error)
+	}
+	fmt.Println(resp.Message)
+	if *async || resp.ID == "" {
+		return nil
+	}
+	return watchSend(resp.ID, filepath.Base(path), fs.Arg(0))
+}
+
+// watchSend follows a queued transfer until it leaves the outbox:
+// delivered directly, or accepted by a storer for an offline target.
+// Ctrl-C cancels the send — the entry is dropped and any in-flight
+// attempt is aborted.
+func watchSend(id, file, target string) error {
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt)
+	defer signal.Stop(sig)
+	tick := time.NewTicker(250 * time.Millisecond)
+	defer tick.Stop()
+	var last string
+	for {
+		select {
+		case <-sig:
+			if _, err := call(daemon.Request{Op: "cancel", Target: id}); err != nil {
+				return err
+			}
+			fmt.Printf("\r%-72s\n", fmt.Sprintf("cancelled %s (pending send dropped; an in-flight attempt is aborted)", file))
+			return nil
+		case <-tick.C:
+		}
+		resp, err := call(daemon.Request{Op: "status"})
+		if err != nil {
+			return err
+		}
+		if !resp.OK {
+			return fmt.Errorf("%s", resp.Error)
+		}
+		queued := false
+		for _, e := range resp.Outbox {
+			if e.ID == id {
+				queued = true
+				break
+			}
+		}
+		if !queued {
+			fmt.Printf("\r%-72s\n", fmt.Sprintf("sent %s to %s (delivered, or held by a storer until it is online)", file, target))
+			return nil
+		}
+		line := fmt.Sprintf("waiting: %s queued for %s", file, target)
+		if p, ok := sendingID(resp.Progress, id); ok {
+			line = fmt.Sprintf("sending %s to %s: %3.0f%% of %s%s",
+				file, target, p.Percent()*100, daemon.HumanBytes(p.Total), rateSuffix(p))
+		}
+		if line != last {
+			fmt.Printf("\r%-72s", line)
+			last = line
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
 }
 
 func cmdStorer(args []string) error {
@@ -446,10 +487,6 @@ func cmdStatus(args []string) error {
 	fmt.Printf("config:  %s\n", configDir())
 	fmt.Printf("inbox:   %s\n", inboxDir())
 
-	distrusted := map[string]bool{}
-	for _, n := range resp.Distrusted {
-		distrusted[n] = true
-	}
 	dups := nameCounts(resp.Cats)
 	fmt.Printf("\nclowder: %d %s\n", len(resp.Cats), plural(len(resp.Cats), "cat", "cats"))
 	for _, c := range resp.Cats {
@@ -464,15 +501,7 @@ func cmdStatus(args []string) error {
 		default:
 			life = fmt.Sprintf("offline (seen %s ago)", sinceStr(seen))
 		}
-		route := ""
-		if p := resp.Paths[c.Key]; p != nil {
-			if p.Direct {
-				route = "direct " + p.Endpoint
-			} else {
-				route = "relayed via DERP"
-			}
-		}
-		fmt.Printf("  %-22s %-24s %s%s%s\n", name, life, route, distrustTag(distrusted[c.Name]), dupTag(dups[c.Name] > 1))
+		fmt.Printf("  %-22s %-24s%s\n", name, life, dupTag(c, dups[c.Name] > 1))
 		if *addresses {
 			fmt.Printf("    address: %s\n", c.Addr)
 		}
@@ -509,14 +538,6 @@ func cmdStatus(args []string) error {
 			fmt.Printf(" (of %s capacity)", daemon.HumanBytes(resp.Me.Capacity))
 		}
 		fmt.Printf(", %d %s\n", resp.Spool, plural(resp.Spool, "file", "files"))
-	}
-
-	if len(resp.Receipts) > 0 {
-		fmt.Printf("\nreceipts: %d shown\n", len(resp.Receipts))
-		for i := len(resp.Receipts) - 1; i >= 0; i-- {
-			r := resp.Receipts[i]
-			fmt.Printf("  %-24s from %-16s delivered %s\n", r.FileName, r.From, sinceStr(r.DeliveredAt)+" old")
-		}
 	}
 
 	if resp.Stats != nil {

@@ -5,7 +5,6 @@ import (
 	"os"
 	"sync"
 	"testing"
-	"time"
 
 	"clowder/protocol"
 )
@@ -106,26 +105,31 @@ func TestSourceDigestCache(t *testing.T) {
 	}
 }
 
-// TestHealthStatsDepths pins the daemon's /stats snapshot against the
-// live keepers.
-func TestHealthStatsDepths(t *testing.T) {
+// TestCancelPendingSend pins `clow cancel`: one send by ID, then the
+// cancel-all form on a fresh queue.
+func TestCancelPendingSend(t *testing.T) {
 	milo := startDaemon(t, "milo")
-	if got := milo.healthStats(); got != (HealthStats{}) {
-		t.Fatalf("fresh daemon stats = %+v, want zero", got)
-	}
-	// niko's roster entry exists but nothing listens there: the send
-	// stays queued, so the outbox depth shows.
 	niko, _ := offlineCat(t)
 	addCat(t, milo, niko)
-	if _, err := milo.Send("niko", writeSource(t, "pending")); err != nil {
+
+	id, err := milo.Send("niko", writeSource(t, "never mind"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if milo.healthStats().Outbox == 1 {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
+	if n, err := milo.Cancel(id); err != nil || n != 1 {
+		t.Fatalf("Cancel(id) = %d, %v; want 1, nil", n, err)
 	}
-	t.Fatalf("stats outbox = %d, want 1", milo.healthStats().Outbox)
+	if len(milo.ob.All()) != 0 {
+		t.Fatal("cancelled send is still queued")
+	}
+
+	if _, err := milo.Send("niko", writeSource(t, "never mind either")); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := milo.Cancel(""); err != nil || n != 1 {
+		t.Fatalf("Cancel(all) = %d, %v; want 1, nil", n, err)
+	}
+	if len(milo.ob.All()) != 0 {
+		t.Fatal("cancel-all left a send queued")
+	}
 }

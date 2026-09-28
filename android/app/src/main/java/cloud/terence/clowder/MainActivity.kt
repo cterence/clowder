@@ -326,39 +326,8 @@ fun StatusScreen(onShowSettings: () -> Unit) {
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     val seen = status?.liveness?.get(c.key)?.takeIf { it != 0L }
-                    val path = status?.paths?.get(c.key)
                     Text(livenessText(seen), style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        when {
-                            path == null -> "route unknown"
-                            path.direct -> "direct · ${path.endpoint}"
-                            else -> "relayed via DERP"
-                        },
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
                     HorizontalDivider(Modifier.padding(vertical = 4.dp))
-                    // Receipts are delivery confirmations for our
-                    // sends; the ones naming this cat are the files
-                    // it received from us.
-                    val rs = status?.receipts?.filter { it.from == c.name }.orEmpty()
-                    if (rs.isEmpty()) {
-                        Text(
-                            "no deliveries yet",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    } else {
-                        Text(
-                            "${rs.size} ${if (rs.size == 1) "file" else "files"} delivered here",
-                            style = MaterialTheme.typography.titleSmall,
-                        )
-                        rs.take(3).forEach { rc ->
-                            Text(
-                                "${rc.fileName} · ${DateUtils.getRelativeTimeSpanString(rc.deliveredAt)}",
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
-                    }
                     forgetError?.let {
                         Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                     }
@@ -483,7 +452,6 @@ fun StatusScreen(onShowSettings: () -> Unit) {
         }
         items(st.cats) { c ->
             val seen = st.liveness[c.key]?.takeIf { it != 0L }
-            val path = st.paths[c.key]
             ListItem(
                 modifier = Modifier.clickable { sheetCat = c },
                 headlineContent = { Text(c.name) },
@@ -493,12 +461,7 @@ fun StatusScreen(onShowSettings: () -> Unit) {
                         c.storer -> " · storer"
                         else -> ""
                     }
-                    val route = when {
-                        path == null -> ""
-                        path.direct -> " · direct"
-                        else -> " · relayed"
-                    }
-                    Text(livenessText(seen) + role + route)
+                    Text(livenessText(seen) + role)
                 },
                 leadingContent = {
                     LivenessDot(seen != null && System.currentTimeMillis() / 1000 - seen < 120)

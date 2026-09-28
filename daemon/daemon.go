@@ -73,14 +73,13 @@ type Daemon struct {
 	mu    sync.Mutex // guards meCat
 	meCat roster.Cat
 
-	ros      *roster.Roster
-	spool    *store.Spool
-	ob       *outbox
-	stats    *statsKeeper
-	prog     *progressKeeper
-	receipts *receiptKeeper
-	slots    chan struct{}
-	inbox    string
+	ros   *roster.Roster
+	spool *store.Spool
+	ob    *outbox
+	stats *statsKeeper
+	prog  *progressKeeper
+	slots chan struct{}
+	inbox string
 
 	// Background work Run drains before returning: transfers and relays are
 	// uncancelable by design, bounded by the stream deadlines.
@@ -104,10 +103,7 @@ type Daemon struct {
 	// Newest leave time processed per leaver, so each leave is handled once.
 	leaveSeen map[string]int64
 
-	// Last background path probe per key, so `clow status` never probes.
-	paths map[string]PathInfo
-
-	// Keys of forgotten/distrusted cats: tailcat's AllowedClients is add-only,
+	// Keys of forgotten cats: tailcat's AllowedClients is add-only,
 	// so these are refused at the protocol level. Persisted in blocked.json.
 	blocked map[string]bool
 
@@ -154,7 +150,6 @@ func New(cfg Config, tr Transport) (*Daemon, error) {
 		liveness:       map[string]int64{},
 		leaveSeen:      map[string]int64{},
 		blocked:        loadBlocked(cfg.Dir),
-		receipts:       loadReceipts(cfg.Dir),
 		slots:          make(chan struct{}, maxConcurrentTransfers),
 		deliveryClaims: newClaimSet(),
 		receiveClaims:  newClaimSet(),
@@ -202,14 +197,21 @@ func (d *Daemon) Roster() *roster.Roster { return d.ros }
 func (d *Daemon) Spool() *store.Spool { return d.spool }
 
 // Forget removes the cat and its pending sends (local only; entries are
-// never removed by propagation).
-func (d *Daemon) Forget(name string) (roster.Cat, bool) {
-	c, ok := d.ros.RemoveName(name)
+// never removed by propagation). who is a node key, or a name — when two
+// cats claim one name, only the key is unambiguous.
+func (d *Daemon) Forget(who string) (roster.Cat, bool) {
+	c, ok := d.ros.GetByKey(who)
+	if !ok {
+		if c, ok = d.ros.Get(who); !ok {
+			return c, false
+		}
+	}
+	c, ok = d.ros.RemoveKey(c.Key)
 	if !ok {
 		return c, false
 	}
 	if err := d.blockCat(c); err != nil {
-		d.cfg.logf("clowder: persisting blocklist after forgetting %s: %v", name, err)
+		d.cfg.logf("clowder: persisting blocklist after forgetting %s: %v", c.Name, err)
 	}
 	for _, e := range d.ob.All() {
 		if e.TargetKey == c.Key {
@@ -219,6 +221,28 @@ func (d *Daemon) Forget(name string) (roster.Cat, bool) {
 		}
 	}
 	return c, true
+}
+
+// Cancel drops pending sends: one by transfer ID, or all when id is
+// empty. An in-flight attempt is aborted through its claim.
+func (d *Daemon) Cancel(id string) (int, error) {
+	ids := []string{}
+	if id != "" {
+		ids = append(ids, id)
+	} else {
+		for _, e := range d.ob.All() {
+			ids = append(ids, e.ID)
+		}
+	}
+	n := 0
+	for _, x := range ids {
+		d.deliveryClaims.cancel(x)
+		if err := d.ob.Delete(x); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
 }
 
 func (d *Daemon) markSeen(key string) {
@@ -246,27 +270,40 @@ func (d *Daemon) livenessSnapshot() map[string]int64 {
 	return out
 }
 
-// In-flight claim set: a second claim for the same ID is refused.
+// In-flight claim set: a second claim for the same ID is refused, and
+// cancel() aborts a live attempt through its context.
 type claimSet struct {
 	mu sync.Mutex
-	m  map[string]bool
+	m  map[string]context.CancelFunc
 }
 
-func newClaimSet() *claimSet { return &claimSet{m: map[string]bool{}} }
+func newClaimSet() *claimSet { return &claimSet{m: map[string]context.CancelFunc{}} }
 
-func (c *claimSet) claim(id string) bool {
+func (c *claimSet) claim(id string) (context.Context, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.m[id] {
-		return false
+	if _, ok := c.m[id]; ok {
+		return nil, false
 	}
-	c.m[id] = true
-	return true
+	ctx, cancel := context.WithCancel(context.Background())
+	c.m[id] = cancel
+	return ctx, true
 }
 
 func (c *claimSet) release(id string) {
 	c.mu.Lock()
-	delete(c.m, id)
+	if f := c.m[id]; f != nil {
+		f()
+		delete(c.m, id)
+	}
+	c.mu.Unlock()
+}
+
+func (c *claimSet) cancel(id string) {
+	c.mu.Lock()
+	if f := c.m[id]; f != nil {
+		f()
+	}
 	c.mu.Unlock()
 }
 
@@ -347,7 +384,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	var healthLn net.Listener
 	var healthSrv *http.Server
 	if d.cfg.HealthAddr != "" {
-		healthLn, healthSrv, err = listenHealth(d.cfg.HealthAddr, d.cfg.Pprof, d.healthStats)
+		healthLn, healthSrv, err = listenHealth(d.cfg.HealthAddr, d.cfg.Pprof)
 		if err != nil {
 			_ = ln.Close()
 			_ = ipcLn.Close()
@@ -368,7 +405,6 @@ func (d *Daemon) Run(ctx context.Context) error {
 	poll := time.NewTicker(d.cfg.PollEvery)
 	defer poll.Stop()
 
-	d.goBg(func() { d.refreshPaths(context.WithoutCancel(ctx)) })
 	d.goBg(func() { d.syncPeers(context.WithoutCancel(ctx)) })
 
 	for {
@@ -390,8 +426,6 @@ func (d *Daemon) Run(ctx context.Context) error {
 		case <-poll.C:
 			d.goBg(func() { d.syncPeers(context.WithoutCancel(ctx)) })
 			d.goBg(func() { d.sweepSpool(context.WithoutCancel(ctx)) })
-			d.goBg(func() { d.refreshPaths(context.WithoutCancel(ctx)) })
-			d.goBg(func() { d.cleanupParts() })
 		}
 	}
 }
@@ -407,7 +441,7 @@ func (d *Daemon) Send(targetName, path string) (string, error) {
 		return "", fmt.Errorf("unknown cat %q (known: add it first)", targetName)
 	}
 	if d.isBlockedKey(cat.Key) {
-		return "", fmt.Errorf("distrusted cat %q (run: clow trust %s)", targetName, targetName)
+		return "", fmt.Errorf("cat %q is on the local blocklist (forgotten; re-pair to bring it back)", targetName)
 	}
 	if slices.Contains(d.ros.Duplicates(), targetName) {
 		// A name claimed by two keys is not a safe send target:
@@ -419,11 +453,6 @@ func (d *Daemon) Send(targetName, path string) (string, error) {
 		return "", fmt.Errorf("reading file: %w", err)
 	}
 	id := newID()
-	// One per-stream secret per transfer, so retries resume instead of restarting.
-	var secret [envelope.SecretLen]byte
-	if _, err := rand.Read(secret[:]); err != nil {
-		return "", fmt.Errorf("generating seal secret: %w", err)
-	}
 	e := Entry{
 		ID:         id,
 		TargetName: cat.Name,
@@ -431,7 +460,6 @@ func (d *Daemon) Send(targetName, path string) (string, error) {
 		SourcePath: path,
 		FileName:   filepath.Base(path),
 		AddedAt:    time.Now().Unix(),
-		SealSecret: hex.EncodeToString(secret[:]),
 	}
 	if err := d.ob.Put(e); err != nil {
 		return "", err
@@ -543,12 +571,9 @@ func (d *Daemon) serveConn(pc *protocol.Conn, authKey key.NodePublic, authed boo
 // value says whether the connection may continue.
 func (d *Daemon) handleOffer(pc *protocol.Conn, from *protocol.Hello, o *protocol.Offer) bool {
 	if !validID(o.ID) {
-		// IDs name spool and parts files; anything but our own 32-hex
-		// format — traversal sequences included — is refused.
+		// IDs name spool files; anything but our own 32-hex format —
+		// traversal sequences included — is refused.
 		return pc.Answer(o.ID, false, "invalid transfer ID") == nil
-	}
-	if o.Receipt && o.TargetKey == d.Me().Key {
-		return d.receiveReceipt(pc, o)
 	}
 	if o.TargetKey == d.Me().Key {
 		return d.receiveDirect(pc, from, o)
@@ -564,14 +589,14 @@ func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *proto
 		return refuse("dropbox cat: no personal deliveries")
 	}
 	if d.isBlockedName(o.From) {
-		// The relaying storer is fine; the named sender is distrusted.
-		return refuse("sender is distrusted")
+		// The relaying storer is fine; the named sender is blocked.
+		return refuse("sender is blocked")
 	}
 	// Refuse when the announced stream plus a reserve would not fit.
 	if free, ok := freeSpace(d.InboxDir()); ok && free < uint64(o.Size)+recvReserve {
 		return refuse(fmt.Sprintf("receiver is low on disk (%s free)", HumanBytes(int64(free))))
 	}
-	if !d.receiveClaims.claim(o.ID) {
+	if _, ok := d.receiveClaims.claim(o.ID); !ok {
 		// A duplicate stream for a transfer ID already in flight.
 		return refuse("transfer already in progress")
 	}
@@ -581,32 +606,6 @@ func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *proto
 		defer func() { <-d.slots }()
 	default:
 		return refuse("receiver busy, try again soon")
-	}
-	if o.Resumable && !o.Receipt {
-		// Resumable: answer with our offset, receive into the partial path.
-		resume := d.resumePoint(o)
-		d.prog.start(Progress{
-			ID:        o.ID,
-			FileName:  o.FileName,
-			Peer:      from.Name,
-			Receiving: true,
-			Total:     o.Size,
-			Done:      resume,
-			Started:   time.Now().Unix(),
-		})
-		defer d.prog.end(o.ID)
-		plainSize, ok := d.receiveResumable(pc, o, resume)
-		if !ok {
-			return false
-		}
-		d.stats.add(func(s *Stats) { s.Received++; s.ReceivedBytes += plainSize })
-		_ = pc.SetDeadline(time.Now().Add(msgTimeout))
-		if err := pc.Ack(o.ID, protocol.AckDelivered); err != nil {
-			return false
-		}
-		d.cfg.logf("clowder: received %s (%s) from %s", o.FileName, HumanBytes(plainSize), from.Name)
-		d.goBg(func() { d.sendReceipt(o.From, o.ID, o.FileName) })
-		return true
 	}
 	if err := pc.Answer(o.ID, true, ""); err != nil {
 		return false
@@ -632,7 +631,6 @@ func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *proto
 		return false
 	}
 	d.cfg.logf("clowder: received %s (%s) from %s", o.FileName, HumanBytes(plainSize), from.Name)
-	d.goBg(func() { d.sendReceipt(o.From, o.ID, o.FileName) })
 	return true
 }
 
@@ -660,29 +658,11 @@ func (d *Daemon) receiveAsStorer(pc *protocol.Conn, o *protocol.Offer) bool {
 		From:       o.From,
 		TargetKey:  o.TargetKey,
 		TargetName: o.TargetName,
-		Receipt:    o.Receipt,
-		Resumable:  o.Resumable,
 	}
-	var put func(io.Reader) error
-	var attempt int64
-	if o.Resumable {
-		resume := d.spool.DepositResume(meta)
-		if err := pc.AnswerResume(o.ID, resume); err != nil {
-			return false
-		}
-		attempt = o.Size
-		if resume > 0 {
-			attempt = int64(envelope.HeaderLen) + o.Size - resume
-		}
-		put = func(r io.Reader) error { return d.spool.PutResume(meta, resume, r) }
-	} else {
-		if err := pc.Answer(o.ID, true, ""); err != nil {
-			return false
-		}
-		attempt = o.Size
-		put = func(r io.Reader) error { return d.spool.Put(meta, r) }
+	if err := pc.Answer(o.ID, true, ""); err != nil {
+		return false
 	}
-	if err := put(io.LimitReader(pc.Reader(), attempt)); err != nil {
+	if err := d.spool.Put(meta, io.LimitReader(pc.Reader(), o.Size)); err != nil {
 		d.cfg.logf("clowder: spooling %s for %s: %v", o.FileName, o.TargetName, err)
 		return false
 	}
@@ -813,7 +793,8 @@ func (d *Daemon) retryOutbox() {
 }
 
 func (d *Daemon) deliver(e Entry) {
-	if !d.deliveryClaims.claim(e.ID) {
+	ctx, ok := d.deliveryClaims.claim(e.ID)
+	if !ok {
 		return // already streaming this entry
 	}
 	defer d.deliveryClaims.release(e.ID)
@@ -825,11 +806,11 @@ func (d *Daemon) deliver(e Entry) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), streamTimeout)
+	ctx, cancel := context.WithTimeout(ctx, streamTimeout)
 	defer cancel()
 
 	if d.isBlockedKey(e.TargetKey) {
-		d.cfg.logf("clowder: %s to %s skipped: target is distrusted", e.FileName, e.TargetName)
+		d.cfg.logf("clowder: %s to %s skipped: target is on the blocklist", e.FileName, e.TargetName)
 		return
 	}
 	if cat, ok := d.ros.GetByKey(e.TargetKey); ok {
@@ -904,12 +885,7 @@ func (d *Daemon) deliverStream(ctx context.Context, peer roster.Cat, e Entry, ta
 		TargetKey:  targetKey,
 		TargetName: targetName,
 	}
-	secret, err := e.SealSecretBytes()
-	if err != nil {
-		return err
-	}
-	o.Resumable = secret != nil
-	if err := d.sendSealed(ctx, peer, o, secret, src, wantAck, true); err != nil {
+	if err := d.sendSealed(ctx, peer, o, src, wantAck, true); err != nil {
 		return err
 	}
 	// Stats are plaintext bytes, not sealed-stream bytes.
@@ -918,9 +894,8 @@ func (d *Daemon) deliverStream(ctx context.Context, peer roster.Cat, e Entry, ta
 }
 
 // sendSealed runs one Offer/Answer/stream/Ack exchange, shared by
-// deliveries and receipts (track enables status progress). A non-nil
-// secret makes the offer resumable.
-func (d *Daemon) sendSealed(ctx context.Context, peer roster.Cat, o *protocol.Offer, secret []byte, src io.Reader, wantAck string, track bool) error {
+// deliveries (track enables status progress).
+func (d *Daemon) sendSealed(ctx context.Context, peer roster.Cat, o *protocol.Offer, src io.Reader, wantAck string, track bool) error {
 	pc, err := d.connect(ctx, peer)
 	if err != nil {
 		return err
@@ -941,10 +916,6 @@ func (d *Daemon) sendSealed(ctx context.Context, peer roster.Cat, o *protocol.Of
 		}
 		return errors.New(reason)
 	}
-	resume := m.Answer.Resume
-	if resume != 0 && !o.Resumable {
-		return errors.New("peer answered a resume offset for a non-resumable offer")
-	}
 	_ = pc.SetDeadline(time.Now().Add(streamTimeout))
 	targetPub, err := parseKey(o.TargetKey)
 	if err != nil {
@@ -957,18 +928,12 @@ func (d *Daemon) sendSealed(ctx context.Context, peer roster.Cat, o *protocol.Of
 			FileName: o.FileName,
 			Peer:     o.TargetName,
 			Total:    o.Size,
-			Done:     resume,
 			Started:  time.Now().Unix(),
 		})
 		defer d.prog.end(o.ID)
 		w = countingWriter{k: d.prog, id: o.ID, w: pc.Writer()}
 	}
-	var sealedSha string
-	if secret == nil {
-		_, sealedSha, err = envelope.SealStream(d.env.Identity.Private, targetPub, w, src)
-	} else {
-		_, sealedSha, err = envelope.SealStreamAt(d.env.Identity.Private, targetPub, secret, resume, w, src)
-	}
+	_, sealedSha, err := envelope.SealStream(d.env.Identity.Private, targetPub, w, src)
 	if err != nil {
 		return err
 	}

@@ -92,9 +92,8 @@ Files: `identity.json`, `roster.json`, `outbox/`, `spool/`, `inbox/`, `clow.sock
 
 - Files transfer as chunked sealed streams (64 KiB chunks, envelope
   package): no size limit, memory bounded by one chunk per side.
-- Interrupted transfers resume from the receiver's (or storer's) last
-  chunk checkpoint; pre-resume outbox entries and receipts restart from
-  the first chunk.
+- Interrupted transfers restart from the first chunk: a failed
+  receive leaves no partial file behind.
 - No roster deletions; renames are LWW.
 - No gossip: full roster sync on every connection (scales to ~1000 cats).
 - Storer delivery is push-first (sweep) with pull as fallback; a target

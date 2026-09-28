@@ -308,6 +308,22 @@ func (r *Roster) RemoveName(name string) (Cat, bool) {
 	return Cat{}, false
 }
 
+// RemoveKey removes exactly the cat with that node key, so duplicate
+// names can be disambiguated by key.
+func (r *Roster) RemoveKey(key string) (Cat, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	c, ok := r.cats[key]
+	if !ok {
+		return Cat{}, false
+	}
+	delete(r.cats, key)
+	if err := r.saveLocked(); err != nil {
+		return Cat{}, false
+	}
+	return c, true
+}
+
 func sortCats(cats []Cat) {
 	slices.SortFunc(cats, func(a, b Cat) int {
 		if a.Name != b.Name {

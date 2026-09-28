@@ -261,11 +261,14 @@ func TestIntegrationEndToEnd(t *testing.T) {
 	}, "pairing to show up in `clow status` on both sides")
 
 	// A direct send lands in the target's inbox with its content
-	// intact.
+	// intact; the default sync send watches the transfer through.
 	src := writeFile(t, "nap.txt", 128*1024)
 	out := milo.clow("send", "puma", src)
 	if !strings.Contains(out, "queued nap.txt for puma") {
 		t.Fatalf("send output: %q", out)
+	}
+	if !strings.Contains(out, "sent nap.txt to puma") {
+		t.Fatalf("sync send output never confirmed delivery: %q", out)
 	}
 	waitForFile(t, puma, "nap.txt", src)
 

@@ -311,9 +311,18 @@ func (d *Daemon) addPeerCat(p *protocol.PairIntro) error {
 		return err
 	}
 	d.ros.ClearTombstone(c.Key)
+	// Re-pairing is the way back from forget: clear the blocklist entry.
 	d.mu.Lock()
+	delete(d.blocked, c.Key)
+	if c.ClientKey != "" {
+		delete(d.blocked, c.ClientKey)
+	}
+	blockErr := saveBlocked(d.cfg.Dir, d.blocked)
 	d.left = false
 	d.mu.Unlock()
+	if blockErr != nil {
+		d.cfg.logf("clowder: clearing blocklist after pairing %s: %v", c.Name, blockErr)
+	}
 	d.allowCat(c)
 	d.markSeen(c.Key)
 	return nil

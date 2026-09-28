@@ -42,8 +42,8 @@ in
       default = null;
       example = "127.0.0.1:8080";
       description = ''
-        HTTP health endpoint (CLOWDER_HEALTH_ADDR) serving GET /healthz
-        and a /stats JSON snapshot for external watchdogs. Null disables.
+        HTTP health endpoint (CLOWDER_HEALTH_ADDR) serving GET /healthz.
+        Null disables.
       '';
     };
 

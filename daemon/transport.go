@@ -28,21 +28,6 @@ type Transport interface {
 	Close() error
 }
 
-// PathInfo describes how a connection to a peer currently travels.
-type PathInfo struct {
-	// Direct is set when traffic flows peer-to-peer (UDP), with
-	// Endpoint naming the remote address used.
-	Direct bool `json:"direct,omitempty"`
-	// Endpoint is the "ip:port" of a direct path.
-	Endpoint string `json:"endpoint,omitempty"`
-}
-
-// Pinger is an optional Transport capability: probing whether the
-// route to a peer is direct or DERP-relayed.
-type Pinger interface {
-	Ping(ctx context.Context, addr string) (PathInfo, error)
-}
-
 // parseKey converts a node public key in string form (as stored in
 // rosters) back to a key.
 func parseKey(s string) (key.NodePublic, error) {

@@ -32,13 +32,6 @@ data class Transfer(
     val total: Long,
 )
 
-/** A delivery confirmation for a file we sent (daemon.Receipt). */
-data class Receipt(
-    val fileName: String,
-    val from: String,
-    val deliveredAt: Long,
-)
-
 data class Status(
     val ok: Boolean,
     val error: String,
@@ -46,17 +39,13 @@ data class Status(
     val me: Cat?,
     val cats: List<Cat>,
     val liveness: Map<String, Long>,
-    val paths: Map<String, PathInfo>,
     val outbox: List<OutboxEntry>,
     val transfers: List<Transfer>,
-    val receipts: List<Receipt>,
     val sentFiles: Long,
     val sentBytes: Long,
     val receivedFiles: Long,
     val receivedBytes: Long,
 )
-
-data class PathInfo(val direct: Boolean, val endpoint: String)
 
 /** Builds the request JSON for an op, mirroring daemon.Request's fields. */
 private fun requestJson(op: String, target: String? = null, path: String? = null, words: String? = null): String {
@@ -97,17 +86,6 @@ fun parseStatus(r: JSONObject): Status {
     r.optJSONObject("liveness")?.let { l ->
         l.keys().forEach { k -> liveness[k] = l.optLong(k) }
     }
-    val paths = HashMap<String, PathInfo>()
-    r.optJSONObject("paths")?.let { p ->
-        p.keys().forEach { k ->
-            p.optJSONObject(k)?.let { info ->
-                paths[k] = PathInfo(
-                    direct = info.optBoolean("direct", false),
-                    endpoint = info.optString("endpoint", ""),
-                )
-            }
-        }
-    }
     val outbox = ArrayList<OutboxEntry>()
     r.optJSONArray("outbox")?.let { arr ->
         for (i in 0 until arr.length()) {
@@ -132,14 +110,6 @@ fun parseStatus(r: JSONObject): Status {
             }
         }
     }
-    val receipts = ArrayList<Receipt>()
-    r.optJSONArray("receipts")?.let { arr ->
-        for (i in 0 until arr.length()) {
-            arr.getJSONObject(i).let { rc ->
-                receipts.add(Receipt(rc.optString("file_name"), rc.optString("from"), rc.optLong("delivered_at")))
-            }
-        }
-    }
     val stats = r.optJSONObject("stats")
     return Status(
         ok = r.optBoolean("ok", false),
@@ -152,10 +122,8 @@ fun parseStatus(r: JSONObject): Status {
             }
         },
         liveness = liveness,
-        paths = paths,
         outbox = outbox,
         transfers = transfers,
-        receipts = receipts,
         sentFiles = stats?.optLong("sent", 0L) ?: 0L,
         sentBytes = stats?.optLong("sent_bytes", 0L) ?: 0L,
         receivedFiles = stats?.optLong("received", 0L) ?: 0L,

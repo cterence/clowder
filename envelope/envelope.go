@@ -41,10 +41,6 @@ const (
 	HeaderLen = senderKeyLen + boxOverhead + fileKeyLen + prefixLen
 )
 
-// SecretLen is the per-stream secret (file key + nonce prefix): sealing
-// with the same secret re-emits byte-identical streams — the basis of resume.
-const SecretLen = fileKeyLen + prefixLen
-
 // ErrBadHeader is returned when a sealed stream's header cannot be opened.
 var ErrBadHeader = errors.New("envelope: cannot open sealed header (wrong key or corrupted header)")
 
@@ -52,52 +48,17 @@ var ErrBadHeader = errors.New("envelope: cannot open sealed header (wrong key or
 // ends without a terminator.
 var ErrCorrupt = errors.New("envelope: corrupt or truncated sealed stream")
 
-// SealStream seals src to dst, returning the plaintext size and hex
-// SHA-256 of the whole file. The secret is random; pass a fixed one to
-// SealStreamAt when retries must re-emit identical bytes (resume).
+// SealStream seals src to dst in a single pass, returning the plaintext
+// size and hex SHA-256 of the whole file.
 func SealStream(sender key.NodePrivate, recipient key.NodePublic, dst io.Writer, src io.Reader) (plainSize int64, shaHex string, err error) {
-	var secret [SecretLen]byte
-	if _, err := rand.Read(secret[:]); err != nil {
-		return 0, "", fmt.Errorf("envelope: generating file key: %w", err)
-	}
-	return SealStreamAt(sender, recipient, secret[:], 0, dst, src)
-}
-
-// SealStreamAt seals with a caller-fixed secret from sealed-stream offset
-// off — a boundary the receiver reported, mapped to a plaintext position
-// by SealedToPlain — emitting the header then only the frames from off
-// onward. src must be an io.Seeker; the returned size and digest cover
-// the whole file.
-func SealStreamAt(sender key.NodePrivate, recipient key.NodePublic, secret []byte, off int64, dst io.Writer, src io.Reader) (plainSize int64, shaHex string, err error) {
 	if sender.IsZero() || recipient.IsZero() {
 		return 0, "", errors.New("envelope: sealing with zero keys")
 	}
-	if len(secret) != SecretLen {
-		return 0, "", fmt.Errorf("envelope: secret is %d bytes, want %d", len(secret), SecretLen)
-	}
-	plainOff, chunksDone, err := SealedToPlain(off)
-	if err != nil {
-		return 0, "", err
-	}
-	s, ok := src.(io.Seeker)
-	if !ok {
-		return 0, "", errors.New("envelope: resumable seal requires a seekable source")
+	var secret [fileKeyLen + prefixLen]byte
+	if _, err := rand.Read(secret[:]); err != nil {
+		return 0, "", fmt.Errorf("envelope: generating file key: %w", err)
 	}
 	h := sha256.New()
-	if plainOff > 0 {
-		// The digest covers the WHOLE file, so hash the skipped prefix too;
-		// a fresh seal (off == 0) stays single-pass.
-		if _, err := s.Seek(0, io.SeekStart); err != nil {
-			return 0, "", fmt.Errorf("envelope: seeking plaintext to start: %w", err)
-		}
-		if _, err := io.CopyN(h, src, plainOff); err != nil {
-			return 0, "", fmt.Errorf("envelope: hashing skipped prefix: %w", err)
-		}
-	}
-	if _, err := s.Seek(plainOff, io.SeekStart); err != nil {
-		return 0, "", fmt.Errorf("envelope: seeking plaintext to %d: %w", plainOff, err)
-	}
-	plainSize = plainOff
 	aead, err := chacha20poly1305.NewX(secret[:fileKeyLen])
 	if err != nil {
 		return 0, "", err
@@ -126,7 +87,7 @@ func SealStreamAt(sender key.NodePrivate, recipient key.NodePublic, secret []byt
 	ct := make([]byte, 0, ChunkSize+aead.Overhead())
 	var nonce [nonceLen]byte
 	var frame [4]byte
-	var seq = uint64(chunksDone)
+	var seq uint64
 	for {
 		n, rerr := io.ReadFull(src, buf)
 		if n > 0 {
@@ -165,24 +126,6 @@ func SealStreamAt(sender key.NodePrivate, recipient key.NodePublic, secret []byt
 // io.LimitReader if more data follows), returning the plaintext size and
 // hex SHA-256 for comparison with what the sender announced.
 func OpenStream(recipient key.NodePrivate, src io.Reader, dst io.Writer) (plainSize int64, shaHex string, err error) {
-	return openStream(recipient, src, dst, 0, nil)
-}
-
-// OpenStreamAt decrypts a resumed suffix beginning at sealed-stream
-// offset resumeOff. onChunk, when set, receives the NEXT frame's offset
-// (a safe resume point) and the chunk's plaintext length. The returned
-// size and digest cover only the newly opened suffix.
-func OpenStreamAt(recipient key.NodePrivate, src io.Reader, dst io.Writer, resumeOff int64, onChunk func(nextOff, plainLen int64)) (plainSize int64, shaHex string, err error) {
-	return openStream(recipient, src, dst, resumeOff, onChunk)
-}
-
-// openStream is the shared decrypt loop; onChunk receives the offset of
-// the next frame — the resume point if the transfer dies here.
-func openStream(recipient key.NodePrivate, src io.Reader, dst io.Writer, resumeOff int64, onChunk func(nextOff, plainLen int64)) (plainSize int64, shaHex string, err error) {
-	_, chunksDone, err := SealedToPlain(resumeOff)
-	if err != nil {
-		return 0, "", err
-	}
 	header := make([]byte, HeaderLen)
 	if _, err := io.ReadFull(src, header); err != nil {
 		return 0, "", fmt.Errorf("envelope: reading header: %w", err)
@@ -208,11 +151,7 @@ func openStream(recipient key.NodePrivate, src io.Reader, dst io.Writer, resumeO
 	plainBuf := make([]byte, 0, ChunkSize)
 	var nonce [nonceLen]byte
 	var frame [4]byte
-	var seq = uint64(chunksDone)
-	sealedOff := resumeOff
-	if sealedOff < HeaderLen {
-		sealedOff = HeaderLen
-	}
+	var seq uint64
 	for {
 		if _, err := io.ReadFull(src, frame[:]); err != nil {
 			return 0, "", fmt.Errorf("%w: missing terminator", ErrCorrupt)
@@ -242,10 +181,6 @@ func openStream(recipient key.NodePrivate, src io.Reader, dst io.Writer, resumeO
 		}
 		plainSize += int64(len(plain))
 		h.Write(plain)
-		if onChunk != nil {
-			onChunk(sealedOff+4+int64(n), int64(len(plain)))
-		}
-		sealedOff += 4 + int64(n)
 		seq++
 	}
 	return plainSize, hex.EncodeToString(h.Sum(nil)), nil
@@ -266,41 +201,3 @@ func SealedSize(plainSize int64) int64 {
 }
 
 const aeadTagLen = 16
-
-// SealedToPlain maps a resume offset (a frame boundary the receiver
-// reported) to the plaintext offset and chunk count. Any other value —
-// garbage, mid-frame — is an error, never a silent guess.
-func SealedToPlain(off int64) (plainOff, chunksDone int64, err error) {
-	if off < 0 {
-		return 0, 0, fmt.Errorf("envelope: negative resume offset %d", off)
-	}
-	if off == 0 {
-		return 0, 0, nil // fresh start: seal the whole file
-	}
-	body := off - HeaderLen
-	if body < 0 {
-		return 0, 0, fmt.Errorf("envelope: resume offset %d is inside the header", off)
-	}
-	if body == 0 {
-		return 0, 0, nil // resume at the header end: nothing received yet
-	}
-	// Every mid-stream resume point sits at the end of a FULL chunk frame
-	// (only the final chunk may be short, and no resume offset names it).
-	const fullFrame = 4 + ChunkSize + aeadTagLen
-	if body%fullFrame != 0 {
-		return 0, 0, fmt.Errorf("envelope: resume offset %d is not a chunk-frame boundary", off)
-	}
-	chunks := body / fullFrame
-	return chunks * ChunkSize, chunks, nil
-}
-
-// LastResumeBoundary is the largest valid resume offset for plainLen
-// plaintext bytes: the end of the last full chunk frame. A checkpoint
-// past the final short chunk would wedge every retry — clamp through this.
-func LastResumeBoundary(plainLen int64) int64 {
-	full := plainLen / ChunkSize
-	if full < 0 {
-		full = 0
-	}
-	return HeaderLen + full*(4+ChunkSize+aeadTagLen)
-}

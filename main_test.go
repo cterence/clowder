@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"clowder/daemon"
 )
@@ -74,17 +73,16 @@ func TestReset(t *testing.T) {
 	}
 }
 
-// A confirmed reset with a live daemon announces the leave over IPC
-// before refusing: the daemon is the only one that can still reach
-// the clowder.
-func TestResetAnnouncesLeaveWhenDaemonRuns(t *testing.T) {
+// Reset is a pure local wipe: while the daemon owns the dir it refuses
+// outright — departure is `clow leave`, never a side effect of reset.
+func TestResetRefusesWhileDaemonRuns(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CLOWDER_DIR", dir)
 	if err := run([]string{"init", "--name", "milo"}); err != nil {
 		t.Fatal(err)
 	}
 
-	gotLeave := make(chan daemon.Request, 1)
+	gotReq := make(chan daemon.Request, 1)
 	ln, err := net.Listen("unix", daemon.IPCPath(dir))
 	if err != nil {
 		t.Fatal(err)
@@ -99,7 +97,7 @@ func TestResetAnnouncesLeaveWhenDaemonRuns(t *testing.T) {
 			var req daemon.Request
 			_ = json.NewDecoder(conn).Decode(&req)
 			if req.Op != "" {
-				gotLeave <- req
+				gotReq <- req
 			}
 			_ = json.NewEncoder(conn).Encode(daemon.Response{OK: true})
 			_ = conn.Close()
@@ -107,20 +105,16 @@ func TestResetAnnouncesLeaveWhenDaemonRuns(t *testing.T) {
 	}()
 
 	err = run([]string{"reset", "--yes"})
-	if err == nil || !strings.Contains(err.Error(), "stop the daemon") {
+	if err == nil || !strings.Contains(err.Error(), "stop it before resetting") {
 		t.Fatalf("reset with a running daemon: err = %v, want a stop-the-daemon refusal", err)
 	}
 	select {
-	case req := <-gotLeave:
-		if req.Op != "leave" {
-			t.Fatalf("reset sent op %q, want leave", req.Op)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("reset never announced the leave")
+	case req := <-gotReq:
+		t.Fatalf("reset sent op %q; departure must be `clow leave`, not a reset side effect", req.Op)
+	default:
 	}
 
-	// The identity survives: the wipe only happens once the daemon
-	// is gone (the second, daemonless run).
+	// The identity survives: the wipe only happens once the daemon is gone.
 	if _, err := os.Stat(filepath.Join(dir, "identity.json")); err != nil {
 		t.Fatalf("reset wiped the cat while its daemon runs: %v", err)
 	}
@@ -151,7 +145,7 @@ func TestInboxSetWithoutDaemon(t *testing.T) {
 // done by the storer push sweep, and cats folded into `status
 // --addresses`.
 func TestRemovedCommands(t *testing.T) {
-	for _, cmd := range []string{"fetch", "cats"} {
+	for _, cmd := range []string{"fetch", "cats", "help"} {
 		err := run([]string{cmd})
 		if err == nil {
 			t.Errorf("%s succeeded, want unknown-command error", cmd)

@@ -1,14 +1,13 @@
 package daemon
 
 import (
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 
-	"clowder/envelope"
 	"clowder/persist"
 )
 
@@ -27,36 +26,32 @@ type Entry struct {
 	SourceSHA256 string `json:"source_sha256,omitempty"`
 	SourceSize   int64  `json:"source_size,omitempty"`
 	SourceModNs  int64  `json:"source_mod_ns,omitempty"`
-	// Fixed per-stream secret (hex envelope.SecretLen bytes) generated at Send
-	// time, so retried attempts re-emit identical sealed frames and a receiver
-	// can resume. Empty for pre-resume entries: fresh random secret per attempt.
-	SealSecret string `json:"seal_secret,omitempty"`
-}
-
-// SealSecretBytes decodes the entry's per-stream seal secret, if set.
-func (e Entry) SealSecretBytes() ([]byte, error) {
-	if e.SealSecret == "" {
-		return nil, nil
-	}
-	b, err := hex.DecodeString(e.SealSecret)
-	if err != nil {
-		return nil, fmt.Errorf("outbox: decoding seal secret: %w", err)
-	}
-	if len(b) != envelope.SecretLen {
-		return nil, fmt.Errorf("outbox: seal secret is %d bytes, want %d", len(b), envelope.SecretLen)
-	}
-	return b, nil
 }
 
 // outbox persists entries as <dir>/<id>.json.
-type outbox struct{ dir string }
+type outbox struct {
+	dir string
 
-func newOutbox(dir string) *outbox { return &outbox{dir: dir} }
+	mu        sync.Mutex
+	cancelled map[string]bool // deleted IDs: a later Put must not resurrect
+}
 
-// Put records a pending send, atomically.
+func newOutbox(dir string) *outbox {
+	return &outbox{dir: dir, cancelled: map[string]bool{}}
+}
+
+// Put records a pending send, atomically. An ID deleted in the
+// meantime stays deleted — a delivery attempt caching its digest
+// concurrently with a cancel or forget must not resurrect the entry.
 func (o *outbox) Put(e Entry) error {
 	if e.ID == "" {
 		return fmt.Errorf("outbox: entry has no ID")
+	}
+	o.mu.Lock()
+	dead := o.cancelled[e.ID]
+	o.mu.Unlock()
+	if dead {
+		return nil
 	}
 	if err := os.MkdirAll(o.dir, 0o700); err != nil {
 		return fmt.Errorf("outbox: creating dir: %w", err)
@@ -98,6 +93,9 @@ func (o *outbox) All() []Entry {
 
 // Delete removes a pending entry; a missing entry is not an error.
 func (o *outbox) Delete(id string) error {
+	o.mu.Lock()
+	o.cancelled[id] = true
+	o.mu.Unlock()
 	err := os.Remove(filepath.Join(o.dir, id+".json"))
 	if os.IsNotExist(err) {
 		return nil

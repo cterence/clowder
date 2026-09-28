@@ -11,12 +11,10 @@ NAT-traversing, no accounts).
   other once.
 - **Asynchronous sends.** If the target is online the file goes straight
   there; if not, any cat that declared itself a **storer** holds the
-  encrypted file until the target is online again. Storers can't read what
-  they hold: every file is end-to-end sealed to its recipient, in
-  memory-bounded 64 KiB chunks.
-- **Resumable transfers.** A transfer cut mid-stream (network drop,
-  either side restarting) resumes from the last chunk that landed,
-  directly or via a storer, instead of starting over.
+  encrypted file until the target is online again. `clow send` shows the
+  transfer's progress by default (`--async` queues and returns).
+  Storers can't read what they hold: every file is end-to-end sealed to
+  its recipient, in memory-bounded 64 KiB chunks.
 - **Self-healing mesh.** Every connection syncs rosters, so every cat
   converges on the same member list.
 
@@ -73,24 +71,23 @@ path if lost — except the identity.
                                                         run the mesh daemon
     clow invite                                         8-word pairing code (5 min, one join)
     clow join <CODE>                                    pair with the inviter
-    clow send <CAT> <FILE>                              async send (queues if offline)
+    clow send [--async] <CAT> <FILE>                    send; watches progress unless --async
     clow inbox [--set DIR]                              list received files / change inbox
     clow storer [--max SIZE] on|off|dropbox                           volunteer to hold files for others
                                                         (dropbox: third parties only)
-    clow outbox clear                                   drop pending sends
-    clow rotate                                         new address, announced to the clowder
+    clow cancel [<ID>]                                   cancel a pending send (all when no ID given)
     clow leave                                         depart: signed goodbye, cats drop you
-    clow forget <CAT>                                   drop a cat from the roster (it
+    clow forget <CAT-OR-KEY>                            drop a cat from the roster (it
                                                         stays dropped: syncs re-adding
-                                                        it are refused)
-    clow distrust <CAT>                                 block a cat locally (both ways, no gossip)
-    clow trust <CAT>                                    undo distrust
+                                                        it are refused; the KEY picks
+                                                        one of two same-named cats)
     clow status [--addresses]                           config, stats, outbox, spool,
-                                                        receipts, roster (--addresses
-                                                        also prints tailcat addresses)
+                                                        roster (--addresses also prints
+                                                        tailcat addresses)
     clow reset [--yes]                                  wipe this cat (identity, rosters);
-                                                        announces a leave first if the
-                                                        daemon is running
+                                                        a local wipe — run clow leave
+                                                        first to depart, and stop the
+                                                        daemon first
 
 ## Running in a container
 
@@ -112,7 +109,7 @@ NixOS gets a `services.clowder` module from the flake:
         name = "server-cat";          # optional, defaults to the hostname
         storer = "on";                 # optional: on | off | dropbox
         maxCapacity = "10G";           # optional, with storer
-        healthAddr = "127.0.0.1:8080"; # optional, GET /healthz + /stats
+        healthAddr = "127.0.0.1:8080"; # optional, GET /healthz
       };
     }
 
@@ -168,9 +165,9 @@ Things to know before running it on Kubernetes:
 - **Mount a persistent volume** on the config dir. The identity lives
   there; a pod that restarts with an empty volume comes back as a
   brand-new cat, and the old one stays as a zombie in everyone's
-  rosters — run `clow leave` (or reset, which announces the leave
-  while the daemon still runs) before decommissioning a cat. A
-  StatefulSet fits best.
+  rosters — run `clow leave` before decommissioning a cat (reset is
+  a purely local wipe and does not announce anything). A StatefulSet
+  fits best.
 - **One replica per cat**: clowder is a mesh of individual identities,
   not a horizontally-scaled service.
 - **DERP reachability**: the default DERP map is fetched from
@@ -205,17 +202,16 @@ minutes, one use:
     phone$   clow join hazel-meadow-quartz-amber-ember-303
 
 Both rosters sync automatically from here: a third cat that joins
-later discovers everyone at once. Send a file (async — it queues if
-the target is offline and delivers on the next retry):
+later discovers everyone at once. Send a file — the command follows
+the transfer and returns once it is delivered (or a storer holds it
+for an offline target; Ctrl-C cancels the send):
 
     laptop$  clow send phone photo.jpg
     queued photo.jpg for phone (id 9f3a...)
+    sending photo.jpg to phone:  64% of 2.1 MB at 8.2 MB/s
+    sent photo.jpg to phone (delivered, or held by a storer until it is online)
     phone$   clow inbox
     2026-09-26 14:02:11  ~/Downloads/clowder/photo.jpg
-    laptop$  clow status
-    ...
-    receipts: 1 shown
-      photo.jpg                from phone         delivered 2m ago
 
 ### Adding a storer
 
@@ -258,11 +254,9 @@ brand-new cat.
 Storers hold sealed streams they cannot open, but the Offer metadata
 relayed through them is visible to the storer by design: file name,
 size, plaintext digest, and the sender's and target's declared names.
-A storer also sees delivery receipts' existence (a tiny transfer
-flagged as a receipt) but not their contents — the receipt payload is
-sealed to the original sender. Choosing trustworthy storers (or
-running your own with `clow storer`) is the mitigation; sealing the
-offer metadata itself is tracked in AGENTS.md.
+Choosing trustworthy storers (or running your own with `clow storer`)
+is the mitigation; sealing the offer metadata itself is tracked in
+AGENTS.md.
 
 ## Design
 

@@ -63,24 +63,13 @@ type Offer struct {
 	SHA256     string `cbor:"h"` // hex SHA-256 of the plaintext
 	TargetKey  string `cbor:"t"`
 	TargetName string `cbor:"m"`
-	// Marks a delivery receipt for the transfer named by FileName: a tiny
-	// sealed envelope. Storers relay it like any transfer, seeing only the
-	// flag and size.
-	Receipt bool `cbor:"rc,omitempty"`
-	// The sender seals every attempt of one transfer with the same secret, so
-	// re-sent frames are byte-identical. A receiver holding a partial file
-	// answers with the offset it wants the rest from; anything else answers
-	// 0 and gets a full stream. Receipts are never resumable.
-	Resumable bool `cbor:"rs,omitempty"`
 }
 
-// Answer accepts or rejects an Offer. Resume is the sealed-stream offset
-// the receiver already holds (0: full stream).
+// Answer accepts or rejects an Offer.
 type Answer struct {
 	ID     string `cbor:"i"`
 	OK     bool   `cbor:"k"`
 	Reason string `cbor:"r,omitempty"`
-	Resume int64  `cbor:"o,omitempty"`
 }
 
 type Ack struct {
@@ -221,10 +210,6 @@ func (c *Conn) WriteMsg(m *Message) error { return WriteMsg(c.c, m) }
 
 func (c *Conn) Answer(id string, ok bool, reason string) error {
 	return c.WriteMsg(&Message{Answer: &Answer{ID: id, OK: ok, Reason: reason}})
-}
-
-func (c *Conn) AnswerResume(id string, resume int64) error {
-	return c.WriteMsg(&Message{Answer: &Answer{ID: id, OK: true, Resume: resume}})
 }
 
 func (c *Conn) Ack(id, kind string) error {

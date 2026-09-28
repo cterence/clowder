@@ -87,8 +87,8 @@ problems: any paired cat may misbehave, and quorum only decides between
 honest writers while signatures decide against dishonest ones. Each
 problem gets the smallest mechanism that suffices: bounded handshakes
 (pairing's intro/ack/commit-confirm), LWW plus signed tombstones
-(roster), signatures on entries (identity), local distrust (never
-propagated). Core promise is delivery to cats that are OFFLINE —
+(roster), signatures on entries (identity), the local blocklist
+(never propagated). Core promise is delivery to cats that are OFFLINE —
 partitions are the norm, so consensus would block progress. Reopen this
 stance only for globally unique namespaces, shared mutable clowder-wide
 state, coordinated resource accounting, or exactly-one-node jobs — and
@@ -113,20 +113,7 @@ Update this list and the README when something ships.
    app; then boot-receive, delivery notifications, and the storer-role
    UI. Termux is explicitly NOT a goal (the foreground-service app is
    the answer); on-device builds blocked until Termux ships go >= 1.27.1.
-2. **Simplification pass — cut four shipped features** — the product
-   is names + e2e + storers for async delivery; these cost more in
-   concept surface than they return (about -1,300 lines, three fewer
-   concepts). Cut, with what covers each: receipts (sealed/signed/
-   ledger, ~430 lines — the delivered Ack settles the outbox; the
-   daemon log line covers delivery history), `clow rotate` (~130 —
-   reset + re-pair), distrust/trust (~150 — keep forget and the
-   blocked-keys mechanism it rides, plus the signed leave; drop the
-   freeze verb pair), /stats JSON snapshot (~70 — keep /healthz;
-   nothing in-tree consumes it). All four are wire-visible (the
-   Receipt offer flag and receipt messages), so removal is a
-   protocol break: the mesh re-pairs, same seam as the two-keypair
-   fix. Update the Shipped list, README and docs/specs as they go.
-3. **Pairing and roster UX** — dogfooding surfaced three friction
+2. **Pairing and roster UX** — dogfooding surfaced two friction
    points. (a) Right after `clow join`, the joiner sees every cat
    "never seen" until syncs connect: pairing must make the fresh
    roster visibly alive (e.g. the inviter pushes roster+liveness with
@@ -137,13 +124,11 @@ Update this list and the README when something ships.
    inviter: context deadline exceeded" — indistinguishable from an
    unreachable inviter. The join should report daemon-side state
    (in-progress, completed) instead of one blocking RPC, and the
-   dead-code path needs its own message. (c) Duplicate names in
-   `clow status` tag both entries "[duplicate name]" with no hint
-   WHICH cat to forget; re-creating a cat under a forgotten cat's
-   name leaves the stale entry riding in from peers that never
-   forgot it. Status should identify duplicates (short node key,
-   updated time) and forget should accept a key, not just a name.
-4. **Multiple clowders** — named clowders: per-clowder roster files,
+   dead-code path needs its own message. (Duplicate names are
+   handled: status tags each claimant with its short key and entry
+   age, and `clow forget <CAT-OR-KEY>` disambiguates — pinned by
+   TestForgetKeyDisambiguatesDuplicateName.)
+3. **Multiple clowders** — named clowders: per-clowder roster files,
    `--clowder` on invite/join/send, Hello carries the clowder name so a
    connection routes to the right roster. One identity, one daemon,
    clowders stay disjoint. Largest refactor; do last, design tombstones
@@ -160,33 +145,23 @@ One line each; the pinning tests carry the details.
   key's signature, so no cat can inject or override entries via LWW) and
   the leave tombstone; tombstones ride sync and outrank unsigned
   re-adds — only a re-pair resurrects.
-- **Resumable transfers**: a fixed per-stream seal secret in the outbox
-  entry makes retried attempts byte-identical; receivers checkpoint
-  every 4 MiB (and the first chunk — a sidecar write is an atomic
-  rename, so one per 64 KiB chunk would multiply disk I/O) and clamp
-  through envelope.LastResumeBoundary; all legs covered (direct, storer
-  push, storer deposit). Delivery retries skip the source re-hash while
-  the file is unchanged (digest and stat cached in the outbox entry).
-- **Delivery receipts**: sealed to the ORIGINAL sender's node key,
-  signed by the receiver and verified against the pinned roster sign key
-  (an unpinned pre-signing entry accepts — same seam as entries); relays
-  only see the flag and size; 4 KiB cap, digest-checked; ledger in
-  `clow status`.
 - **Transfer hardening**: receive-time free-space check (64 MiB
   reserve; on Windows via GetDiskFreeSpaceEx), 4 concurrent streams max, idle tailcat-client eviction that
   spares clients with an open dial, in-flight claims against duplicate
-  transfers, a strict 32-hex transfer-ID guard (spool and parts paths
-  are built from IDs), size-lie enforcement.
+  transfers, a strict 32-hex transfer-ID guard (spool
+  paths are built from IDs), size-lie enforcement; delivery retries
+  skip the source re-hash while the file is unchanged (digest and
+  stat cached in the outbox entry).
 - **Storers**: capacity with atomic reservations, push sweep (replaced
   the manual `clow fetch` pull), dropbox mode (third-party storage
   only).
 - **Liveness and sync**: all-peers roster sync every poll tick and at
-  start; symmetric liveness marking; background path cache so
-  `clow status` never probes.
-- **Local trust commands**: `clow distrust`/`trust` (never propagated),
-  `clow forget` (roster + outbox; refused by roster merge, so it sticks
-  against re-adds — re-pairing is the way back), `clow rotate` (new
-  PSK/address under the same identity), and duplicate-name hardening:
+  start; symmetric liveness marking. The sync IS the keepalive —
+  nothing else probes or pings periodically.
+- **Local trust commands**: `clow forget <CAT-OR-KEY>` (roster +
+  outbox; refused by roster merge, so it sticks against re-adds;
+  re-pairing clears the blocklist — the way back), and duplicate-name
+  hardening (status names each claimant's short key and age):
   sends to a name claimed by two keys are refused, and both pairing
   sides refuse a name another key already claims — collisions can still
   arrive via parallel invites through different inviters, `clow status`
@@ -196,14 +171,17 @@ One line each; the pinning tests carry the details.
   or logs; in-flight work is uncancelable by design.
 - **In-status observability**: in-flight transfer progress (both
   directions) and lifetime stats.
+- **Sync send and cancel**: `clow send` follows the transfer until it
+  is delivered or a storer holds it; `--async` queues and returns
+  immediately. Ctrl-C (or `clow cancel [<ID>]`, all sends when no
+  ID) drops the outbox entry and aborts an in-flight attempt
+  through its delivery claim.
 - **Wire-adjacent**: Hello wire-version field (logged, never refused),
   fuzz targets (ReadMsg, parsePairCode, inboxPath), disco-ping dial
   probe (meow Ping is one-shot per client), allocation-bounded
   OpenStream.
 - **Packaging and ops**: nix flake `packages.default`, Dockerfile with
-  auto-init and CLOWDER_NAME/CLOWDER_STORER, HTTP health endpoint (with
-  a JSON /stats snapshot: spool depth and bytes, outbox and in-flight
-  counts — watchdogs can alert on a filling storer, not just liveness),
+  auto-init and CLOWDER_NAME/CLOWDER_STORER, HTTP health endpoint,
   opt-in pprof, self-hosted DERP map.
 - **Service packaging**: NixOS module (`nixosModules.default`,
   `services.clowder`: dedicated clowder user, StateDirectory
@@ -231,9 +209,9 @@ One line each; the pinning tests carry the details.
 - Storer spools have TTL but no size quota.
 - Rosters created before the two-keypair fix must be re-paired
   (`clow forget` + invite/join).
-- Resume rides a retry: nothing probes for a checkpoint before the
-  sender commits to an attempt, and a pre-resume outbox entry (or a
-  receipt) restarts from chunk zero.
+- The simplification pass removed resume, receipts, rotate,
+  distrust/trust and /stats; all were wire-visible, so a pre-cut mesh
+  re-pairs (`clow forget` + invite/join) to talk to a cut daemon.
 - Signing upgrade seam: an entry with no pinned sign key (pre-signing)
   accepts the first sign key it sees — from a sync or an authenticated
   Hello — so a cat upgrading mid-attack can be pinned wrong once; and a

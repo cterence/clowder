@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -213,26 +212,6 @@ func (t *TailcatTransport) dropClient(addr string, c *tailcat.Client) {
 	t.mu.Lock()
 	delete(t.clients, addr)
 	t.mu.Unlock()
-}
-
-// Ping probes the path with a disco ping, which also triggers direct-path
-// discovery.
-func (t *TailcatTransport) Ping(ctx context.Context, addr string) (PathInfo, error) {
-	c := t.clientFor(addr)
-	res, err := c.DiscoPing(ctx)
-	if err != nil {
-		// A failed probe leaves the engine mid-handshake with an
-		// unreachable peer: close it rather than leak the retries.
-		t.dropClient(addr, c)
-		return PathInfo{}, err
-	}
-	if res.Err != "" {
-		return PathInfo{}, errors.New(res.Err)
-	}
-	if res.Endpoint != "" {
-		return PathInfo{Direct: true, Endpoint: res.Endpoint}, nil
-	}
-	return PathInfo{}, nil
 }
 
 // PeerKey returns the authenticated node key of a connected peer.
