@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -27,10 +28,17 @@ func main() {
 }
 
 func run(args []string) error {
-	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
-		return usage()
+	if len(args) == 0 {
+		return printUsage()
 	}
 	cmd, rest := args[0], args[1:]
+	if cmd == "-h" || cmd == "--help" {
+		return printUsage()
+	}
+	if slices.Contains(rest, "-h") || slices.Contains(rest, "--help") {
+		fmt.Print(helpText(cmd))
+		return nil
+	}
 	switch cmd {
 	case "init":
 		return cmdInit(rest)
@@ -61,51 +69,125 @@ func run(args []string) error {
 	}
 }
 
-// usage is the whole help: grouped by what you are doing, one line per
-// command, printed for bare `clow` and `clow --help` alike.
-func usage() error {
-	fmt.Print(`clow - a member of a clowder, an async file-transfer mesh over tailcat
+// commandDoc is one command's help entry; usageText renders the whole
+// list for `clow --help`, helpText renders one command for
+// `clow <command> --help` — with only the hints that concern it.
+type commandDoc struct {
+	name  string
+	group string
+	usage string
+	desc  []string
+	hints []string
+}
 
-usage: clow <command> [args]
+const (
+	hintConfigDir = "config dir: $CLOWDER_DIR, else the OS user config home (~/.config/clowder on Linux,\n             ~/Library/Application Support/clowder on macOS)"
+	hintInbox     = "inbox: ~/Downloads/clowder by default; \"clow inbox --set DIR\" moves it"
+	hintPair      = "pairing: trust comes only from invite/join codes, never from exchanging addresses"
+	hintDaemon    = "daemon: this command needs the daemon running (clow daemon)"
+)
 
-identity and lifecycle:
-  clow init [--name NAME] [--dir DIR] [--inbox DIR]  create this cat's identity
-  clow daemon [--port N] [--health ADDR] [--derp-map URL]
-                                                      run the mesh daemon
-  clow leave                                          depart: signed goodbye, every cat drops you
-  clow reset [--yes]                                  wipe this cat's identity and rosters — a
-                                                      local wipe; depart with clow leave,
-                                                      stop the daemon first
+var commandDocs = []commandDoc{
+	{"init", "identity and lifecycle",
+		"clow init [--name NAME] [--dir DIR] [--inbox DIR]",
+		[]string{"create this cat's identity"},
+		[]string{hintConfigDir, hintInbox}},
+	{"daemon", "identity and lifecycle",
+		"clow daemon [--port N] [--health ADDR] [--derp-map URL]",
+		[]string{"run the mesh daemon"},
+		[]string{hintConfigDir}},
+	{"leave", "identity and lifecycle",
+		"clow leave",
+		[]string{"depart: signed goodbye, every cat drops you"},
+		[]string{hintDaemon}},
+	{"reset", "identity and lifecycle",
+		"clow reset [--yes]",
+		[]string{"wipe this cat's identity and rosters — a local wipe;",
+			"depart with clow leave, stop the daemon first"},
+		[]string{hintConfigDir}},
+	{"invite", "pairing (the only source of trust)",
+		"clow invite",
+		[]string{"print an 8-word pairing code (5 min, one use)"},
+		[]string{hintPair, hintDaemon}},
+	{"join", "pairing (the only source of trust)",
+		"clow join <CODE>",
+		[]string{"pair with the cat that invited"},
+		[]string{hintPair, hintDaemon}},
+	{"send", "transferring files",
+		"clow send [--async] <CAT> <FILE>",
+		[]string{"send a file; watches progress until it is delivered or a storer",
+			"holds it (--async queues and returns; Ctrl-C cancels)"},
+		[]string{hintDaemon}},
+	{"inbox", "transferring files",
+		"clow inbox [--set DIR]",
+		[]string{"list received files, or move the inbox"},
+		[]string{hintInbox}},
+	{"cancel", "transferring files",
+		"clow cancel [<ID>]",
+		[]string{"cancel one pending send by its id, or all"},
+		[]string{hintDaemon}},
+	{"storer", "roles",
+		"clow storer [--max SIZE] on|off|dropbox",
+		[]string{"hold sealed files for others (dropbox: third parties only)"},
+		[]string{hintDaemon}},
+	{"status", "mesh state",
+		"clow status [--addresses]",
+		[]string{"roster, liveness, transfers, outbox and spool",
+			"(--addresses also prints tailcat addresses)"},
+		[]string{hintDaemon}},
+	{"forget", "mesh state",
+		"clow forget <CAT-OR-KEY>",
+		[]string{"drop a cat from the roster for good (the key prefix from",
+			"'clow status' disambiguates duplicate names)"},
+		[]string{hintDaemon}},
+}
 
-pairing (the only source of trust):
-  clow invite                                         print an 8-word pairing code (5 min, one use)
-  clow join <CODE>                                    pair with the cat that invited
+// usageText is the whole help, grouped by what you are doing: command
+// line first, description indented under it, no column padding.
+func usageText() string {
+	var b strings.Builder
+	b.WriteString("clow - a member of a clowder, an async file-transfer mesh over tailcat\n\n")
+	b.WriteString("usage: clow <command> [args]  (clow <command> -h for command details)\n")
+	var last string
+	for _, c := range commandDocs {
+		if c.group != last {
+			fmt.Fprintf(&b, "\n%s:\n", c.group)
+			last = c.group
+		}
+		fmt.Fprintf(&b, "  %s\n", c.usage)
+		for _, line := range c.desc {
+			fmt.Fprintf(&b, "    %s\n", line)
+		}
+	}
+	return b.String()
+}
 
-transferring files:
-  clow send [--async] <CAT> <FILE>                    send a file; watches progress until it is
-                                                      delivered or a storer holds it (--async
-                                                      queues and returns; Ctrl-C cancels)
-  clow inbox [--set DIR]                              list received files, or move the inbox
-  clow cancel [<ID>]                                  cancel one pending send by its id, or all
-
-roles:
-  clow storer [--max SIZE] on|off|dropbox             hold sealed files for others
-                                                      (dropbox: third parties only)
-
-mesh state:
-  clow status [--addresses]                           roster, liveness, transfers, outbox and spool
-                                                      (--addresses also prints tailcat addresses)
-  clow forget <CAT-OR-KEY>                            drop a cat from the roster for good (the
-                                                      key prefix from 'clow status' disambiguates
-                                                      duplicate names)
-
-config dir:  $CLOWDER_DIR, else the OS user config home (~/.config/clowder
-             on Linux, ~/Library/Application Support/clowder on macOS)
-inbox:       ~/Downloads/clowder by default; "clow inbox --set DIR" moves it
-pairing:     trust comes only from invite/join codes, never from exchanging addresses
-daemon:      every command except init and inbox needs it running
-`)
+func printUsage() error {
+	fmt.Print(usageText())
 	return nil
+}
+
+// helpText is one command's help: usage, description, then the hints
+// that concern it. An unknown command gets the global usage.
+func helpText(cmd string) string {
+	for _, c := range commandDocs {
+		if c.name != cmd {
+			continue
+		}
+		var b strings.Builder
+		fmt.Fprintf(&b, "usage: %s\n\n", c.usage)
+		for _, line := range c.desc {
+			fmt.Fprintf(&b, "%s\n", line)
+		}
+		if len(c.hints) > 0 {
+			b.WriteString("\n")
+		}
+		for _, h := range c.hints {
+			fmt.Fprintf(&b, "%s\n", h)
+		}
+		return b.String()
+	}
+	return usageText()
 }
 
 func configDir() string {

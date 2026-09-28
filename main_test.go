@@ -184,3 +184,29 @@ func TestStatusAddressesFlagParses(t *testing.T) {
 		t.Fatalf("--addresses no longer parses: %v", err)
 	}
 }
+
+// The global usage carries no per-topic footers; each command's -h
+// prints its own usage, description and the hints that concern it.
+func TestCommandHelp(t *testing.T) {
+	u := usageText()
+	for _, hint := range []string{"config dir:", "inbox:", "pairing:", "daemon:"} {
+		if strings.Contains(u, hint) {
+			t.Errorf("global usage still carries the %q footer", hint)
+		}
+	}
+	for _, c := range commandDocs {
+		h := helpText(c.name)
+		if !strings.Contains(h, "usage: "+c.usage) {
+			t.Errorf("help(%s) lacks its usage line", c.name)
+		}
+		for _, want := range c.hints {
+			if !strings.Contains(h, want) {
+				t.Errorf("help(%s) lacks hint %q", c.name, want)
+			}
+		}
+	}
+	// An unknown command's help falls back to the global usage.
+	if helpText("purr") != u {
+		t.Error("help(unknown) does not fall back to the global usage")
+	}
+}
