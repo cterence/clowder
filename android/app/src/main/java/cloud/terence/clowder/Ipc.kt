@@ -57,8 +57,10 @@ private fun requestJson(op: String, target: String? = null, path: String? = null
     return o.toString()
 }
 
-/** One IPC round trip. Throws on socket errors; protocol refusals come
- *  back as ok=false with the daemon's reason. */
+/** One IPC round trip. Long ops (join, leave) stream step logs — one
+ *  JSON object per line, each carrying a "log" field — before the final
+ *  response, so return the last line without one. Throws on socket
+ *  errors; protocol refusals come back as ok=false with the reason. */
 fun ipc(socket: File, op: String, target: String? = null, path: String? = null, words: String? = null): JSONObject {
     val s = LocalSocket()
     try {
@@ -66,8 +68,13 @@ fun ipc(socket: File, op: String, target: String? = null, path: String? = null, 
         s.outputStream.write((requestJson(op, target, path, words) + "\n").toByteArray())
         s.outputStream.flush()
         s.shutdownOutput()
-        val bytes = s.inputStream.readBytes()
-        return JSONObject(bytes.toString(Charsets.UTF_8))
+        var final: JSONObject? = null
+        for (line in s.inputStream.readBytes().toString(Charsets.UTF_8).lineSequence()) {
+            if (line.isBlank()) continue
+            val o = JSONObject(line)
+            if (o.optString("log", "").isEmpty()) final = o
+        }
+        return final ?: throw IllegalStateException("daemon sent no response")
     } finally {
         runCatching { s.close() }
     }

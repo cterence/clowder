@@ -827,6 +827,8 @@ fun SettingsScreen(onClose: () -> Unit, onShowLog: () -> Unit, onReset: () -> Un
     val ctx = LocalContext.current
     var showReset by remember { mutableStateOf(false) }
     var resetResult by remember { mutableStateOf<String?>(null) }
+    var showLeave by remember { mutableStateOf(false) }
+    var leaveResult by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
     if (showReset) {
@@ -869,6 +871,47 @@ fun SettingsScreen(onClose: () -> Unit, onShowLog: () -> Unit, onReset: () -> Un
         )
     }
 
+    if (showLeave) {
+        AlertDialog(
+            onDismissRequest = { showLeave = false },
+            title = { Text("Leave this clowder?") },
+            text = {
+                Text(
+                    "Says a signed goodbye to every reachable cat, then wipes " +
+                        "your roster, spool and outbox. Your identity is kept: " +
+                        "pair again with invite or join.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showLeave = false
+                    scope.launch {
+                        // The announce can take up to its 10s budget.
+                        val r = withContextOrNull { ipc(ClowdService.socketFile(ctx), "leave") }
+                        leaveResult = when {
+                            r == null -> "daemon not reachable"
+                            r.optBoolean("ok", false) -> r.optString("message")
+                            else -> r.optString("error")
+                        }
+                    }
+                }) { Text("Leave", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLeave = false }) { Text("Cancel") }
+            },
+        )
+    }
+    leaveResult?.let {
+        AlertDialog(
+            onDismissRequest = { leaveResult = null },
+            title = { Text("left the clowder") },
+            text = { Text(it) },
+            confirmButton = {
+                TextButton(onClick = { leaveResult = null }) { Text("ok") }
+            },
+        )
+    }
+
     Surface(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
             Row(
@@ -905,6 +948,8 @@ fun SettingsScreen(onClose: () -> Unit, onShowLog: () -> Unit, onReset: () -> Un
             MenuRow("View daemon log") { onShowLog() }
             HorizontalDivider()
             MenuRow("Clear daemon log") { ClowdService.clearLog() }
+            HorizontalDivider()
+            MenuRow("Leave the clowder…", danger = true) { showLeave = true }
             HorizontalDivider()
             MenuRow("Reset this cat…", danger = true) { showReset = true }
             HorizontalDivider()
