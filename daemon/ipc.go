@@ -30,8 +30,11 @@ type Response struct {
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
 	// ID names the transfer a "send" queued, so the CLI can follow it.
-	ID         string       `json:"id,omitempty"`
-	Message    string       `json:"message,omitempty"`
+	ID      string `json:"id,omitempty"`
+	Message string `json:"message,omitempty"`
+	// Done reports whether a daemon-side join attempt finished; false
+	// means it is still in progress (join op).
+	Done       bool         `json:"done,omitempty"`
 	Me         *roster.Cat  `json:"me,omitempty"`
 	Cats       []roster.Cat `json:"cats,omitempty"`
 	Outbox     []Entry      `json:"outbox,omitempty"`
@@ -163,10 +166,11 @@ func (d *Daemon) handleIPC(req Request) Response {
 		if req.Words == "" {
 			return fail(fmt.Errorf("join needs a pairing code"))
 		}
-		if err := d.Join(ctx, req.Words); err != nil {
-			return fail(err)
+		msg, done, ok := d.JoinRequest(req.Words)
+		if done && !ok {
+			return Response{OK: false, Error: msg, Done: true}
 		}
-		return okMsg("paired")
+		return Response{OK: true, Message: msg, Done: done}
 
 	case "cancel":
 		n, err := d.Cancel(req.Target)

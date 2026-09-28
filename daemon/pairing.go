@@ -292,6 +292,13 @@ func (d *Daemon) servePairConn(conn net.Conn) {
 	if err := pc.WriteMsg(&protocol.Message{PairAck: &protocol.PairAck{}}); err != nil {
 		d.cfg.logf("clowder: confirming pairing with %s: %v", peer.Name, err)
 	}
+	// Push the full roster with the confirmation (liveness included), so
+	// the fresh joiner starts alive instead of "never seen" until a sync.
+	rs := d.rosterMsg()
+	rs.Liveness = d.livenessSnapshot()
+	if err := pc.WriteMsg(&protocol.Message{Roster: rs}); err != nil {
+		d.cfg.logf("clowder: pushing the roster to %s: %v", peer.Name, err)
+	}
 	d.goBg(d.stopInvite)
 }
 
@@ -361,6 +368,40 @@ var errPairRefused = errors.New("inviter refused the pairing")
 var errNameTaken = errors.New("name already claimed by another cat")
 
 const joinTimeout = 2 * time.Minute
+
+// JoinRequest starts (or reports) the daemon-side join for code: the CLI
+// never blocks on the pairing, and a retry with the same code reports
+// the attempt's outcome instead of re-dialing a dead invite. A new code
+// supersedes the previous attempt.
+func (d *Daemon) JoinRequest(code string) (msg string, done, ok bool) {
+	d.joinMu.Lock()
+	if d.joinCode == code {
+		msg, done, ok = d.joinMsg, d.joinDone, d.joinOK
+		d.joinMu.Unlock()
+		return msg, done, ok
+	}
+	d.joinCode = code
+	d.joinMsg = "pairing in progress"
+	d.joinDone = false
+	d.joinOK = false
+	d.joinMu.Unlock()
+
+	d.goBg(func() {
+		err := d.Join(context.Background(), code)
+		d.joinMu.Lock()
+		// A newer attempt superseded this one: its result is the answer.
+		if d.joinCode == code {
+			if err != nil {
+				d.joinMsg, d.joinOK = err.Error(), false
+			} else {
+				d.joinMsg, d.joinOK = "paired", true
+			}
+			d.joinDone = true
+		}
+		d.joinMu.Unlock()
+	})
+	return "pairing in progress", false, false
+}
 
 // Join tries the encoded region first, then the sweep (pairRegions); the
 // whole join gives up after joinTimeout.
@@ -453,7 +494,39 @@ func (d *Daemon) pairOnRegion(ctx context.Context, keys *pairingKeys, region int
 	if err == nil && !confirmed {
 		d.cfg.logf("clowder: pairing confirmation lost after our ack; committing optimistically")
 	}
+	if err == nil {
+		// The inviter pushes its roster with the confirmation; a peer
+		// that does not (older daemon) just closes, and we still pair.
+		d.absorbRosterPush(pc)
+	}
 	return peer, err
+}
+
+// absorbRosterPush merges the roster (and liveness) the inviter pushes
+// over the pairing connection; nothing rides it, so any error is fine.
+func (d *Daemon) absorbRosterPush(pc *protocol.Conn) {
+	_ = pc.SetDeadline(time.Now().Add(5 * time.Second))
+	m, err := pc.ReadMsg()
+	if err != nil || m.Roster == nil {
+		return
+	}
+	d.mergeRemote(m.Roster)
+	d.mergeLiveness(m.Roster.Liveness)
+}
+
+// mergeLiveness adopts the push's last-seen times, keeping the newer of
+// local and remote — a display hint, not a trust decision.
+func (d *Daemon) mergeLiveness(l map[string]int64) {
+	if len(l) == 0 {
+		return
+	}
+	d.mu.Lock()
+	for k, v := range l {
+		if v > d.liveness[k] {
+			d.liveness[k] = v
+		}
+	}
+	d.mu.Unlock()
 }
 
 // joinExchange is the joiner's half: intro out, their intro in, our ack,

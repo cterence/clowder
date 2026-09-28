@@ -374,6 +374,78 @@ func TestPairingRefusesDuplicateName(t *testing.T) {
 	}
 }
 
+// Join is daemon-side state, not a blocking RPC: the first call starts
+// the attempt and returns immediately, and a retry with the same code
+// reports the attempt's outcome instead of re-dialing a dead invite.
+func TestJoinReportsDaemonState(t *testing.T) {
+	a := startDaemon(t, "a")
+	// Unparseable on purpose: the attempt fails at the code check, so the
+	// loopback suite stays off the DERP network.
+	const code = "not a pairing code"
+
+	resp := a.handleIPC(Request{Op: "join", Words: code})
+	if !resp.OK || resp.Done {
+		t.Fatalf("first join op = %+v, want in-progress (ok, not done)", resp)
+	}
+	waitFor(t, func() bool { return a.handleIPC(Request{Op: "join", Words: code}).Done },
+		"join attempt to finish")
+
+	retry := a.handleIPC(Request{Op: "join", Words: code})
+	if retry.OK || !retry.Done {
+		t.Fatalf("retry with the dead code = %+v, want the recorded failure", retry)
+	}
+	if !strings.Contains(retry.Error, "pairing code") {
+		t.Fatalf("retry error = %q, want the recorded attempt error", retry.Error)
+	}
+}
+
+// The inviter pushes its full roster (liveness included) with the join
+// confirmation, so the fresh joiner is visibly alive immediately
+// instead of showing every cat "never seen" until a sync connects.
+func TestJoinRosterPush(t *testing.T) {
+	inviter := startDaemon(t, "milo")
+	joiner := startDaemon(t, "fluff")
+	third, _ := offlineCat(t)
+	addCat(t, inviter, third)
+	inviter.markSeen(third.Key)
+	for _, d := range []*Daemon{inviter, joiner} {
+		d.mu.Lock()
+		d.meCat.Addr = string(d.env.Identity.Public.Addr())
+		d.mu.Unlock()
+	}
+
+	c1, c2 := tcpPair(t)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		defer func() { _ = c1.Close() }()
+		inviter.servePairConn(c1)
+	}()
+	go func() {
+		defer wg.Done()
+		defer func() { _ = c2.Close() }()
+		pc := protocol.NewConn(c2)
+		peer, _, err := joinExchange(pc, joiner.Me(), nil)
+		if err != nil {
+			t.Errorf("joiner exchange: %v", err)
+			return
+		}
+		if err := joiner.addPeerCat(peer); err != nil {
+			t.Errorf("joiner addPeerCat: %v", err)
+		}
+		joiner.absorbRosterPush(pc)
+	}()
+	wg.Wait()
+
+	if _, ok := joiner.Roster().GetByKey(third.Key); !ok {
+		t.Error("joiner did not absorb the inviter's roster push")
+	}
+	if joiner.SeenAt(third.Key) == 0 {
+		t.Error("joiner did not adopt the inviter's liveness")
+	}
+}
+
 func FuzzParsePairCode(f *testing.F) {
 	f.Add("hazel-meadow-quartz-amber-ember-petal-ivory-cedar-303")
 	f.Add("hazel meadow quartz amber ember petal ivory cedar 303")

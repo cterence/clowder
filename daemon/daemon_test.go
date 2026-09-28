@@ -495,7 +495,7 @@ func TestDialerMarksTargetSeenOnHelloReply(t *testing.T) {
 		}
 	}()
 
-	if err := milo.handshakeClient(pc); err == nil {
+	if err := milo.handshakeClient(pc, msgTimeout); err == nil {
 		t.Fatal("handshakeClient succeeded against a vanishing peer, want an error")
 	}
 	if milo.SeenAt(targetKey) == 0 {

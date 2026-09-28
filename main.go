@@ -96,7 +96,8 @@ mesh state:
   clow status [--addresses]                           roster, liveness, transfers, outbox and spool
                                                       (--addresses also prints tailcat addresses)
   clow forget <CAT-OR-KEY>                            drop a cat from the roster for good (the
-                                                      key disambiguates duplicate names)
+                                                      key prefix from 'clow status' disambiguates
+                                                      duplicate names)
 
 config dir:  $CLOWDER_DIR, else the OS user config home (~/.config/clowder
              on Linux, ~/Library/Application Support/clowder on macOS)
@@ -240,11 +241,38 @@ func cmdInvite() error {
 	return printResp(call(daemon.Request{Op: "invite"}))
 }
 
+// cmdJoin pairs via the daemon and follows its daemon-side state:
+// the attempt keeps running when the CLI exits, so Ctrl-C (or a lost
+// terminal) never half-kills a pairing — re-run the same command to see
+// how it went.
 func cmdJoin(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: clow join <CODE> (the words from `clow invite`)")
 	}
-	return printResp(call(daemon.Request{Op: "join", Words: strings.Join(args, " ")}))
+	code := strings.Join(args, " ")
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt)
+	defer signal.Stop(sig)
+	fmt.Println("pairing (Ctrl-C leaves it running in the daemon)")
+	for {
+		resp, err := call(daemon.Request{Op: "join", Words: code})
+		if err != nil {
+			return err
+		}
+		if !resp.OK {
+			return fmt.Errorf("%s", resp.Error)
+		}
+		if resp.Done {
+			fmt.Println(resp.Message)
+			return nil
+		}
+		select {
+		case <-sig:
+			fmt.Println("join keeps running in the daemon; re-run the same command to see how it went")
+			return nil
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
 }
 
 func cmdCancel(args []string) error {

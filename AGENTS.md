@@ -113,22 +113,7 @@ Update this list and the README when something ships.
    app; then boot-receive, delivery notifications, and the storer-role
    UI. Termux is explicitly NOT a goal (the foreground-service app is
    the answer); on-device builds blocked until Termux ships go >= 1.27.1.
-2. **Pairing and roster UX** — dogfooding surfaced two friction
-   points. (a) Right after `clow join`, the joiner sees every cat
-   "never seen" until syncs connect: pairing must make the fresh
-   roster visibly alive (e.g. the inviter pushes roster+liveness with
-   the join confirmation, and the join triggers an immediate sync
-   round). (b) A join that straddles DERP congestion half-fails: the
-   CLI hangs or is Ctrl-C'd while the daemon still completes the
-   handshake, and a retry with the now-dead code reports "reaching
-   inviter: context deadline exceeded" — indistinguishable from an
-   unreachable inviter. The join should report daemon-side state
-   (in-progress, completed) instead of one blocking RPC, and the
-   dead-code path needs its own message. (Duplicate names are
-   handled: status tags each claimant with its short key and entry
-   age, and `clow forget <CAT-OR-KEY>` disambiguates — pinned by
-   TestForgetKeyDisambiguatesDuplicateName.)
-3. **Multiple clowders** — named clowders: per-clowder roster files,
+2. **Multiple clowders** — named clowders: per-clowder roster files,
    `--clowder` on invite/join/send, Hello carries the clowder name so a
    connection routes to the right roster. One identity, one daemon,
    clowders stay disjoint. Largest refactor; do last, design tombstones
@@ -140,6 +125,16 @@ Update this list and the README when something ships.
 
 One line each; the pinning tests carry the details.
 
+- **Pairing and roster UX**: join is daemon-side state — the CLI
+  returns at once and polls, Ctrl-C leaves the attempt running, and a
+  retry with the same code reports the recorded outcome instead of
+  re-dialing a dead invite (TestJoinReportsDaemonState); the inviter
+  pushes its full roster and liveness with the join confirmation, so a
+  fresh joiner is alive before the first sync tick (TestJoinRosterPush,
+  RosterSync.Liveness wire field); leave announces to all cats in
+  parallel with a 15s per-cat bound, so wedged peers cannot stall it
+  (TestLeaveBoundedByWedgedPeer); `clow forget` accepts the short key
+  prefix `clow status` displays (TestForgetKeyPrefixMatchesStatusDisplay).
 - **Signed leave + roster entry signing**: Ed25519 keys derived from the
   node key seed sign every roster entry (merge requires the pinned sign
   key's signature, so no cat can inject or override entries via LWW) and
@@ -182,7 +177,10 @@ One line each; the pinning tests carry the details.
   OpenStream.
 - **Packaging and ops**: nix flake `packages.default`, Dockerfile with
   auto-init and CLOWDER_NAME/CLOWDER_STORER, HTTP health endpoint,
-  opt-in pprof, self-hosted DERP map.
+  opt-in pprof, self-hosted DERP map; CI nix job builds the flake
+  package and pushes it to the niks3 binary cache (GitHub OIDC, no
+  secrets — the server's subject allowlist lives in the homelab niks3
+  chart).
 - **Service packaging**: NixOS module (`nixosModules.default`,
   `services.clowder`: dedicated clowder user, StateDirectory
   /var/lib/clowder, HOME pointed there too (system users get

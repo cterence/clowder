@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -190,6 +191,28 @@ func (r *Roster) GetByKey(k string) (Cat, bool) {
 	defer r.mu.Unlock()
 	c, ok := r.cats[k]
 	return c, ok
+}
+
+// GetByPrefix returns the unique cat whose key hex (after "nodekey:")
+// starts with p — the short form `clow status` displays. An ambiguous
+// prefix matches nothing.
+func (r *Roster) GetByPrefix(p string) (Cat, bool) {
+	p = strings.TrimPrefix(p, "nodekey:")
+	if p == "" {
+		return Cat{}, false // would match everything
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var found Cat
+	for _, c := range r.cats {
+		if strings.HasPrefix(strings.TrimPrefix(c.Key, "nodekey:"), p) {
+			if found.Key != "" {
+				return Cat{}, false
+			}
+			found = c
+		}
+	}
+	return found, found.Key != ""
 }
 
 // All returns all cats sorted by name.

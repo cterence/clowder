@@ -7,11 +7,20 @@ package daemon
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"clowder/protocol"
 	"clowder/roster"
 )
+
+// Bounds each leave announce (dial, handshake and write). A live cat
+// answers within the transport's 10s ping bound plus a few round trips,
+// so 15s only cuts paths that are effectively dead — and a cat that
+// misses the direct announce still gets the tombstone via re-broadcast
+// or roster sync.
+var leaveTimeout = 15 * time.Second
 
 // Leave broadcasts the leave, then wipes the clowder locally (roster,
 // outbox, spool, blocklist — tombstones included); the identity is kept.
@@ -27,26 +36,26 @@ func (d *Daemon) Leave(ctx context.Context) (int, error) {
 		Time:    t.Time,
 		Sig:     t.Sig,
 	}}
-	announced := 0
+	var announced atomic.Int32
+	var wg sync.WaitGroup
 	for _, c := range all {
-		pc, err := d.connect(ctx, c)
-		if err != nil {
-			d.cfg.logf("clowder: announcing leave to %s failed: %v", c.Name, err)
-			continue
-		}
-		if err := pc.WriteMsg(msg); err != nil {
-			d.cfg.logf("clowder: announcing leave to %s failed: %v", c.Name, err)
-		} else {
-			announced++
-		}
-		_ = pc.Close()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := d.announceLeave(ctx, c, msg); err != nil {
+				d.cfg.logf("clowder: announcing leave to %s failed: %v", c.Name, err)
+				return
+			}
+			announced.Add(1)
+		}()
 	}
+	wg.Wait()
 
 	d.mu.Lock()
 	d.left = true
 	d.mu.Unlock()
 	if err := d.ros.Reset(); err != nil {
-		return announced, err
+		return int(announced.Load()), err
 	}
 	if _, err := d.ob.Clear(); err != nil {
 		d.cfg.logf("clowder: clearing outbox on leave: %v", err)
@@ -63,8 +72,22 @@ func (d *Daemon) Leave(ctx context.Context) (int, error) {
 	if err != nil {
 		d.cfg.logf("clowder: clearing blocklist on leave: %v", err)
 	}
-	d.cfg.logf("clowder: left the clowder (told %d cat(s)); identity kept", announced)
-	return announced, nil
+	d.cfg.logf("clowder: left the clowder (told %d cat(s)); identity kept", announced.Load())
+	return int(announced.Load()), nil
+}
+
+// announceLeave handshakes with one cat and delivers the leave, the
+// whole exchange bounded by leaveTimeout.
+func (d *Daemon) announceLeave(ctx context.Context, c roster.Cat, msg *protocol.Message) error {
+	ctx, cancel := context.WithTimeout(ctx, leaveTimeout)
+	defer cancel()
+	pc, err := d.connectTimeout(ctx, c, leaveTimeout)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = pc.Close() }()
+	_ = pc.SetDeadline(time.Now().Add(leaveTimeout))
+	return pc.WriteMsg(msg)
 }
 
 func (d *Daemon) hasLeft() bool {

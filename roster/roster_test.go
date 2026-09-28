@@ -188,3 +188,33 @@ func TestGetPrefersNewestDuplicate(t *testing.T) {
 		t.Fatal("unrelated lookup changed")
 	}
 }
+
+// GetByPrefix resolves the short key `clow status` displays: the hex
+// after "nodekey:", any length; an ambiguous prefix matches nothing.
+func TestGetByPrefix(t *testing.T) {
+	r := New()
+	for _, c := range []Cat{
+		{Name: "one", Key: "nodekey:aabbccdd11", Updated: 1},
+		{Name: "two", Key: "nodekey:aabbeeff22", Updated: 2},
+	} {
+		if err := r.Add(c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		prefix string
+		want   string
+		ok     bool
+	}{
+		{"aabbcc", "one", true},             // unique
+		{"nodekey:aabbccdd11", "one", true}, // full key
+		{"aabb", "", false},                 // ambiguous
+		{"", "", false},                     // matches everything
+		{"zz", "", false},                   // nothing
+	} {
+		got, ok := r.GetByPrefix(tc.prefix)
+		if ok != tc.ok || (ok && got.Name != tc.want) {
+			t.Errorf("GetByPrefix(%q) = (%s, %v), want (%s, %v)", tc.prefix, got.Name, ok, tc.want, tc.ok)
+		}
+	}
+}

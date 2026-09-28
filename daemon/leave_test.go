@@ -2,7 +2,9 @@ package daemon
 
 import (
 	"context"
+	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -50,17 +52,19 @@ func TestLeaveDropsLeaverAndRebroadcasts(t *testing.T) {
 	// c only hears the leave through b's re-broadcast.
 	waitFor(t, func() bool { _, ok := c.Roster().GetByKey(aKey); return !ok },
 		"c to drop the leaver via b's re-broadcast")
-	if !b.isBlockedKey(aKey) {
-		t.Fatal("b still allows the leaver to connect")
-	}
-	if len(b.spool.List(aKey)) != 0 {
-		t.Fatal("spool kept a held file for the leaver")
-	}
-	for _, e := range b.ob.All() {
-		if e.TargetKey == aKey {
-			t.Fatal("outbox kept a pending send to the leaver")
+	// Roster-drop and spool/outbox cleanup are one applyTombstone, but
+	// the cleanup is its tail: wait for it, don't assume zero lag.
+	waitFor(t, func() bool {
+		if len(b.spool.List(aKey)) != 0 {
+			return false
 		}
-	}
+		for _, e := range b.ob.All() {
+			if e.TargetKey == aKey {
+				return false
+			}
+		}
+		return b.isBlockedKey(aKey)
+	}, "b to drop the leaver's held file, pending send and allow")
 
 	// The leaver's own roster is wiped and stays wiped while b keeps
 	// syncing to it on every poll tick.
@@ -110,6 +114,61 @@ func TestLeaveReachesOfflinePeerViaSync(t *testing.T) {
 	}
 	if _, ok := b.Roster().GetByKey(aKey); ok {
 		t.Fatal("leaver resurrected on b")
+	}
+}
+
+// Leave announces in parallel with a bounded deadline per cat, so a
+// wedged peer (accepts the dial, never speaks) cannot hold the whole
+// leave hostage for the message timeout — one wedged cat used to cost
+// minutes, N of them N times that.
+func TestLeaveBoundedByWedgedPeer(t *testing.T) {
+	old := leaveTimeout
+	leaveTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { leaveTimeout = old })
+
+	a := startDaemon(t, "a")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var held []net.Conn
+	t.Cleanup(func() {
+		_ = ln.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range held {
+			_ = c.Close()
+		}
+	})
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			held = append(held, c) // accepted but never answered
+			mu.Unlock()
+		}
+	}()
+	wedged, _ := offlineCat(t)
+	wedged.Addr = ln.Addr().String()
+	addCat(t, a, wedged)
+
+	start := time.Now()
+	n, err := a.Leave(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("leave took %s with a wedged peer, want it bounded", elapsed)
+	}
+	if n != 0 {
+		t.Fatalf("leave claims to have announced to the wedged peer (n=%d)", n)
+	}
+	if len(a.Roster().All()) != 0 {
+		t.Fatal("leaver kept its roster")
 	}
 }
 

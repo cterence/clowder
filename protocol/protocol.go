@@ -49,6 +49,10 @@ type Hello struct {
 type RosterSync struct {
 	Cats       []roster.Cat       `cbor:"c"`
 	Tombstones []roster.Tombstone `cbor:"b,omitempty"`
+	// Liveness is the sender's last-seen map (unix seconds per key);
+	// the pairing push carries it so a fresh joiner's status is alive
+	// before its first sync. Display hint only.
+	Liveness map[string]int64 `cbor:"l,omitempty"`
 }
 
 // Offer announces a sealed file stream. TargetKey/TargetName name the cat

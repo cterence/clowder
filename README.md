@@ -79,8 +79,9 @@ path if lost — except the identity.
     clow leave                                         depart: signed goodbye, cats drop you
     clow forget <CAT-OR-KEY>                            drop a cat from the roster (it
                                                         stays dropped: syncs re-adding
-                                                        it are refused; the KEY picks
-                                                        one of two same-named cats)
+                                                        it are refused; the KEY — or its
+                                                        prefix as shown by clow status —
+                                                        picks one of two same-named cats)
     clow status [--addresses]                           config, stats, outbox, spool,
                                                         roster (--addresses also prints
                                                         tailcat addresses)

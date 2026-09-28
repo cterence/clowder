@@ -9,8 +9,9 @@ promote to pending work in AGENTS.md when a fix is agreed.
   session (reinstall the APK to pick it up).
 - 2026-09-27: homelab3 join straddled DERP congestion: the CLI was
   Ctrl-C'd while the daemon completed the handshake, so the retry
-  failed on the consumed code with a misleading timeout. -> pending
-  item 3(b).
+  failed on the consumed code with a misleading timeout. Fixed
+  2026-09-28: join is daemon-side state; the CLI returns at once, and a
+  retry reports the recorded outcome.
 - 2026-09-27: the storer's 1 GiB push to stronghold stalled at 68% and
   did not visibly resume within ~20 minutes. Unresolved: watch for a
   repeat and capture daemon logs from both ends if it does.
@@ -18,4 +19,5 @@ promote to pending work in AGENTS.md when a fix is agreed.
   back in from peers that never forgot it (zenfone). The clean removal
   is the signed leave from the cat itself. -> pending item 3(c).
 - 2026-09-27: right after join, every cat reads "never seen" until
-  syncs land. -> pending item 3(a).
+  syncs land. Fixed 2026-09-28: the inviter pushes its full roster and
+  liveness with the join confirmation.

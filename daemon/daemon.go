@@ -94,6 +94,14 @@ type Daemon struct {
 	pairLn   net.Listener
 	pairDone chan struct{}
 
+	// Daemon-side join state, so the CLI never blocks on a pairing and
+	// a retry with the same code reports instead of re-dialing.
+	joinMu   sync.Mutex
+	joinCode string
+	joinMsg  string
+	joinDone bool
+	joinOK   bool
+
 	// Unix time each key was last seen on a successful connection, either direction.
 	liveness map[string]int64
 
@@ -197,13 +205,18 @@ func (d *Daemon) Roster() *roster.Roster { return d.ros }
 func (d *Daemon) Spool() *store.Spool { return d.spool }
 
 // Forget removes the cat and its pending sends (local only; entries are
-// never removed by propagation). who is a node key, or a name — when two
-// cats claim one name, only the key is unambiguous.
+// never removed by propagation). who is a node key, the short key prefix
+// `clow status` displays, or a name — when two cats claim one name, only
+// the key is unambiguous.
 func (d *Daemon) Forget(who string) (roster.Cat, bool) {
 	c, ok := d.ros.GetByKey(who)
 	if !ok {
-		if c, ok = d.ros.Get(who); !ok {
-			return c, false
+		c, ok = d.ros.Get(who)
+	}
+	if !ok {
+		c, ok = d.ros.GetByPrefix(who)
+		if !ok {
+			return roster.Cat{}, false
 		}
 	}
 	c, ok = d.ros.RemoveKey(c.Key)
@@ -994,20 +1007,27 @@ func (d *Daemon) rosterMsg() *protocol.RosterSync {
 }
 
 func (d *Daemon) connect(ctx context.Context, cat roster.Cat) (*protocol.Conn, error) {
+	return d.connectTimeout(ctx, cat, msgTimeout)
+}
+
+// connectTimeout bounds the handshake (and the caller's use of the conn
+// after it) by timeout instead of the default message timeout — leave
+// needs a hard cap per cat, not minutes.
+func (d *Daemon) connectTimeout(ctx context.Context, cat roster.Cat, timeout time.Duration) (*protocol.Conn, error) {
 	conn, err := d.tr.Dial(ctx, cat.Addr)
 	if err != nil {
 		return nil, err
 	}
 	pc := protocol.NewConn(conn)
-	if err := d.handshakeClient(pc); err != nil {
+	if err := d.handshakeClient(pc, timeout); err != nil {
 		_ = pc.Close()
 		return nil, err
 	}
 	return pc, nil
 }
 
-func (d *Daemon) handshakeClient(pc *protocol.Conn) error {
-	_ = pc.SetDeadline(time.Now().Add(msgTimeout))
+func (d *Daemon) handshakeClient(pc *protocol.Conn, timeout time.Duration) error {
+	_ = pc.SetDeadline(time.Now().Add(timeout))
 	if err := pc.WriteMsg(&protocol.Message{Hello: d.helloMsg()}); err != nil {
 		return err
 	}

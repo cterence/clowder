@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -63,6 +64,32 @@ func TestRepairAfterForgetUnblocks(t *testing.T) {
 	}
 	if milo.isBlockedKey(fluff.Me().Key) || milo.isBlockedKey(fluff.Me().ClientKey) {
 		t.Fatal("re-pairing did not clear the blocklist")
+	}
+}
+
+// The short key `clow status` prints (8 hex chars) is a valid forget
+// handle: same disambiguation as the full key, without copy-pasting
+// the whole thing.
+func TestForgetKeyPrefixMatchesStatusDisplay(t *testing.T) {
+	milo := startDaemon(t, "milo")
+	one, _ := offlineCat(t)
+	two, _ := offlineCat(t)
+	two.Name = one.Name
+	addCat(t, milo, one)
+	addCat(t, milo, two)
+
+	prefix := strings.TrimPrefix(two.Key, "nodekey:")[:8]
+	if got, ok := milo.Forget(prefix); !ok || got.Key != two.Key {
+		t.Fatalf("Forget(by prefix %s) = (%s, %v), want cat %s", prefix, got.Name, ok, two.Key)
+	}
+	if _, ok := milo.Roster().GetByKey(two.Key); ok {
+		t.Fatal("prefix-forgotten cat is still in the roster")
+	}
+	if _, ok := milo.Roster().GetByKey(one.Key); !ok {
+		t.Fatal("the other same-named cat was removed too")
+	}
+	if !milo.isBlockedKey(two.Key) || milo.isBlockedKey(one.Key) {
+		t.Fatal("blocklist does not match the prefix-forgotten cat")
 	}
 }
 
