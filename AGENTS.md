@@ -137,12 +137,21 @@ One line each; the pinning tests carry the details.
   round the moment the joiner commits, so online cats have the full
   roster without waiting a tick (TestPairingFansOutRosterSync); leave
   is synchronous and fast: the goodbye is announced in parallel, any
-  cat that does not answer within 3s is cut, and the command fails
-  without wiping when nobody heard it, so it can be retried; one
-  reached cat suffices (recipients re-broadcast, the tombstone rides
-  sync to sleepers); join shows its daemon-side progress (which DERP
-  region it is trying); `clow forget` accepts the short key prefix
-  `clow status` displays (TestForgetKeyPrefixMatchesStatusDisplay).
+  cat that does not answer within 10s (a cold tailcat dial to an
+  online cat pays netcheck + relay attach, measured ~3s on the real
+  mesh) is cut, and the command fails loudly but still wipes locally
+  — a cat nobody trusts back must not become unleaveable; one reached
+  cat suffices (recipients re-broadcast, the tombstone rides sync to
+  sleepers); join shows its daemon-side progress (which DERP region
+  it is trying), the joiner acks the roster push and the inviter
+  closes the pairing channel on that ack so the confirmation cannot
+  be black-holed by a close with bytes in flight (the old 45s "slow
+  inviter" join, TestPairingHoldsChannelForJoinerAck), and the joiner
+  signs and stamps its intro so a re-pair outranks the stale
+  tombstone from an earlier leave instead of being silently un-paired
+  (TestRepairSurvivesStaleTombstone); `clow forget` accepts the short
+  key prefix `clow status` displays
+  (TestForgetKeyPrefixMatchesStatusDisplay).
 - **Signed leave + roster entry signing**: Ed25519 keys derived from the
   node key seed sign every roster entry (merge requires the pinned sign
   key's signature, so no cat can inject or override entries via LWW) and
