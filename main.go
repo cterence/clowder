@@ -521,7 +521,9 @@ func watchSend(id, file, target string) error {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)
 	defer signal.Stop(sig)
-	tick := time.NewTicker(250 * time.Millisecond)
+	// Once a second: the percent and rate stay readable instead of
+	// flickering at sub-second cadence.
+	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	var last string
 	for {
@@ -561,7 +563,6 @@ func watchSend(id, file, target string) error {
 			fmt.Printf("\r%-72s", line)
 			last = line
 		}
-		time.Sleep(250 * time.Millisecond)
 	}
 }
 

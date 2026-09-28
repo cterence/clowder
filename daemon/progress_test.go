@@ -137,3 +137,31 @@ func TestProgressRate(t *testing.T) {
 		t.Fatalf("stalled transfer reports %.0f B/s, want 0", got)
 	}
 }
+
+// A snapshot that lands between chunk arrivals must still report the
+// rate: the stall check belongs to the newest sample, not the oldest
+// one in the window. Checking the base blinked the rate out of
+// `clow send` on nearly every poll once the transfer passed one
+// window in age.
+func TestProgressRateBetweenChunks(t *testing.T) {
+	k := newProgressKeeper()
+	base := time.Now()
+	k.now = func() time.Time { return base }
+	k.start(Progress{ID: "t1", FileName: "nap.txt", Total: 1 << 20})
+	// A mature transfer: 64 KiB chunks every 10ms.
+	for i := 0; i < 350; i++ {
+		base = base.Add(10 * time.Millisecond)
+		k.add("t1", 64*1024)
+	}
+	base = base.Add(50 * time.Millisecond) // between chunk arrivals
+	got := k.snapshot()[0].Bps
+	want := 6.4 * 1024 * 1024 // 64 KiB per 10ms
+	if got < want*0.9 || got > want*1.1 {
+		t.Fatalf("rate = %.0f B/s, want ~%.0f B/s (a poll between chunks must not zero the rate)", got, want)
+	}
+	// Genuinely stalled: nothing arrived for a whole window.
+	base = base.Add(4 * time.Second)
+	if got := k.snapshot()[0].Bps; got != 0 {
+		t.Fatalf("stalled transfer reports %.0f B/s, want 0", got)
+	}
+}

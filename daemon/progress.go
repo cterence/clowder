@@ -132,22 +132,25 @@ func (k *progressKeeper) snapshot() []Progress {
 	return out
 }
 
-// rateLocked computes bytes/sec across the in-window samples (the first is
-// the baseline); 0 when no time has elapsed in the window.
+// rateLocked computes bytes/sec from the oldest in-window sample to the
+// newest. The stall check belongs to the newest sample — the base sits
+// up to a full window in the past, so checking it blinked the rate out
+// on nearly every poll between chunk arrivals.
 func (k *progressKeeper) rateLocked(id string, now time.Time) float64 {
 	s := k.samples[id]
 	if len(s) == 0 {
 		return 0
 	}
-	base := s[0]
-	if now.Sub(base.t) > rateWindow {
-		return 0 // everything is stale: the transfer stalled
+	newest := s[len(s)-1]
+	if now.Sub(newest.t) > rateWindow {
+		return 0 // nothing arrived in the last window: stalled
 	}
-	elapsed := now.Sub(base.t).Seconds()
+	base := s[0]
+	elapsed := newest.t.Sub(base.t).Seconds()
 	if elapsed < 0.25 {
 		return 0
 	}
-	return float64(s[len(s)-1].done-base.done) / elapsed
+	return float64(newest.done-base.done) / elapsed
 }
 
 // countingWriter wraps a writer, advancing a transfer's progress.
