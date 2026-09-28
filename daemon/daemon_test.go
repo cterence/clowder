@@ -114,6 +114,10 @@ func startDaemonAt(t *testing.T, dir string) *Daemon {
 	return runDaemon(t, dir, &LocalTransport{})
 }
 
+// testPollEvery is the harness sync tick; tests that need to tell an
+// event-driven sync from tick convergence raise it for their daemons.
+var testPollEvery = 150 * time.Millisecond
+
 // runDaemon starts a daemon on a prepared config dir with a custom
 // transport.
 func runDaemon(t *testing.T, dir string, tr Transport) *Daemon {
@@ -124,7 +128,7 @@ func runDaemon(t *testing.T, dir string, tr Transport) *Daemon {
 	cfg := Config{
 		Dir:        dir,
 		RetryEvery: 150 * time.Millisecond,
-		PollEvery:  150 * time.Millisecond,
+		PollEvery:  testPollEvery,
 		Logf:       t.Logf,
 	}
 	d, err := New(cfg, tr)

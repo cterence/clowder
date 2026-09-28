@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"clowder/protocol"
 	"clowder/roster"
@@ -444,6 +445,55 @@ func TestJoinRosterPush(t *testing.T) {
 	if joiner.SeenAt(third.Key) == 0 {
 		t.Error("joiner did not adopt the inviter's liveness")
 	}
+}
+
+// A pairing fans out immediately: the inviter syncs its peers the
+// moment it commits the joiner, so every online cat has the full roster
+// without waiting a poll tick. The tick here is raised so only the
+// event-driven sync can carry the new cat in time.
+func TestPairingFansOutRosterSync(t *testing.T) {
+	old := testPollEvery
+	testPollEvery = 30 * time.Second
+	t.Cleanup(func() { testPollEvery = old })
+
+	inviter := startDaemon(t, "milo")
+	third := startDaemon(t, "niche")
+	joiner := startDaemon(t, "fluff")
+	trust(t, inviter, third)
+	trust(t, third, inviter)
+	for _, d := range []*Daemon{inviter, joiner} {
+		d.mu.Lock()
+		d.meCat.Addr = string(d.env.Identity.Public.Addr())
+		d.mu.Unlock()
+	}
+
+	c1, c2 := tcpPair(t)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		defer func() { _ = c1.Close() }()
+		inviter.servePairConn(c1)
+	}()
+	go func() {
+		defer wg.Done()
+		defer func() { _ = c2.Close() }()
+		pc := protocol.NewConn(c2)
+		peer, _, err := joinExchange(pc, joiner.Me(), nil)
+		if err != nil {
+			t.Errorf("joiner exchange: %v", err)
+			return
+		}
+		if err := joiner.addPeerCat(peer); err != nil {
+			t.Errorf("joiner addPeerCat: %v", err)
+		}
+		joiner.absorbRosterPush(pc)
+	}()
+	wg.Wait()
+
+	joinerKey := joiner.Me().Key
+	waitFor(t, func() bool { _, ok := third.Roster().GetByKey(joinerKey); return ok },
+		"third cat to learn the joiner via the inviter's post-pairing sync")
 }
 
 func FuzzParsePairCode(f *testing.F) {

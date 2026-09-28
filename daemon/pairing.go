@@ -286,6 +286,9 @@ func (d *Daemon) servePairConn(conn net.Conn) {
 		d.cfg.logf("clowder: adding paired cat: %v", err)
 		return
 	}
+	// Fan out now: pairing is rare, and online cats should have the
+	// full roster without waiting a poll tick.
+	d.goBg(func() { d.syncPeers(context.Background()) })
 	d.cfg.logf("clowder: paired with %s", peer.Name)
 	// Confirm the commit. A lost confirmation does not un-pair: the joiner
 	// commits optimistically once its ack was written.

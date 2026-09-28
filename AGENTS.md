@@ -131,7 +131,9 @@ One line each; the pinning tests carry the details.
   re-dialing a dead invite (TestJoinReportsDaemonState); the inviter
   pushes its full roster and liveness with the join confirmation, so a
   fresh joiner is alive before the first sync tick (TestJoinRosterPush,
-  RosterSync.Liveness wire field); leave announces to all cats in
+  RosterSync.Liveness wire field); both pairing sides fan out a sync
+  round the moment the joiner commits, so online cats have the full
+  roster without waiting a tick (TestPairingFansOutRosterSync); leave announces to all cats in
   parallel with a 15s per-cat bound, so wedged peers cannot stall it
   (TestLeaveBoundedByWedgedPeer); `clow forget` accepts the short key
   prefix `clow status` displays (TestForgetKeyPrefixMatchesStatusDisplay).
