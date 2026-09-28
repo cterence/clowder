@@ -90,6 +90,13 @@ type PairIntro struct {
 	SignKey   string `cbor:"g,omitempty"`
 	Storer    bool   `cbor:"s,omitempty"`
 	Dropbox   bool   `cbor:"d,omitempty"`
+	// The joiner's signed roster entry rides the intro, so the inviter
+	// stores it verbatim and a stale tombstone from an old leave cannot
+	// un-pair the fresh re-join (the rejoin refusal needs a signed
+	// newer entry). Older joiners send none and stay unsigned.
+	Capacity int64  `cbor:"p,omitempty"`
+	Updated  int64  `cbor:"u"`
+	Sig      []byte `cbor:"e,omitempty"`
 }
 
 // PairAck confirms the joiner got the inviter's intro; the inviter commits

@@ -305,6 +305,12 @@ func (d *Daemon) servePairConn(conn net.Conn) {
 	if err := pc.WriteMsg(&protocol.Message{Roster: rs}); err != nil {
 		d.cfg.logf("clowder: pushing the roster to %s: %v", peer.Name, err)
 	}
+	// Hold the channel open until the joiner acks the push, then close:
+	// closing with bytes still in the tunnel black-holes them, and the
+	// joiner used to wait out its whole exchange deadline for a
+	// confirmation the inviter had written milliseconds earlier.
+	_ = pc.SetDeadline(time.Now().Add(pairCloseGrace))
+	_, _ = pc.ReadMsg()
 	d.goBg(d.stopInvite)
 }
 
@@ -312,7 +318,7 @@ func (d *Daemon) servePairConn(conn net.Conn) {
 // peer's sign key is pinned here, any old tombstone is cleared, and a cat
 // that had left merges again.
 func (d *Daemon) addPeerCat(p *protocol.PairIntro) error {
-	c, err := roster.NewCat(p.Name, p.Addr, time.Now().Unix())
+	c, err := roster.NewCat(p.Name, p.Addr, p.Updated)
 	if err != nil {
 		return err
 	}
@@ -320,6 +326,16 @@ func (d *Daemon) addPeerCat(p *protocol.PairIntro) error {
 	c.SignKey = p.SignKey
 	c.Storer = p.Storer
 	c.Dropbox = p.Dropbox
+	c.Capacity = p.Capacity
+	// The joiner signs its intro, so the entry lands verbatim and a
+	// stale tombstone from an old leave cannot un-pair the re-join
+	// (the rejoin refusal needs a signed newer entry). A bad or absent
+	// signature falls back to the unsigned pairing of older joiners.
+	c.Sig = p.Sig
+	if p.Sig != nil && !roster.VerifyEntry(c) {
+		c.Sig = nil
+		d.cfg.logf("clowder: %s's pairing intro carries an invalid signature, storing the entry unsigned", p.Name)
+	}
 	if err := d.ros.Add(c); err != nil {
 		return err
 	}
@@ -529,7 +545,9 @@ func (d *Daemon) pairOnRegion(ctx context.Context, code string, keys *pairingKey
 }
 
 // absorbRosterPush merges the roster (and liveness) the inviter pushes
-// over the pairing connection; nothing rides it, so any error is fine.
+// over the pairing connection, then acks: the inviter closes the
+// channel on that ack, so the push and the pairing confirmation cannot
+// be black-holed by a close with bytes in flight.
 func (d *Daemon) absorbRosterPush(pc *protocol.Conn) {
 	_ = pc.SetDeadline(time.Now().Add(5 * time.Second))
 	m, err := pc.ReadMsg()
@@ -538,7 +556,12 @@ func (d *Daemon) absorbRosterPush(pc *protocol.Conn) {
 	}
 	d.mergeRemote(m.Roster)
 	d.mergeLiveness(m.Roster.Liveness)
+	_ = pc.WriteMsg(&protocol.Message{PairAck: &protocol.PairAck{}})
 }
+
+// pairCloseGrace bounds how long the inviter waits for the joiner's
+// final ack before closing anyway (an older joiner sends none).
+var pairCloseGrace = 2 * time.Second
 
 // mergeLiveness adopts the push's last-seen times, keeping the newer of
 // local and remote — a display hint, not a trust decision.
@@ -609,6 +632,9 @@ func pairIntroOf(pc *protocol.Conn, me roster.Cat) (*protocol.PairIntro, error) 
 		SignKey:   me.SignKey,
 		Storer:    me.Storer,
 		Dropbox:   me.Dropbox,
+		Capacity:  me.Capacity,
+		Updated:   me.Updated,
+		Sig:       me.Sig,
 	}}); err != nil {
 		return nil, err
 	}

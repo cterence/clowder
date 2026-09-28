@@ -511,3 +511,113 @@ func FuzzParsePairCode(f *testing.F) {
 		}
 	})
 }
+
+// The inviter must hold the pairing channel open until the joiner acks
+// the roster push: closing with bytes in flight black-holes the
+// confirmation over tailcat, and the joiner used to spend its whole
+// exchange deadline waiting for a confirmation the inviter had written
+// milliseconds earlier (the real-mesh 45s "slow inviter" join).
+// Pinned from the joiner's side: a silent joiner keeps the channel
+// open for at least the close grace.
+func TestPairingHoldsChannelForJoinerAck(t *testing.T) {
+	old := pairCloseGrace
+	pairCloseGrace = 400 * time.Millisecond
+	t.Cleanup(func() { pairCloseGrace = old })
+
+	inviter := startDaemon(t, "milo")
+	joiner := startDaemon(t, "fluff")
+	for _, d := range []*Daemon{inviter, joiner} {
+		d.mu.Lock()
+		d.meCat.Addr = string(d.env.Identity.Public.Addr())
+		d.mu.Unlock()
+	}
+
+	c1, c2 := tcpPair(t)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		defer func() { _ = c1.Close() }()
+		inviter.servePairConn(c1)
+	}()
+	go func() {
+		defer wg.Done()
+		defer func() { _ = c2.Close() }()
+		pc := protocol.NewConn(c2)
+		if _, _, err := joinExchange(pc, joiner.Me(), nil); err != nil {
+			t.Errorf("joiner exchange: %v", err)
+			return
+		}
+		// Read the roster push, then go silent: no final ack.
+		_ = pc.SetDeadline(time.Now().Add(5 * time.Second))
+		if m, err := pc.ReadMsg(); err != nil || m.Roster == nil {
+			t.Errorf("joiner did not receive the roster push: %v", err)
+			return
+		}
+		start := time.Now()
+		if _, err := pc.ReadMsg(); err == nil {
+			t.Error("expected EOF after the inviter closed")
+		}
+		if held := time.Since(start); held < pairCloseGrace-100*time.Millisecond {
+			t.Errorf("inviter closed after %s, want it to hold the channel for the joiner's ack (grace %s)", held, pairCloseGrace)
+		}
+	}()
+	wg.Wait()
+}
+
+// A re-pair must survive the stale tombstone that still rides the
+// mesh from the cat's original leave: the pairing entry arrives
+// SIGNED (the joiner signs its intro), so the tombstone's rejoin
+// refusal applies and the leaver stays paired. The old unsigned
+// entry could not prove the rejoin, and the stale tombstone un-paired
+// and re-blocked the cat within seconds — how the ghost state was
+// born on the real mesh.
+func TestRepairSurvivesStaleTombstone(t *testing.T) {
+	inviter := startDaemon(t, "milo")
+	fdir := t.TempDir()
+	if err := Init(fdir, "fluff"); err != nil {
+		t.Fatal(err)
+	}
+	fluff := startDaemonAt(t, fdir)
+	// The loopback transport's address is not a valid tailcat address;
+	// pair against the identity-derived one, re-signed so the intro's
+	// signature covers it.
+	fluff.mu.Lock()
+	fluff.meCat.Addr = string(fluff.env.Identity.Public.Addr())
+	fluff.meCat = roster.SignCat(fluff.env.SignPriv, fluff.meCat)
+	fluff.mu.Unlock()
+
+	// The tombstone from fluff's original leave, still carried by
+	// peers that never saw the re-pair.
+	stale := roster.SignTombstone(fluff.env.SignPriv, fluff.Me().Key, time.Now().Add(-time.Hour).Unix())
+
+	c1, c2 := tcpPair(t)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		defer func() { _ = c1.Close() }()
+		inviter.servePairConn(c1)
+	}()
+	go func() {
+		defer wg.Done()
+		defer func() { _ = c2.Close() }()
+		pc := protocol.NewConn(c2)
+		if _, _, err := joinExchange(pc, fluff.Me(), nil); err != nil {
+			t.Errorf("joiner exchange: %v", err)
+		}
+	}()
+	wg.Wait()
+
+	if _, ok := inviter.Roster().Get("fluff"); !ok {
+		t.Fatal("pairing did not add fluff")
+	}
+	// A peer's sync still carries the stale tombstone.
+	inviter.mergeRemote(&protocol.RosterSync{Tombstones: []roster.Tombstone{stale}})
+	if _, ok := inviter.Roster().Get("fluff"); !ok {
+		t.Fatal("a stale tombstone un-paired a freshly re-paired cat")
+	}
+	if inviter.isBlockedKey(fluff.Me().Key) {
+		t.Fatal("the stale tombstone re-blocked the re-paired cat")
+	}
+}

@@ -41,6 +41,10 @@ func entryBytes(c Cat) []byte {
 
 // verifyEntry reports whether c carries a valid signature from its
 // own announced sign key.
+// VerifyEntry reports whether the entry's signature is valid, so the
+// inviter can store a joiner's signed intro verbatim.
+func VerifyEntry(c Cat) bool { return verifyEntry(c) }
+
 func verifyEntry(c Cat) bool {
 	if c.SignKey == "" || len(c.Sig) == 0 {
 		return false
