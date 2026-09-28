@@ -532,7 +532,7 @@ func watchSend(id, file, target string) error {
 			if _, err := call(daemon.Request{Op: "cancel", Target: id}); err != nil {
 				return err
 			}
-			fmt.Printf("\r%-72s\n", fmt.Sprintf("cancelled %s (pending send dropped; an in-flight attempt is aborted)", file))
+			fmt.Printf("\r%-72s\n", fmt.Sprintf("cancelled %s", file))
 			return nil
 		case <-tick.C:
 		}

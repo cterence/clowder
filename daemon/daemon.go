@@ -914,6 +914,18 @@ func (d *Daemon) sendSealed(ctx context.Context, peer roster.Cat, o *protocol.Of
 		return err
 	}
 	defer func() { _ = pc.Close() }()
+	// A cancel aborts at the wire: closing the conn fails this stream
+	// and the peer's, so the receiver drops its partial file instead
+	// of waiting out the stream deadline.
+	watching := make(chan struct{})
+	defer close(watching)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = pc.Close()
+		case <-watching:
+		}
+	}()
 
 	if err := pc.WriteMsg(&protocol.Message{Offer: o}); err != nil {
 		return err

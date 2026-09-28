@@ -5,6 +5,7 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"time"
 
 	"clowder/protocol"
 )
@@ -131,5 +132,61 @@ func TestCancelPendingSend(t *testing.T) {
 	}
 	if len(milo.ob.All()) != 0 {
 		t.Fatal("cancel-all left a send queued")
+	}
+}
+
+// Cancel must abort the in-flight stream at the wire: the sender's
+// connection closes, the receiver's partial file is cleaned up, and
+// the file never lands. The old cancel only dropped the outbox entry
+// and let the stream run on, stranding the receiver with a .tmp file
+// until its stream deadline.
+func TestCancelAbortsInFlightStream(t *testing.T) {
+	dirA, dirB := t.TempDir(), t.TempDir()
+	if err := Init(dirA, "milo"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Init(dirB, "fluff"); err != nil {
+		t.Fatal(err)
+	}
+	sender := runDaemon(t, dirA, &slowTransport{perWrite: 50 * time.Millisecond})
+	receiver := runDaemon(t, dirB, &LocalTransport{})
+	trust(t, sender, receiver)
+	trust(t, receiver, sender)
+
+	big := make([]byte, 1<<20)
+	for i := range big {
+		big[i] = byte(i)
+	}
+	src := writeSource(t, string(big))
+	id, err := sender.Send("fluff", src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Wait until the stream is mid-flight, then cancel it.
+	waitFor(t, func() bool {
+		for _, p := range sender.prog.snapshot() {
+			if p.Done > 64*1024 {
+				return true
+			}
+		}
+		return false
+	}, "the transfer to be streaming")
+	if _, err := sender.Cancel(id); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, func() bool { return len(sender.prog.snapshot()) == 0 },
+		"the cancelled attempt to end promptly")
+	// The receiver must have nothing: no finished file, no .tmp.
+	des, err := os.ReadDir(receiver.InboxDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(des) != 0 {
+		var names []string
+		for _, de := range des {
+			names = append(names, de.Name())
+		}
+		t.Fatalf("receiver kept files after the cancel: %v", names)
 	}
 }

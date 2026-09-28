@@ -36,9 +36,10 @@ func (p Progress) Percent() float64 {
 	return float64(p.Done) / float64(p.Total)
 }
 
-// rateWindow: long enough for a few chunk updates on a slow relay, short
-// enough that a stalled transfer decays to zero promptly.
-const rateWindow = 3 * time.Second
+// rateWindow: wide enough to ride out bursty socket writes (the sender
+// counts bytes handed to the transport, which drains them in bursts),
+// short enough that a genuinely stalled transfer decays to zero.
+const rateWindow = 10 * time.Second
 
 // progressKeeper tracks in-flight transfers.
 type progressKeeper struct {

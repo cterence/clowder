@@ -122,8 +122,8 @@ func TestProgressRate(t *testing.T) {
 		base = base.Add(time.Second)
 		k.add("t1", 256*1024)
 	}
-	// The window is 3s: the oldest sample inside it is at +1s with
-	// 256 KiB done; now (+3s) has 768 KiB done.
+	// The window spans the whole transfer: the oldest sample (start,
+	// 0 done) baselines the rate; now (+3s) has 768 KiB done.
 	got := k.snapshot()[0].Bps
 	want := 256 * 1024.0
 	if got < want*0.9 || got > want*1.1 {
@@ -160,7 +160,7 @@ func TestProgressRateBetweenChunks(t *testing.T) {
 		t.Fatalf("rate = %.0f B/s, want ~%.0f B/s (a poll between chunks must not zero the rate)", got, want)
 	}
 	// Genuinely stalled: nothing arrived for a whole window.
-	base = base.Add(4 * time.Second)
+	base = base.Add(11 * time.Second)
 	if got := k.snapshot()[0].Bps; got != 0 {
 		t.Fatalf("stalled transfer reports %.0f B/s, want 0", got)
 	}
