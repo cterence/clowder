@@ -43,7 +43,7 @@ func (d *Daemon) deliverHeld(ctx context.Context, cat roster.Cat, m store.Meta) 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	pc, err := d.connect(ctx, cat)
+	pc, err := d.connect(ctx, cat, msgTimeout)
 	if err != nil {
 		return err
 	}

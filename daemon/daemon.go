@@ -909,7 +909,7 @@ func (d *Daemon) deliverStream(ctx context.Context, peer roster.Cat, e Entry, ta
 // sendSealed runs one Offer/Answer/stream/Ack exchange, shared by
 // deliveries (track enables status progress).
 func (d *Daemon) sendSealed(ctx context.Context, peer roster.Cat, o *protocol.Offer, src io.Reader, wantAck string, track bool) error {
-	pc, err := d.connect(ctx, peer)
+	pc, err := d.connect(ctx, peer, msgTimeout)
 	if err != nil {
 		return err
 	}
@@ -975,7 +975,7 @@ func (d *Daemon) syncPeers(ctx context.Context) {
 		wg.Add(1)
 		go func(c roster.Cat) {
 			defer wg.Done()
-			pc, err := d.connect(ctx, c)
+			pc, err := d.connect(ctx, c, msgTimeout)
 			if err != nil {
 				return
 			}
@@ -1006,14 +1006,9 @@ func (d *Daemon) rosterMsg() *protocol.RosterSync {
 	return &protocol.RosterSync{Cats: cats, Tombstones: d.ros.Tombstones()}
 }
 
-func (d *Daemon) connect(ctx context.Context, cat roster.Cat) (*protocol.Conn, error) {
-	return d.connectTimeout(ctx, cat, msgTimeout)
-}
-
-// connectTimeout bounds the handshake (and the caller's use of the conn
-// after it) by timeout instead of the default message timeout — leave
-// needs a hard cap per cat, not minutes.
-func (d *Daemon) connectTimeout(ctx context.Context, cat roster.Cat, timeout time.Duration) (*protocol.Conn, error) {
+// connect dials and handshakes, bounding the exchange by timeout —
+// most callers pass msgTimeout; leave needs a hard cap per cat, not minutes.
+func (d *Daemon) connect(ctx context.Context, cat roster.Cat, timeout time.Duration) (*protocol.Conn, error) {
 	conn, err := d.tr.Dial(ctx, cat.Addr)
 	if err != nil {
 		return nil, err

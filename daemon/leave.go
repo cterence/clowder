@@ -81,7 +81,7 @@ func (d *Daemon) Leave(ctx context.Context) (int, error) {
 func (d *Daemon) announceLeave(ctx context.Context, c roster.Cat, msg *protocol.Message) error {
 	ctx, cancel := context.WithTimeout(ctx, leaveTimeout)
 	defer cancel()
-	pc, err := d.connectTimeout(ctx, c, leaveTimeout)
+	pc, err := d.connect(ctx, c, leaveTimeout)
 	if err != nil {
 		return err
 	}
@@ -177,7 +177,7 @@ func (d *Daemon) rebroadcastLeave(t roster.Tombstone) {
 			continue
 		}
 		d.goBg(func() {
-			pc, err := d.connect(context.Background(), c)
+			pc, err := d.connect(context.Background(), c, msgTimeout)
 			if err != nil {
 				return
 			}

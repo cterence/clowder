@@ -12,7 +12,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -78,8 +77,18 @@ type commandDoc struct {
 	group   string
 	summary string // one line, shown on the root help
 	usage   string
-	flags   func() *flag.FlagSet // nil when the command takes no flags
+	flags   *flag.FlagSet // nil when the command takes no flags
 	hints   []string
+}
+
+// doc finds one command's help entry; unknown names get the zero doc.
+func doc(name string) commandDoc {
+	for _, c := range commandDocs {
+		if c.name == name {
+			return c
+		}
+	}
+	return commandDoc{}
 }
 
 const (
@@ -92,18 +101,18 @@ const (
 var commandDocs = []commandDoc{
 	{"init", "identity and lifecycle",
 		"create this cat's identity",
-		"clow init [--name NAME] [--dir DIR] [--inbox DIR]", initFlags,
+		"clow init [--name NAME] [--dir DIR] [--inbox DIR]", initFS,
 		[]string{hintConfigDir, hintInbox}},
 	{"daemon", "identity and lifecycle",
 		"run the mesh daemon",
-		"clow daemon [--port N] [--health ADDR] [--derp-map URL] [--pprof]", daemonFlags,
+		"clow daemon [--port N] [--health ADDR] [--derp-map URL] [--pprof]", daemonFS,
 		[]string{hintConfigDir}},
 	{"leave", "identity and lifecycle",
 		"depart: signed goodbye, every cat drops you",
 		"clow leave", nil, []string{hintDaemon}},
 	{"reset", "identity and lifecycle",
 		"wipe this cat's identity and rosters — a local wipe; depart with clow leave, stop the daemon first",
-		"clow reset [--yes]", resetFlags, []string{hintConfigDir}},
+		"clow reset [--yes]", resetFS, []string{hintConfigDir}},
 	{"invite", "pairing (the only source of trust)",
 		"print an 8-word pairing code (5 min, one use)",
 		"clow invite", nil, []string{hintPair, hintDaemon}},
@@ -112,46 +121,43 @@ var commandDocs = []commandDoc{
 		"clow join <CODE>", nil, []string{hintPair, hintDaemon}},
 	{"send", "transferring files",
 		"send a file; watches progress until it is delivered or a storer holds it",
-		"clow send [--async] <CAT> <FILE>", sendFlags, []string{hintDaemon}},
+		"clow send [--async] <CAT> <FILE>", sendFS, []string{hintDaemon}},
 	{"inbox", "transferring files",
 		"list received files, or move the inbox",
-		"clow inbox [--set DIR]", inboxFlags, []string{hintInbox}},
+		"clow inbox [--set DIR]", inboxFS, []string{hintInbox}},
 	{"cancel", "transferring files",
 		"cancel one pending send by its id, or all",
 		"clow cancel [<ID>]", nil, []string{hintDaemon}},
 	{"storer", "roles",
 		"hold sealed files for others (dropbox: third parties only)",
-		"clow storer [--max SIZE] on|off|dropbox", storerFlags, []string{hintDaemon}},
+		"clow storer [--max SIZE] on|off|dropbox", storerFS, []string{hintDaemon}},
 	{"status", "mesh state",
 		"roster, liveness, transfers, outbox and spool",
-		"clow status [--addresses]", statusFlags, []string{hintDaemon}},
+		"clow status [--addresses]", statusFS, []string{hintDaemon}},
 	{"forget", "mesh state",
 		"drop a cat from the roster for good (the key prefix from 'clow status' disambiguates)",
 		"clow forget <CAT-OR-KEY>", nil, []string{hintDaemon}},
 }
 
 // usageText is the root help, urfave-cli style: command names aligned
-// to the longest name, one-line summaries, no flags and no footers.
+// to cmdWidth, one-line summaries, no flags and no footers.
 func usageText() string {
 	var b strings.Builder
 	b.WriteString("clow - a member of a clowder, an async file-transfer mesh over tailcat\n\n")
 	b.WriteString("usage: clow <command> [args]  (clow <command> -h for flags and details)\n")
-	width := 0
-	for _, c := range commandDocs {
-		if len(c.name) > width {
-			width = len(c.name)
-		}
-	}
 	var last string
 	for _, c := range commandDocs {
 		if c.group != last {
 			fmt.Fprintf(&b, "\n%s:\n", c.group)
 			last = c.group
 		}
-		fmt.Fprintf(&b, "  %-*s  %s\n", width, c.name, c.summary)
+		fmt.Fprintf(&b, "  %-*s  %s\n", cmdWidth, c.name, c.summary)
 	}
 	return b.String()
 }
+
+// cmdWidth is the longest command name; keep it honest when adding one.
+const cmdWidth = len("daemon")
 
 func printUsage() error {
 	fmt.Print(usageText())
@@ -168,7 +174,7 @@ func helpText(cmd string) string {
 		var b strings.Builder
 		fmt.Fprintf(&b, "usage: %s\n\n%s\n", c.usage, c.summary)
 		if c.flags != nil {
-			fs := c.flags()
+			fs := c.flags
 			fs.SetOutput(&b)
 			fmt.Fprint(&b, "\noptions:\n")
 			fs.PrintDefaults()
@@ -195,22 +201,23 @@ func configDir() string {
 	return filepath.Join(base, "clowder")
 }
 
-func initFlags() *flag.FlagSet {
-	fs := flag.NewFlagSet("init", flag.ContinueOnError)
-	fs.String("name", defaultName(), "this cat's declared name")
-	fs.String("dir", configDir(), "config directory")
-	fs.String("inbox", "", "directory received files land in (default: ~/Downloads/clowder)")
-	return fs
-}
+var initFS = flag.NewFlagSet("init", flag.ContinueOnError)
+
+var (
+	initName  = initFS.String("name", defaultName(), "this cat's declared name")
+	initDir   = initFS.String("dir", "", "config directory (default: $CLOWDER_DIR, else the OS user config home)")
+	initInbox = initFS.String("inbox", "", "directory received files land in (default: ~/Downloads/clowder)")
+)
 
 func cmdInit(args []string) error {
-	fs := initFlags()
-	if err := fs.Parse(args); err != nil {
+	if err := initFS.Parse(args); err != nil {
 		return err
 	}
-	name := fs.Lookup("name").Value.String()
-	dir := fs.Lookup("dir").Value.String()
-	inbox := fs.Lookup("inbox").Value.String()
+	name, inbox := *initName, *initInbox
+	dir := *initDir
+	if dir == "" {
+		dir = configDir()
+	}
 	if name == "" {
 		return fmt.Errorf("cat name is required")
 	}
@@ -250,26 +257,21 @@ func defaultName() string {
 	return h
 }
 
-func daemonFlags() *flag.FlagSet {
-	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
-	fs.Uint("port", daemon.DefaultPort, "clowder protocol port")
-	fs.String("name", defaultName(), "cat name, used to auto-initialize a fresh cat")
-	fs.String("health", os.Getenv("CLOWDER_HEALTH_ADDR"), "HTTP health endpoint for container probes, e.g. :8080 (empty disables)")
-	fs.String("derp-map", os.Getenv("CLOWDER_DERPMAP_URL"), "URL of a JSON DERP map to use instead of tailcat's default (for self-hosted relays)")
-	fs.Bool("pprof", os.Getenv("CLOWDER_PPROF") == "1", "serve net/http/pprof on the health endpoint (requires --health)")
-	return fs
-}
+var daemonFS = flag.NewFlagSet("daemon", flag.ContinueOnError)
+
+var (
+	daemonPort   = daemonFS.Uint("port", daemon.DefaultPort, "clowder protocol port")
+	daemonName   = daemonFS.String("name", defaultName(), "cat name, used to auto-initialize a fresh cat")
+	daemonHealth = daemonFS.String("health", os.Getenv("CLOWDER_HEALTH_ADDR"), "HTTP health endpoint for container probes, e.g. :8080 (empty disables)")
+	daemonDerp   = daemonFS.String("derp-map", os.Getenv("CLOWDER_DERPMAP_URL"), "URL of a JSON DERP map to use instead of tailcat's default (for self-hosted relays)")
+	daemonPprof  = daemonFS.Bool("pprof", os.Getenv("CLOWDER_PPROF") == "1", "serve net/http/pprof on the health endpoint (requires --health)")
+)
 
 func cmdDaemon(args []string) error {
-	fs := daemonFlags()
-	if err := fs.Parse(args); err != nil {
+	if err := daemonFS.Parse(args); err != nil {
 		return err
 	}
-	port, _ := strconv.ParseUint(fs.Lookup("port").Value.String(), 10, 16)
-	name := fs.Lookup("name").Value.String()
-	health := fs.Lookup("health").Value.String()
-	derpMap := fs.Lookup("derp-map").Value.String()
-	pprofOn := fs.Lookup("pprof").Value.String() == "true"
+	name, health, derpMap, pprofOn := *daemonName, *daemonHealth, *daemonDerp, *daemonPprof
 	dir := configDir()
 	if _, err := os.Stat(filepath.Join(dir, "identity.json")); os.IsNotExist(err) {
 		// First start in a fresh volume: init before joining.
@@ -284,7 +286,7 @@ func cmdDaemon(args []string) error {
 	}
 	logf := func(format string, args ...any) { log.Printf(format, args...) }
 	cfg := daemon.Config{Dir: dir, Logf: logf, HealthAddr: health, DERPMapURL: derpMap, Pprof: pprofOn}
-	tr := daemon.NewTailcatTransport(env.Identity, env.ClientIdentity, uint16(port), logf)
+	tr := daemon.NewTailcatTransport(env.Identity, env.ClientIdentity, uint16(*daemonPort), logf)
 	tr.DERPMapURL = derpMap
 	d, err := daemon.New(cfg, tr)
 	if err != nil {
@@ -341,7 +343,7 @@ func cmdInvite() error {
 // how it went.
 func cmdJoin(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: clow join <CODE> (the words from `clow invite`)")
+		return fmt.Errorf("usage: %s (the words from `clow invite`)", doc("join").usage)
 	}
 	code := strings.Join(args, " ")
 	sig := make(chan os.Signal, 1)
@@ -375,7 +377,7 @@ func cmdCancel(args []string) error {
 		return err
 	}
 	if fs.NArg() > 1 {
-		return fmt.Errorf("usage: clow cancel [<ID>]")
+		return fmt.Errorf("usage: %s", doc("cancel").usage)
 	}
 	target := ""
 	if fs.NArg() == 1 {
@@ -390,7 +392,7 @@ func cmdForget(args []string) error {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: clow forget <CAT-OR-KEY>")
+		return fmt.Errorf("usage: %s", doc("forget").usage)
 	}
 	return printResp(call(daemon.Request{Op: "forget", Target: fs.Arg(0)}))
 }
@@ -402,18 +404,14 @@ func cmdForget(args []string) error {
 // operation. Departure is `clow leave`, the only thing that can still
 // sign a goodbye; reset refuses to run under a live daemon because it
 // owns the dir.
-func resetFlags() *flag.FlagSet {
-	fs := flag.NewFlagSet("reset", flag.ContinueOnError)
-	fs.Bool("yes", false, "skip the confirmation prompt")
-	return fs
-}
+var resetFS = flag.NewFlagSet("reset", flag.ContinueOnError)
+var resetYes = resetFS.Bool("yes", false, "skip the confirmation prompt")
 
 func cmdReset(args []string) error {
-	fs := resetFlags()
-	if err := fs.Parse(args); err != nil {
+	if err := resetFS.Parse(args); err != nil {
 		return err
 	}
-	yes := fs.Lookup("yes").Value.String() == "true"
+	yes := *resetYes
 	dir := configDir()
 
 	if conn, err := net.Dial("unix", daemon.IPCPath(dir)); err == nil {
@@ -486,26 +484,22 @@ func storerTag(storer, dropbox bool) string {
 	return ""
 }
 
-func sendFlags() *flag.FlagSet {
-	fs := flag.NewFlagSet("send", flag.ContinueOnError)
-	fs.Bool("async", false, "queue the send and return (default: watch until delivered or a storer holds it)")
-	return fs
-}
+var sendFS = flag.NewFlagSet("send", flag.ContinueOnError)
+var sendAsync = sendFS.Bool("async", false, "queue the send and return (default: watch until delivered or a storer holds it)")
 
 func cmdSend(args []string) error {
-	fs := sendFlags()
-	if err := fs.Parse(args); err != nil {
+	if err := sendFS.Parse(args); err != nil {
 		return err
 	}
-	async := fs.Lookup("async").Value.String() == "true"
-	if fs.NArg() != 2 {
-		return fmt.Errorf("usage: clow send [--async] <CAT> <FILE>")
+	async := *sendAsync
+	if sendFS.NArg() != 2 {
+		return fmt.Errorf("usage: %s", doc("send").usage)
 	}
-	path, err := filepath.Abs(fs.Arg(1))
+	path, err := filepath.Abs(sendFS.Arg(1))
 	if err != nil {
 		return err
 	}
-	resp, err := call(daemon.Request{Op: "send", Target: fs.Arg(0), Path: path})
+	resp, err := call(daemon.Request{Op: "send", Target: sendFS.Arg(0), Path: path})
 	if err != nil {
 		return err
 	}
@@ -516,7 +510,7 @@ func cmdSend(args []string) error {
 	if async || resp.ID == "" {
 		return nil
 	}
-	return watchSend(resp.ID, filepath.Base(path), fs.Arg(0))
+	return watchSend(resp.ID, filepath.Base(path), sendFS.Arg(0))
 }
 
 // watchSend follows a queued transfer until it leaves the outbox:
@@ -571,22 +565,18 @@ func watchSend(id, file, target string) error {
 	}
 }
 
-func storerFlags() *flag.FlagSet {
-	fs := flag.NewFlagSet("storer", flag.ContinueOnError)
-	fs.String("max", "", "spool capacity, e.g. 500M or 10G (required to enable)")
-	return fs
-}
+var storerFS = flag.NewFlagSet("storer", flag.ContinueOnError)
+var storerMax = storerFS.String("max", "", "spool capacity, e.g. 500M or 10G (required to enable)")
 
 func cmdStorer(args []string) error {
-	fs := storerFlags()
-	if err := fs.Parse(args); err != nil {
+	if err := storerFS.Parse(args); err != nil {
 		return err
 	}
-	max := fs.Lookup("max").Value.String()
-	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: clow storer [--max SIZE] on|off|dropbox")
+	max := *storerMax
+	if storerFS.NArg() != 1 {
+		return fmt.Errorf("usage: %s", doc("storer").usage)
 	}
-	mode := fs.Arg(0)
+	mode := storerFS.Arg(0)
 	switch mode {
 	case "on", "dropbox":
 		if max == "" {
@@ -594,7 +584,7 @@ func cmdStorer(args []string) error {
 		}
 	case "off":
 	default:
-		return fmt.Errorf("usage: clow storer [--max SIZE] on|off|dropbox")
+		return fmt.Errorf("usage: %s", doc("storer").usage)
 	}
 	return printResp(call(daemon.Request{
 		Op:      "storer",
@@ -604,18 +594,14 @@ func cmdStorer(args []string) error {
 	}))
 }
 
-func statusFlags() *flag.FlagSet {
-	fs := flag.NewFlagSet("status", flag.ContinueOnError)
-	fs.Bool("addresses", false, "also print each cat's tailcat address")
-	return fs
-}
+var statusFS = flag.NewFlagSet("status", flag.ContinueOnError)
+var statusAddresses = statusFS.Bool("addresses", false, "also print each cat's tailcat address")
 
 func cmdStatus(args []string) error {
-	fs := statusFlags()
-	if err := fs.Parse(args); err != nil {
+	if err := statusFS.Parse(args); err != nil {
 		return err
 	}
-	addresses := fs.Lookup("addresses").Value.String() == "true"
+	addresses := *statusAddresses
 	resp, err := call(daemon.Request{Op: "status"})
 	if err != nil {
 		return err
@@ -728,18 +714,14 @@ func inboxDir() string { return daemon.InboxDir(configDir()) }
 
 // cmdInbox lists received files with their full paths, or sets the
 // directory they land in.
-func inboxFlags() *flag.FlagSet {
-	fs := flag.NewFlagSet("inbox", flag.ContinueOnError)
-	fs.String("set", "", "change the directory received files land in")
-	return fs
-}
+var inboxFS = flag.NewFlagSet("inbox", flag.ContinueOnError)
+var inboxSet = inboxFS.String("set", "", "change the directory received files land in")
 
 func cmdInbox(args []string) error {
-	fs := inboxFlags()
-	if err := fs.Parse(args); err != nil {
+	if err := inboxFS.Parse(args); err != nil {
 		return err
 	}
-	set := fs.Lookup("set").Value.String()
+	set := *inboxSet
 	if set != "" {
 		abs, err := filepath.Abs(set)
 		if err != nil {
