@@ -185,8 +185,9 @@ func TestStatusAddressesFlagParses(t *testing.T) {
 	}
 }
 
-// The global usage carries no per-topic footers; each command's -h
-// prints its own usage, description and the hints that concern it.
+// The root usage is urfave-style: command names with one-line
+// summaries, no flags and no footers; each command's -h shows its
+// usage, options and only the hints that concern it.
 func TestCommandHelp(t *testing.T) {
 	u := usageText()
 	for _, hint := range []string{"config dir:", "inbox:", "pairing:", "daemon:"} {
@@ -194,10 +195,19 @@ func TestCommandHelp(t *testing.T) {
 			t.Errorf("global usage still carries the %q footer", hint)
 		}
 	}
+	if strings.Contains(u, "[--") || strings.Contains(u, " --") {
+		t.Error("global usage shows flags; they belong to command help")
+	}
 	for _, c := range commandDocs {
+		if !strings.Contains(u, c.summary) {
+			t.Errorf("global usage lacks %s's summary", c.name)
+		}
 		h := helpText(c.name)
 		if !strings.Contains(h, "usage: "+c.usage) {
 			t.Errorf("help(%s) lacks its usage line", c.name)
+		}
+		if c.flags != nil && !strings.Contains(h, "options:") {
+			t.Errorf("help(%s) lacks its options section", c.name)
 		}
 		for _, want := range c.hints {
 			if !strings.Contains(h, want) {

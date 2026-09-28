@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -73,11 +74,12 @@ func run(args []string) error {
 // list for `clow --help`, helpText renders one command for
 // `clow <command> --help` — with only the hints that concern it.
 type commandDoc struct {
-	name  string
-	group string
-	usage string
-	desc  []string
-	hints []string
+	name    string
+	group   string
+	summary string // one line, shown on the root help
+	usage   string
+	flags   func() *flag.FlagSet // nil when the command takes no flags
+	hints   []string
 }
 
 const (
@@ -89,75 +91,64 @@ const (
 
 var commandDocs = []commandDoc{
 	{"init", "identity and lifecycle",
-		"clow init [--name NAME] [--dir DIR] [--inbox DIR]",
-		[]string{"create this cat's identity"},
+		"create this cat's identity",
+		"clow init [--name NAME] [--dir DIR] [--inbox DIR]", initFlags,
 		[]string{hintConfigDir, hintInbox}},
 	{"daemon", "identity and lifecycle",
-		"clow daemon [--port N] [--health ADDR] [--derp-map URL]",
-		[]string{"run the mesh daemon"},
+		"run the mesh daemon",
+		"clow daemon [--port N] [--health ADDR] [--derp-map URL] [--pprof]", daemonFlags,
 		[]string{hintConfigDir}},
 	{"leave", "identity and lifecycle",
-		"clow leave",
-		[]string{"depart: signed goodbye, every cat drops you"},
-		[]string{hintDaemon}},
+		"depart: signed goodbye, every cat drops you",
+		"clow leave", nil, []string{hintDaemon}},
 	{"reset", "identity and lifecycle",
-		"clow reset [--yes]",
-		[]string{"wipe this cat's identity and rosters — a local wipe;",
-			"depart with clow leave, stop the daemon first"},
-		[]string{hintConfigDir}},
+		"wipe this cat's identity and rosters — a local wipe; depart with clow leave, stop the daemon first",
+		"clow reset [--yes]", resetFlags, []string{hintConfigDir}},
 	{"invite", "pairing (the only source of trust)",
-		"clow invite",
-		[]string{"print an 8-word pairing code (5 min, one use)"},
-		[]string{hintPair, hintDaemon}},
+		"print an 8-word pairing code (5 min, one use)",
+		"clow invite", nil, []string{hintPair, hintDaemon}},
 	{"join", "pairing (the only source of trust)",
-		"clow join <CODE>",
-		[]string{"pair with the cat that invited"},
-		[]string{hintPair, hintDaemon}},
+		"pair with the cat that invited",
+		"clow join <CODE>", nil, []string{hintPair, hintDaemon}},
 	{"send", "transferring files",
-		"clow send [--async] <CAT> <FILE>",
-		[]string{"send a file; watches progress until it is delivered or a storer",
-			"holds it (--async queues and returns; Ctrl-C cancels)"},
-		[]string{hintDaemon}},
+		"send a file; watches progress until it is delivered or a storer holds it",
+		"clow send [--async] <CAT> <FILE>", sendFlags, []string{hintDaemon}},
 	{"inbox", "transferring files",
-		"clow inbox [--set DIR]",
-		[]string{"list received files, or move the inbox"},
-		[]string{hintInbox}},
+		"list received files, or move the inbox",
+		"clow inbox [--set DIR]", inboxFlags, []string{hintInbox}},
 	{"cancel", "transferring files",
-		"clow cancel [<ID>]",
-		[]string{"cancel one pending send by its id, or all"},
-		[]string{hintDaemon}},
+		"cancel one pending send by its id, or all",
+		"clow cancel [<ID>]", nil, []string{hintDaemon}},
 	{"storer", "roles",
-		"clow storer [--max SIZE] on|off|dropbox",
-		[]string{"hold sealed files for others (dropbox: third parties only)"},
-		[]string{hintDaemon}},
+		"hold sealed files for others (dropbox: third parties only)",
+		"clow storer [--max SIZE] on|off|dropbox", storerFlags, []string{hintDaemon}},
 	{"status", "mesh state",
-		"clow status [--addresses]",
-		[]string{"roster, liveness, transfers, outbox and spool",
-			"(--addresses also prints tailcat addresses)"},
-		[]string{hintDaemon}},
+		"roster, liveness, transfers, outbox and spool",
+		"clow status [--addresses]", statusFlags, []string{hintDaemon}},
 	{"forget", "mesh state",
-		"clow forget <CAT-OR-KEY>",
-		[]string{"drop a cat from the roster for good (the key prefix from",
-			"'clow status' disambiguates duplicate names)"},
-		[]string{hintDaemon}},
+		"drop a cat from the roster for good (the key prefix from 'clow status' disambiguates)",
+		"clow forget <CAT-OR-KEY>", nil, []string{hintDaemon}},
 }
 
-// usageText is the whole help, grouped by what you are doing: command
-// line first, description indented under it, no column padding.
+// usageText is the root help, urfave-cli style: command names aligned
+// to the longest name, one-line summaries, no flags and no footers.
 func usageText() string {
 	var b strings.Builder
 	b.WriteString("clow - a member of a clowder, an async file-transfer mesh over tailcat\n\n")
-	b.WriteString("usage: clow <command> [args]  (clow <command> -h for command details)\n")
+	b.WriteString("usage: clow <command> [args]  (clow <command> -h for flags and details)\n")
+	width := 0
+	for _, c := range commandDocs {
+		if len(c.name) > width {
+			width = len(c.name)
+		}
+	}
 	var last string
 	for _, c := range commandDocs {
 		if c.group != last {
 			fmt.Fprintf(&b, "\n%s:\n", c.group)
 			last = c.group
 		}
-		fmt.Fprintf(&b, "  %s\n", c.usage)
-		for _, line := range c.desc {
-			fmt.Fprintf(&b, "    %s\n", line)
-		}
+		fmt.Fprintf(&b, "  %-*s  %s\n", width, c.name, c.summary)
 	}
 	return b.String()
 }
@@ -167,17 +158,20 @@ func printUsage() error {
 	return nil
 }
 
-// helpText is one command's help: usage, description, then the hints
-// that concern it. An unknown command gets the global usage.
+// helpText is one command's help: usage, summary, options, then the
+// hints that concern it. An unknown command gets the global usage.
 func helpText(cmd string) string {
 	for _, c := range commandDocs {
 		if c.name != cmd {
 			continue
 		}
 		var b strings.Builder
-		fmt.Fprintf(&b, "usage: %s\n\n", c.usage)
-		for _, line := range c.desc {
-			fmt.Fprintf(&b, "%s\n", line)
+		fmt.Fprintf(&b, "usage: %s\n\n%s\n", c.usage, c.summary)
+		if c.flags != nil {
+			fs := c.flags()
+			fs.SetOutput(&b)
+			fmt.Fprint(&b, "\noptions:\n")
+			fs.PrintDefaults()
 		}
 		if len(c.hints) > 0 {
 			b.WriteString("\n")
@@ -201,32 +195,40 @@ func configDir() string {
 	return filepath.Join(base, "clowder")
 }
 
-func cmdInit(args []string) error {
+func initFlags() *flag.FlagSet {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
-	name := fs.String("name", defaultName(), "this cat's declared name")
-	dir := fs.String("dir", configDir(), "config directory")
-	inbox := fs.String("inbox", "", "directory received files land in (default: ~/Downloads/clowder)")
+	fs.String("name", defaultName(), "this cat's declared name")
+	fs.String("dir", configDir(), "config directory")
+	fs.String("inbox", "", "directory received files land in (default: ~/Downloads/clowder)")
+	return fs
+}
+
+func cmdInit(args []string) error {
+	fs := initFlags()
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *name == "" {
+	name := fs.Lookup("name").Value.String()
+	dir := fs.Lookup("dir").Value.String()
+	inbox := fs.Lookup("inbox").Value.String()
+	if name == "" {
 		return fmt.Errorf("cat name is required")
 	}
-	if err := daemon.Init(*dir, *name); err != nil {
+	if err := daemon.Init(dir, name); err != nil {
 		return err
 	}
-	if *inbox != "" {
-		abs, err := filepath.Abs(*inbox)
+	if inbox != "" {
+		abs, err := filepath.Abs(inbox)
 		if err != nil {
 			return err
 		}
-		if err := daemon.SetInboxAt(*dir, abs); err != nil {
+		if err := daemon.SetInboxAt(dir, abs); err != nil {
 			return err
 		}
 	}
-	fmt.Printf("initialized cat %s\n", *name)
-	fmt.Printf("config: %s\n", *dir)
-	fmt.Printf("inbox:  %s\n", daemon.InboxDir(*dir))
+	fmt.Printf("initialized cat %s\n", name)
+	fmt.Printf("config: %s\n", dir)
+	fmt.Printf("inbox:  %s\n", daemon.InboxDir(dir))
 	fmt.Println("run `clow daemon` to join the clowder")
 	return nil
 }
@@ -248,32 +250,42 @@ func defaultName() string {
 	return h
 }
 
-func cmdDaemon(args []string) error {
+func daemonFlags() *flag.FlagSet {
 	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
-	port := fs.Uint("port", daemon.DefaultPort, "clowder protocol port")
-	name := fs.String("name", defaultName(), "cat name, used to auto-initialize a fresh cat")
-	health := fs.String("health", os.Getenv("CLOWDER_HEALTH_ADDR"), "HTTP health endpoint for container probes, e.g. :8080 (empty disables)")
-	derpMap := fs.String("derp-map", os.Getenv("CLOWDER_DERPMAP_URL"), "URL of a JSON DERP map to use instead of tailcat's default (for self-hosted relays)")
-	pprofOn := fs.Bool("pprof", os.Getenv("CLOWDER_PPROF") == "1", "serve net/http/pprof on the health endpoint (requires --health)")
+	fs.Uint("port", daemon.DefaultPort, "clowder protocol port")
+	fs.String("name", defaultName(), "cat name, used to auto-initialize a fresh cat")
+	fs.String("health", os.Getenv("CLOWDER_HEALTH_ADDR"), "HTTP health endpoint for container probes, e.g. :8080 (empty disables)")
+	fs.String("derp-map", os.Getenv("CLOWDER_DERPMAP_URL"), "URL of a JSON DERP map to use instead of tailcat's default (for self-hosted relays)")
+	fs.Bool("pprof", os.Getenv("CLOWDER_PPROF") == "1", "serve net/http/pprof on the health endpoint (requires --health)")
+	return fs
+}
+
+func cmdDaemon(args []string) error {
+	fs := daemonFlags()
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	port, _ := strconv.ParseUint(fs.Lookup("port").Value.String(), 10, 16)
+	name := fs.Lookup("name").Value.String()
+	health := fs.Lookup("health").Value.String()
+	derpMap := fs.Lookup("derp-map").Value.String()
+	pprofOn := fs.Lookup("pprof").Value.String() == "true"
 	dir := configDir()
 	if _, err := os.Stat(filepath.Join(dir, "identity.json")); os.IsNotExist(err) {
 		// First start in a fresh volume: init before joining.
-		if err := daemon.Init(dir, *name); err != nil {
+		if err := daemon.Init(dir, name); err != nil {
 			return err
 		}
-		fmt.Printf("initialized new cat %s in %s\n", *name, dir)
+		fmt.Printf("initialized new cat %s in %s\n", name, dir)
 	}
 	env, err := daemon.Open(dir)
 	if err != nil {
 		return err
 	}
 	logf := func(format string, args ...any) { log.Printf(format, args...) }
-	cfg := daemon.Config{Dir: dir, Logf: logf, HealthAddr: *health, DERPMapURL: *derpMap, Pprof: *pprofOn}
-	tr := daemon.NewTailcatTransport(env.Identity, env.ClientIdentity, uint16(*port), logf)
-	tr.DERPMapURL = *derpMap
+	cfg := daemon.Config{Dir: dir, Logf: logf, HealthAddr: health, DERPMapURL: derpMap, Pprof: pprofOn}
+	tr := daemon.NewTailcatTransport(env.Identity, env.ClientIdentity, uint16(port), logf)
+	tr.DERPMapURL = derpMap
 	d, err := daemon.New(cfg, tr)
 	if err != nil {
 		return err
@@ -390,12 +402,18 @@ func cmdForget(args []string) error {
 // operation. Departure is `clow leave`, the only thing that can still
 // sign a goodbye; reset refuses to run under a live daemon because it
 // owns the dir.
-func cmdReset(args []string) error {
+func resetFlags() *flag.FlagSet {
 	fs := flag.NewFlagSet("reset", flag.ContinueOnError)
-	yes := fs.Bool("yes", false, "skip the confirmation prompt")
+	fs.Bool("yes", false, "skip the confirmation prompt")
+	return fs
+}
+
+func cmdReset(args []string) error {
+	fs := resetFlags()
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	yes := fs.Lookup("yes").Value.String() == "true"
 	dir := configDir()
 
 	if conn, err := net.Dial("unix", daemon.IPCPath(dir)); err == nil {
@@ -405,7 +423,7 @@ func cmdReset(args []string) error {
 	if _, err := os.Stat(filepath.Join(dir, "identity.json")); err != nil {
 		return fmt.Errorf("no cat to reset in %s", dir)
 	}
-	if err := confirmReset(dir, *yes); err != nil {
+	if err := confirmReset(dir, yes); err != nil {
 		return err
 	}
 	if err := os.RemoveAll(dir); err != nil {
@@ -468,12 +486,18 @@ func storerTag(storer, dropbox bool) string {
 	return ""
 }
 
-func cmdSend(args []string) error {
+func sendFlags() *flag.FlagSet {
 	fs := flag.NewFlagSet("send", flag.ContinueOnError)
-	async := fs.Bool("async", false, "queue the send and return (default: watch until delivered or a storer holds it)")
+	fs.Bool("async", false, "queue the send and return (default: watch until delivered or a storer holds it)")
+	return fs
+}
+
+func cmdSend(args []string) error {
+	fs := sendFlags()
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	async := fs.Lookup("async").Value.String() == "true"
 	if fs.NArg() != 2 {
 		return fmt.Errorf("usage: clow send [--async] <CAT> <FILE>")
 	}
@@ -489,7 +513,7 @@ func cmdSend(args []string) error {
 		return fmt.Errorf("%s", resp.Error)
 	}
 	fmt.Println(resp.Message)
-	if *async || resp.ID == "" {
+	if async || resp.ID == "" {
 		return nil
 	}
 	return watchSend(resp.ID, filepath.Base(path), fs.Arg(0))
@@ -547,19 +571,25 @@ func watchSend(id, file, target string) error {
 	}
 }
 
-func cmdStorer(args []string) error {
+func storerFlags() *flag.FlagSet {
 	fs := flag.NewFlagSet("storer", flag.ContinueOnError)
-	max := fs.String("max", "", "spool capacity, e.g. 500M or 10G (required to enable)")
+	fs.String("max", "", "spool capacity, e.g. 500M or 10G (required to enable)")
+	return fs
+}
+
+func cmdStorer(args []string) error {
+	fs := storerFlags()
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	max := fs.Lookup("max").Value.String()
 	if fs.NArg() != 1 {
 		return fmt.Errorf("usage: clow storer [--max SIZE] on|off|dropbox")
 	}
 	mode := fs.Arg(0)
 	switch mode {
 	case "on", "dropbox":
-		if *max == "" {
+		if max == "" {
 			return fmt.Errorf("storer %s requires --max (e.g. --max 10G)", mode)
 		}
 	case "off":
@@ -570,16 +600,22 @@ func cmdStorer(args []string) error {
 		Op:      "storer",
 		On:      mode != "off",
 		Dropbox: mode == "dropbox",
-		Max:     *max,
+		Max:     max,
 	}))
 }
 
-func cmdStatus(args []string) error {
+func statusFlags() *flag.FlagSet {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
-	addresses := fs.Bool("addresses", false, "also print each cat's tailcat address")
+	fs.Bool("addresses", false, "also print each cat's tailcat address")
+	return fs
+}
+
+func cmdStatus(args []string) error {
+	fs := statusFlags()
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	addresses := fs.Lookup("addresses").Value.String() == "true"
 	resp, err := call(daemon.Request{Op: "status"})
 	if err != nil {
 		return err
@@ -590,7 +626,7 @@ func cmdStatus(args []string) error {
 
 	if resp.Me != nil {
 		fmt.Printf("me:      %s%s\n", resp.Me.Name, storerTag(resp.Me.Storer, resp.Me.Dropbox))
-		if *addresses {
+		if addresses {
 			fmt.Printf("         address: %s\n", resp.Me.Addr)
 		}
 	}
@@ -612,7 +648,7 @@ func cmdStatus(args []string) error {
 			life = fmt.Sprintf("offline (seen %s ago)", sinceStr(seen))
 		}
 		fmt.Printf("  %-22s %-24s%s\n", name, life, dupTag(c, dups[c.Name] > 1))
-		if *addresses {
+		if addresses {
 			fmt.Printf("    address: %s\n", c.Addr)
 		}
 	}
@@ -692,14 +728,20 @@ func inboxDir() string { return daemon.InboxDir(configDir()) }
 
 // cmdInbox lists received files with their full paths, or sets the
 // directory they land in.
-func cmdInbox(args []string) error {
+func inboxFlags() *flag.FlagSet {
 	fs := flag.NewFlagSet("inbox", flag.ContinueOnError)
-	set := fs.String("set", "", "change the directory received files land in")
+	fs.String("set", "", "change the directory received files land in")
+	return fs
+}
+
+func cmdInbox(args []string) error {
+	fs := inboxFlags()
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *set != "" {
-		abs, err := filepath.Abs(*set)
+	set := fs.Lookup("set").Value.String()
+	if set != "" {
+		abs, err := filepath.Abs(set)
 		if err != nil {
 			return err
 		}
