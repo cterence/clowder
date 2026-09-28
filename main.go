@@ -93,7 +93,7 @@ func doc(name string) commandDoc {
 
 const (
 	hintConfigDir = "config dir: $CLOWDER_DIR, else the OS user config home (~/.config/clowder on Linux,\n             ~/Library/Application Support/clowder on macOS)"
-	hintInbox     = "inbox: ~/Downloads/clowder by default; \"clow inbox --set DIR\" moves it"
+	hintInbox     = "inbox: ~/Downloads/clowder by default, \"clow inbox --set DIR\" moves it"
 	hintPair      = "pairing: trust comes only from invite/join codes, never from exchanging addresses"
 	hintDaemon    = "daemon: this command needs the daemon running (clow daemon)"
 )
@@ -111,7 +111,7 @@ var commandDocs = []commandDoc{
 		"depart: signed goodbye, every cat drops you",
 		"clow leave", nil, []string{hintDaemon}},
 	{"reset", "identity and lifecycle",
-		"wipe this cat's identity and rosters — a local wipe; depart with clow leave, stop the daemon first",
+		"wipe this cat's identity and rosters (a local wipe, not a departure)",
 		"clow reset [--yes]", resetFS, []string{hintConfigDir}},
 	{"invite", "pairing (the only source of trust)",
 		"print an 8-word pairing code (5 min, one use)",
@@ -120,7 +120,7 @@ var commandDocs = []commandDoc{
 		"pair with the cat that invited",
 		"clow join <CODE>", nil, []string{hintPair, hintDaemon}},
 	{"send", "transferring files",
-		"send a file; watches progress until it is delivered or a storer holds it",
+		"send a file, watching progress until it is delivered or a storer holds it",
 		"clow send [--async] <CAT> <FILE>", sendFS, []string{hintDaemon}},
 	{"inbox", "transferring files",
 		"list received files, or move the inbox",
@@ -135,7 +135,7 @@ var commandDocs = []commandDoc{
 		"roster, liveness, transfers, outbox and spool",
 		"clow status [--addresses]", statusFS, []string{hintDaemon}},
 	{"forget", "mesh state",
-		"drop a cat from the roster for good (the key prefix from 'clow status' disambiguates)",
+		"drop a cat from the roster for good",
 		"clow forget <CAT-OR-KEY>", nil, []string{hintDaemon}},
 }
 
@@ -364,7 +364,7 @@ func cmdJoin(args []string) error {
 		}
 		select {
 		case <-sig:
-			fmt.Println("join keeps running in the daemon; re-run the same command to see how it went")
+			fmt.Println("join keeps running in the daemon, re-run the same command to see how it went")
 			return nil
 		case <-time.After(500 * time.Millisecond):
 		}
@@ -416,7 +416,7 @@ func cmdReset(args []string) error {
 
 	if conn, err := net.Dial("unix", daemon.IPCPath(dir)); err == nil {
 		_ = conn.Close()
-		return fmt.Errorf("the daemon is running in %s; stop it before resetting (run \"clow leave\" first if you want the clowder to drop you)", dir)
+		return fmt.Errorf("the daemon is running in %s, stop it before resetting (run \"clow leave\" first if you want the clowder to drop you)", dir)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "identity.json")); err != nil {
 		return fmt.Errorf("no cat to reset in %s", dir)
@@ -427,7 +427,7 @@ func cmdReset(args []string) error {
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("resetting %s: %w", dir, err)
 	}
-	fmt.Printf("cat reset; run \"clow init\" to create a new one\n")
+	fmt.Printf("cat reset, run \"clow init\" to create a new one\n")
 	return nil
 }
 
@@ -770,7 +770,7 @@ func cmdInbox(args []string) error {
 		if err := daemon.SetInboxAt(dir, abs); err != nil {
 			return err
 		}
-		fmt.Printf("daemon not running; inbox set to %s for the next daemon start\n", abs)
+		fmt.Printf("daemon not running, inbox set to %s for the next daemon start\n", abs)
 		return nil
 	}
 	dir := inboxDir()
