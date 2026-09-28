@@ -473,7 +473,7 @@ func (d *Daemon) Send(targetName, path string) (string, error) {
 	}
 	cat, ok := d.ros.Get(targetName)
 	if !ok {
-		return "", fmt.Errorf("unknown cat %q (known: add it first)", targetName)
+		return "", fmt.Errorf("unknown cat %q", targetName)
 	}
 	if d.isBlockedKey(cat.Key) {
 		return "", fmt.Errorf("cat %q is on the local blocklist (forgotten; re-pair to bring it back)", targetName)
