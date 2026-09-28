@@ -350,6 +350,7 @@ func cmdJoin(args []string) error {
 	signal.Notify(sig, os.Interrupt)
 	defer signal.Stop(sig)
 	fmt.Println("pairing (Ctrl-C leaves it running in the daemon)")
+	var last string
 	for {
 		resp, err := call(daemon.Request{Op: "join", Words: code})
 		if err != nil {
@@ -361,6 +362,11 @@ func cmdJoin(args []string) error {
 		if resp.Done {
 			fmt.Println(resp.Message)
 			return nil
+		}
+		// Surface the daemon's progress (which region it is trying).
+		if resp.Message != last {
+			fmt.Println(resp.Message)
+			last = resp.Message
 		}
 		select {
 		case <-sig:
@@ -410,7 +416,7 @@ var resetYes = resetFS.Bool("yes", false, "skip the confirmation prompt")
 // cmdLeave announces the leave through the daemon. Announcing to every
 // cat can take a few seconds, so say so before the blocking call.
 func cmdLeave() error {
-	fmt.Println("leaving the clowder, announcing the goodbye to every cat")
+	fmt.Println("leaving the clowder")
 	return printResp(call(daemon.Request{Op: "leave"}))
 }
 

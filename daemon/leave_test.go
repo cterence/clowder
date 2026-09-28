@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"context"
 	"net"
 	"strings"
 	"sync"
@@ -36,16 +35,12 @@ func TestLeaveDropsLeaverAndRebroadcasts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	n, err := a.Leave(context.Background())
-	if err != nil {
+	if err := a.Leave(); err != nil {
 		t.Fatal(err)
 	}
-	// All-peers sync makes the mesh complete within a tick, so a
-	// announces to both b and c; the isolation of the re-broadcast
-	// path is pinned by TestLeaveReachesOfflinePeerViaSync.
-	if n < 1 {
-		t.Fatalf("leave announced to %d cats, want at least 1", n)
-	}
+	// The announce is background: propagation is pinned by the
+	// waitFors below, the re-broadcast path by
+	// TestLeaveReachesOfflinePeerViaSync.
 
 	waitFor(t, func() bool { _, ok := b.Roster().GetByKey(aKey); return !ok },
 		"b to drop the leaver")
@@ -97,7 +92,7 @@ func TestLeaveReachesOfflinePeerViaSync(t *testing.T) {
 		"c to learn a via b's sync")
 	stopDaemon(c)
 
-	if _, err := a.Leave(context.Background()); err != nil {
+	if err := a.Leave(); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { _, ok := b.Roster().GetByKey(aKey); return !ok },
@@ -117,10 +112,9 @@ func TestLeaveReachesOfflinePeerViaSync(t *testing.T) {
 	}
 }
 
-// Leave announces in parallel with a bounded deadline per cat, so a
-// wedged peer (accepts the dial, never speaks) cannot hold the whole
-// leave hostage for the message timeout — one wedged cat used to cost
-// minutes, N of them N times that.
+// Leave returns instantly: the local wipe is synchronous, the
+// announce is background, so a wedged peer (which the announce will
+// spend its bounded budget on) cannot delay the command.
 func TestLeaveBoundedByWedgedPeer(t *testing.T) {
 	old := leaveTimeout
 	leaveTimeout = 200 * time.Millisecond
@@ -157,15 +151,13 @@ func TestLeaveBoundedByWedgedPeer(t *testing.T) {
 	addCat(t, a, wedged)
 
 	start := time.Now()
-	n, err := a.Leave(context.Background())
-	if err != nil {
+	if err := a.Leave(); err != nil {
 		t.Fatal(err)
 	}
-	if elapsed := time.Since(start); elapsed > 3*time.Second {
-		t.Fatalf("leave took %s with a wedged peer, want it bounded", elapsed)
-	}
-	if n != 0 {
-		t.Fatalf("leave claims to have announced to the wedged peer (n=%d)", n)
+	// The announce is background: a wedged peer (bounded at
+	// leaveTimeout) must not delay the command at all.
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("leave took %s with a wedged peer, want an instant local wipe", elapsed)
 	}
 	if len(a.Roster().All()) != 0 {
 		t.Fatal("leaver kept its roster")

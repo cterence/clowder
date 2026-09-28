@@ -406,6 +406,16 @@ func (d *Daemon) JoinRequest(code string) (msg string, done, ok bool) {
 	return "pairing in progress", false, false
 }
 
+// joinNote updates the current attempt's status for `clow join` to
+// show while it polls; a superseded attempt stays silent.
+func (d *Daemon) joinNote(code, format string, args ...any) {
+	d.joinMu.Lock()
+	if d.joinCode == code && !d.joinDone {
+		d.joinMsg = fmt.Sprintf(format, args...)
+	}
+	d.joinMu.Unlock()
+}
+
 // Join tries the encoded region first, then the sweep (pairRegions); the
 // whole join gives up after joinTimeout.
 func (d *Daemon) Join(ctx context.Context, code string) error {
@@ -431,6 +441,7 @@ func (d *Daemon) Join(ctx context.Context, code string) error {
 		if time.Now().After(deadline) {
 			break
 		}
+		d.joinNote(code, "pairing, trying DERP region %d", reg)
 		peer, err := d.pairOnRegion(ctx, keys, reg, deadline)
 		if err != nil {
 			if errors.Is(err, errPairRefused) || errors.Is(err, errNameTaken) {
