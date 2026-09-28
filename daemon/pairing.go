@@ -442,7 +442,7 @@ func (d *Daemon) Join(ctx context.Context, code string) error {
 			break
 		}
 		d.joinNote(code, "pairing, trying DERP region %d", reg)
-		peer, err := d.pairOnRegion(ctx, keys, reg, deadline)
+		peer, err := d.pairOnRegion(ctx, code, keys, reg, deadline)
 		if err != nil {
 			if errors.Is(err, errPairRefused) || errors.Is(err, errNameTaken) {
 				return fmt.Errorf("daemon: %w", err)
@@ -465,7 +465,8 @@ func (d *Daemon) Join(ctx context.Context, code string) error {
 	return errors.New("daemon: could not reach the inviter before the invite expired (is `clow invite` still active?)")
 }
 
-func (d *Daemon) pairOnRegion(ctx context.Context, keys *pairingKeys, region int, overall time.Time) (*protocol.PairIntro, error) {
+func (d *Daemon) pairOnRegion(ctx context.Context, code string, keys *pairingKeys, region int, overall time.Time) (*protocol.PairIntro, error) {
+	started := time.Now()
 	ci := tailcat.ConnInfo{
 		ServerPublic:      tailcat.NodePublic{NodePublic: keys.inviterPub},
 		ServerDiscoPublic: keys.inviterDisco,
@@ -482,17 +483,24 @@ func (d *Daemon) pairOnRegion(ctx context.Context, keys *pairingKeys, region int
 
 	// A wrong region fails the ping in seconds; the sweep retries the
 	// encoded region.
+	d.joinNote(code, "pairing, pinging region %d", region)
 	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if _, err := c.Ping(pingCtx); err != nil {
 		return nil, err
 	}
+	d.cfg.logf("clowder: pairing ping on region %d took %s", region, time.Since(started).Round(time.Millisecond))
 	dialCtx, cancelDial := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelDial()
+	d.joinNote(code, "pairing, dialing the inviter on region %d", region)
+	dialed := time.Now()
 	conn, err := c.DialTCPPort(dialCtx, DefaultPort)
 	if err != nil {
 		return nil, err
 	}
+	d.cfg.logf("clowder: pairing dial on region %d took %s", region, time.Since(dialed).Round(time.Millisecond))
+	d.joinNote(code, "pairing, exchanging intros")
+	exchanged := time.Now()
 	pc := protocol.NewConn(conn)
 	defer func() { _ = pc.Close() }()
 	// Generous bound: a slow inviter takes tens of seconds; an unconfirmed
@@ -505,6 +513,7 @@ func (d *Daemon) pairOnRegion(ctx context.Context, keys *pairingKeys, region int
 	peer, confirmed, err := joinExchange(pc, d.Me(), func(name, key string) bool {
 		return d.ros.NameTaken(name, key)
 	})
+	d.cfg.logf("clowder: pairing exchange took %s (confirmed=%v)", time.Since(exchanged).Round(time.Millisecond), err == nil && confirmed)
 	if err == nil && !confirmed {
 		d.cfg.logf("clowder: pairing confirmation lost after our ack; committing optimistically")
 	}
