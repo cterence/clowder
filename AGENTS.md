@@ -102,7 +102,12 @@ beats leader election at this scale.
 Ordered by complexity, easiest first; do not reorder without a reason.
 Update this list and the README when something ships.
 
-1. **Android app client** — architecture DECIDED, app scaffolded in
+1. **`clow version`** — a version command with the build's revision
+   wired through (ldflags from the flake, which currently hardcodes
+   `unstable-2026-09-26` in the store path name, so every build looks
+   identical and a stale daemon is indistinguishable from a fresh one —
+   this misled us on the real mesh).
+2. **Android app client** — architecture DECIDED, app scaffolded in
    android/. The daemon is the plain GOOS=android binary shipped as
    libclowder.so (nativeLibraryDir is executable), exec'd by ClowdService,
    a dataSync foreground service with a wake lock and restart-with-backoff
@@ -115,7 +120,7 @@ Update this list and the README when something ships.
    app; then boot-receive, delivery notifications, and the storer-role
    UI. Termux is explicitly NOT a goal (the foreground-service app is
    the answer); on-device builds blocked until Termux ships go >= 1.27.1.
-2. **Multiple clowders** — named clowders: per-clowder roster files,
+3. **Multiple clowders** — named clowders: per-clowder roster files,
    `--clowder` on invite/join/send, Hello carries the clowder name so a
    connection routes to the right roster. One identity, one daemon,
    clowders stay disjoint. Largest refactor; do last, design tombstones
