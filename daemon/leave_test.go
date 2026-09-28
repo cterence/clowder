@@ -182,3 +182,36 @@ func TestLeaveIPCOp(t *testing.T) {
 	waitFor(t, func() bool { _, ok := b.Roster().GetByKey(a.Me().Key); return !ok },
 		"b to drop the leaver")
 }
+
+// Long ops stream step logs to the connected CLI: leave announces its
+// progress instead of blocking silently for its whole budget.
+func TestLeaveStepLogs(t *testing.T) {
+	a := startDaemon(t, "a")
+	b := startDaemon(t, "b")
+	trust(t, a, b)
+	trust(t, b, a)
+	wedged, _ := offlineCat(t)
+	addCat(t, a, wedged)
+
+	var logs []string
+	a.setStepLog(func(line string) { logs = append(logs, line) })
+	defer a.setStepLog(nil)
+	old := leaveTimeout
+	leaveTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { leaveTimeout = old })
+
+	resp := a.handleIPC(Request{Op: "leave"})
+	if !resp.OK {
+		t.Fatalf("leave op: %+v", resp)
+	}
+	joined := strings.Join(logs, "\n")
+	for _, want := range []string{
+		"announcing the goodbye to 2 cat(s)",
+		"told b",
+		"niko did not answer",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("step logs = %q, want %q", joined, want)
+		}
+	}
+}

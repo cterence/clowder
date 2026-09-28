@@ -133,6 +133,13 @@ type Daemon struct {
 	// so these are refused at the protocol level. Persisted in blocked.json.
 	blocked map[string]bool
 
+	// Step logs: long ops (join, leave) stream their progress to the
+	// connected CLI. One stream at a time — the newest IPC connection
+	// carries the steps (concurrent ops are homelab-rare).
+	// ponytail: per-conn streams if concurrent long ops ever matter.
+	stepMu   sync.Mutex
+	stepEmit func(string)
+
 	// In-flight transfer claims: refuse a second concurrent attempt per ID
 	// (retry/sweep races).
 	deliveryClaims *claimSet
@@ -497,6 +504,24 @@ func (d *Daemon) Send(targetName, path string) (string, error) {
 	}
 	d.goBg(func() { d.deliver(e) })
 	return id, nil
+}
+
+// setStepLog installs (or with nil removes) the sink for a long op's
+// progress lines, set by the IPC connection currently being served.
+func (d *Daemon) setStepLog(f func(string)) {
+	d.stepMu.Lock()
+	d.stepEmit = f
+	d.stepMu.Unlock()
+}
+
+// stepf reports one step of a long op to the CLI, when one is watching.
+func (d *Daemon) stepf(format string, args ...any) {
+	d.stepMu.Lock()
+	f := d.stepEmit
+	d.stepMu.Unlock()
+	if f != nil {
+		f(fmt.Sprintf(format, args...))
+	}
 }
 
 func (d *Daemon) goBg(f func()) {

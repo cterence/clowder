@@ -29,6 +29,9 @@ type Request struct {
 type Response struct {
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
+	// Log is a step line streamed while a long op (join, leave) runs;
+	// a response without it is the final one.
+	Log string `json:"log,omitempty"`
 	// ID names the transfer a "send" queued, so the CLI can follow it.
 	ID         string       `json:"id,omitempty"`
 	Message    string       `json:"message,omitempty"`
@@ -76,8 +79,11 @@ func (d *Daemon) serveIPCConn(conn net.Conn) {
 	if err := json.NewDecoder(conn).Decode(&req); err != nil {
 		return
 	}
+	enc := json.NewEncoder(conn)
+	d.setStepLog(func(line string) { _ = enc.Encode(Response{OK: true, Log: line}) })
 	resp := d.handleIPC(req)
-	if err := json.NewEncoder(conn).Encode(resp); err != nil {
+	d.setStepLog(nil)
+	if err := enc.Encode(resp); err != nil {
 		d.cfg.logf("clowder: writing IPC response: %v", err)
 	}
 }
@@ -201,7 +207,32 @@ func (d *Daemon) handleIPC(req Request) Response {
 	}
 }
 
-func CallIPC(path string, req Request) (Response, error) {
+// WatchIPC sends req and feeds every step log to logf as it arrives,
+// returning the final response. Daemons that stream nothing (older
+// builds) behave exactly like CallIPC.
+func WatchIPC(path string, req Request, logf func(string)) (Response, error) {
+	conn, err := dialIPC(path)
+	if err != nil {
+		return Response{}, err
+	}
+	defer func() { _ = conn.Close() }()
+	if err := json.NewEncoder(conn).Encode(req); err != nil {
+		return Response{}, fmt.Errorf("sending request: %w", err)
+	}
+	dec := json.NewDecoder(conn)
+	for {
+		var resp Response
+		if err := dec.Decode(&resp); err != nil {
+			return Response{}, fmt.Errorf("reading response: %w", err)
+		}
+		if resp.Log == "" {
+			return resp, nil
+		}
+		logf(resp.Log)
+	}
+}
+
+func dialIPC(path string) (net.Conn, error) {
 	var conn net.Conn
 	var err error
 	if strings.Contains(path, ":") {
@@ -210,10 +241,18 @@ func CallIPC(path string, req Request) (Response, error) {
 		conn, err = net.Dial("unix", path)
 	}
 	if err != nil {
-		return Response{}, fmt.Errorf("daemon not running (%s): %w", path, err)
+		return nil, fmt.Errorf("daemon not running (%s): %w", path, err)
+	}
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Minute))
+	return conn, nil
+}
+
+func CallIPC(path string, req Request) (Response, error) {
+	conn, err := dialIPC(path)
+	if err != nil {
+		return Response{}, err
 	}
 	defer func() { _ = conn.Close() }()
-	_ = conn.SetDeadline(time.Now().Add(2 * time.Minute))
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
 		return Response{}, fmt.Errorf("sending request: %w", err)
 	}

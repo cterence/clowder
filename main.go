@@ -338,13 +338,29 @@ func cmdInvite() error {
 }
 
 // cmdJoin pairs via the daemon, blocking until the attempt finishes
-// (the daemon logs which phase it is in). A Ctrl-C'd attempt keeps
-// running in the daemon, so the pairing may still land.
+// and streaming its steps (region, ping, dial, exchange). A Ctrl-C'd
+// attempt keeps running in the daemon, so the pairing may still land.
 func cmdJoin(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: clow join <CODE> (the words from `clow invite`)")
 	}
-	return printResp(call(daemon.Request{Op: "join", Words: strings.Join(args, " ")}))
+	return printWatched(daemon.Request{Op: "join", Words: strings.Join(args, " ")})
+}
+
+// printWatched runs a long daemon op, printing its step logs as they
+// arrive, then its final outcome.
+func printWatched(req daemon.Request) error {
+	resp, err := daemon.WatchIPC(daemon.IPCPath(configDir()), req, func(line string) { fmt.Println(line) })
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("%s", resp.Error)
+	}
+	if resp.Message != "" {
+		fmt.Println(resp.Message)
+	}
+	return nil
 }
 
 func cmdCancel(args []string) error {
@@ -386,8 +402,7 @@ var resetYes = resetFS.Bool("yes", false, "skip the confirmation prompt")
 // cmdLeave announces the leave through the daemon. Announcing to every
 // cat can take a few seconds, so say so before the blocking call.
 func cmdLeave() error {
-	fmt.Println("leaving the clowder")
-	return printResp(call(daemon.Request{Op: "leave"}))
+	return printWatched(daemon.Request{Op: "leave"})
 }
 
 func cmdReset(args []string) error {

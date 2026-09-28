@@ -433,6 +433,7 @@ func (d *Daemon) Join(ctx context.Context, code string) error {
 		if time.Now().After(deadline) {
 			break
 		}
+		d.stepf("trying DERP region %d", reg)
 		peer, err := d.pairOnRegion(ctx, keys, reg, deadline)
 		if err != nil {
 			if errors.Is(err, errPairRefused) || errors.Is(err, errNameTaken) {
@@ -474,6 +475,7 @@ func (d *Daemon) pairOnRegion(ctx context.Context, keys *pairingKeys, region int
 
 	// A wrong region fails the ping in seconds; the sweep retries the
 	// encoded region.
+	d.stepf("pinging region %d", region)
 	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if _, err := c.Ping(pingCtx); err != nil {
@@ -483,11 +485,13 @@ func (d *Daemon) pairOnRegion(ctx context.Context, keys *pairingKeys, region int
 	dialCtx, cancelDial := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelDial()
 	dialed := time.Now()
+	d.stepf("dialing the inviter on region %d", region)
 	conn, err := c.DialTCPPort(dialCtx, DefaultPort)
 	if err != nil {
 		return nil, err
 	}
 	d.cfg.logf("clowder: pairing dial on region %d took %s", region, time.Since(dialed).Round(time.Millisecond))
+	d.stepf("exchanging intros")
 	exchanged := time.Now()
 	pc := protocol.NewConn(conn)
 	defer func() { _ = pc.Close() }()

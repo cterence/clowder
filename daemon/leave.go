@@ -45,6 +45,7 @@ func (d *Daemon) Leave() (int, error) {
 
 	announced := 0
 	if len(all) > 0 {
+		d.stepf("announcing the goodbye to %d cat(s)", len(all))
 		announced = d.announceLeave(all, msg)
 	}
 
@@ -90,9 +91,11 @@ func (d *Daemon) announceLeave(all []roster.Cat, msg *protocol.Message) int {
 		go func() {
 			defer wg.Done()
 			if err := d.announceLeaveTo(c, msg); err != nil {
+				d.stepf("%s did not answer", c.Name)
 				d.cfg.logf("clowder: announcing leave to %s failed: %v", c.Name, err)
 				return
 			}
+			d.stepf("told %s", c.Name)
 			announced.Add(1)
 		}()
 	}
