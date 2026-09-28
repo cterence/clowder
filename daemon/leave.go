@@ -7,6 +7,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,18 +17,18 @@ import (
 )
 
 // Bounds each leave announce (dial, handshake and write). A live cat
-// answers within the transport's 10s ping bound plus a few round trips,
-// so 15s only cuts paths that are effectively dead — and a cat that
-// misses the direct announce still gets the tombstone via re-broadcast
-// or roster sync.
-var leaveTimeout = 15 * time.Second
+// answers the liveness ping in well under a second, so 3s only cuts
+// congested or dead paths — and a cat that misses the direct announce
+// still gets the tombstone via re-broadcast or roster sync.
+var leaveTimeout = 3 * time.Second
 
-// Leave departs: it wipes the clowder locally (roster, outbox, spool,
-// blocklist — tombstones included; the identity is kept) and returns
-// at once, announcing the signed goodbye in the background. One
-// reached cat is enough: recipients re-broadcast, and the tombstone
-// rides roster sync to cats that were offline through the leave.
-func (d *Daemon) Leave() error {
+// Leave announces the signed goodbye to every cat in parallel, waits,
+// and cuts any cat that does not answer within leaveTimeout, then wipes
+// the clowder locally (roster, outbox, spool, blocklist — tombstones
+// included; the identity is kept). When there were cats to tell and
+// none answered, it fails WITHOUT wiping, so the command can simply be
+// retried.
+func (d *Daemon) Leave() (int, error) {
 	all := d.ros.All()
 	t := roster.SignTombstone(d.env.SignPriv, d.Me().Key, time.Now().Unix())
 	msg := &protocol.Message{Leave: &protocol.LeaveMsg{
@@ -37,11 +38,19 @@ func (d *Daemon) Leave() error {
 		Sig:     t.Sig,
 	}}
 
+	announced := 0
+	if len(all) > 0 {
+		announced = d.announceLeave(all, msg)
+		if announced == 0 {
+			return 0, fmt.Errorf("no cat answered within %s, the leave was not announced, your roster is unchanged, try again", leaveTimeout)
+		}
+	}
+
 	d.mu.Lock()
 	d.left = true
 	d.mu.Unlock()
 	if err := d.ros.Reset(); err != nil {
-		return err
+		return announced, err
 	}
 	if _, err := d.ob.Clear(); err != nil {
 		d.cfg.logf("clowder: clearing outbox on leave: %v", err)
@@ -59,14 +68,13 @@ func (d *Daemon) Leave() error {
 		d.cfg.logf("clowder: clearing blocklist on leave: %v", err)
 	}
 
-	d.goBg(func() { d.announceLeave(all, msg) })
-	d.cfg.logf("clowder: left the clowder, announcing the goodbye in the background; identity kept")
-	return nil
+	d.cfg.logf("clowder: left the clowder (told %d cat(s)); identity kept", announced)
+	return announced, nil
 }
 
 // announceLeave delivers the goodbye to every cat in parallel, each
-// bounded by leaveTimeout, and logs how many were reached.
-func (d *Daemon) announceLeave(all []roster.Cat, msg *protocol.Message) {
+// bounded by leaveTimeout, and reports how many were reached.
+func (d *Daemon) announceLeave(all []roster.Cat, msg *protocol.Message) int {
 	var announced atomic.Int32
 	var wg sync.WaitGroup
 	for _, c := range all {
@@ -81,7 +89,7 @@ func (d *Daemon) announceLeave(all []roster.Cat, msg *protocol.Message) {
 		}()
 	}
 	wg.Wait()
-	d.cfg.logf("clowder: leave announced to %d cat(s)", announced.Load())
+	return int(announced.Load())
 }
 
 // announceLeaveTo handshakes with one cat and delivers the leave, the

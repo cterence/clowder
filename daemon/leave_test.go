@@ -35,12 +35,16 @@ func TestLeaveDropsLeaverAndRebroadcasts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := a.Leave(); err != nil {
+	n, err := a.Leave()
+	if err != nil {
 		t.Fatal(err)
 	}
-	// The announce is background: propagation is pinned by the
-	// waitFors below, the re-broadcast path by
-	// TestLeaveReachesOfflinePeerViaSync.
+	// The announce is synchronous: both b and c answer, and a cat cut
+	// at the 3s deadline (none here) would still learn via the
+	// re-broadcast path pinned by TestLeaveReachesOfflinePeerViaSync.
+	if n < 1 {
+		t.Fatalf("leave announced to %d cats, want at least 1", n)
+	}
 
 	waitFor(t, func() bool { _, ok := b.Roster().GetByKey(aKey); return !ok },
 		"b to drop the leaver")
@@ -92,7 +96,7 @@ func TestLeaveReachesOfflinePeerViaSync(t *testing.T) {
 		"c to learn a via b's sync")
 	stopDaemon(c)
 
-	if err := a.Leave(); err != nil {
+	if _, err := a.Leave(); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { _, ok := b.Roster().GetByKey(aKey); return !ok },
@@ -112,9 +116,9 @@ func TestLeaveReachesOfflinePeerViaSync(t *testing.T) {
 	}
 }
 
-// Leave returns instantly: the local wipe is synchronous, the
-// announce is background, so a wedged peer (which the announce will
-// spend its bounded budget on) cannot delay the command.
+// Leave waits only for cats that answer: a wedged peer is cut at
+// leaveTimeout, and when nobody at all answers the leave fails and
+// wipes nothing, so the command can simply be retried.
 func TestLeaveBoundedByWedgedPeer(t *testing.T) {
 	old := leaveTimeout
 	leaveTimeout = 200 * time.Millisecond
@@ -151,16 +155,16 @@ func TestLeaveBoundedByWedgedPeer(t *testing.T) {
 	addCat(t, a, wedged)
 
 	start := time.Now()
-	if err := a.Leave(); err != nil {
-		t.Fatal(err)
+	if _, err := a.Leave(); err == nil {
+		t.Fatal("leave with only a wedged peer succeeded, want failure (nobody heard it)")
 	}
-	// The announce is background: a wedged peer (bounded at
-	// leaveTimeout) must not delay the command at all.
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Fatalf("leave took %s with a wedged peer, want an instant local wipe", elapsed)
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("leave took %s with a wedged peer, want it cut at leaveTimeout", elapsed)
 	}
-	if len(a.Roster().All()) != 0 {
-		t.Fatal("leaver kept its roster")
+	// Nobody heard the leave: local state must be untouched so the
+	// command can be retried.
+	if _, ok := a.Roster().GetByKey(wedged.Key); !ok {
+		t.Fatal("leave wiped the roster even though nobody heard it")
 	}
 }
 

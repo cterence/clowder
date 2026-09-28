@@ -139,10 +139,11 @@ func (d *Daemon) handleIPC(req Request) Response {
 		return okMsg(fmt.Sprintf("inbox now %s", d.InboxDir()))
 
 	case "leave":
-		if err := d.Leave(); err != nil {
+		n, err := d.Leave()
+		if err != nil {
 			return fail(err)
 		}
-		return okMsg("left the clowder, announcing the goodbye in the background. identity kept, pair again with clow invite or clow join")
+		return okMsg(fmt.Sprintf("left the clowder, told %d cat(s). identity kept, pair again with clow invite or clow join", n))
 
 	case "forget":
 		if req.Target == "" {

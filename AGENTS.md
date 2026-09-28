@@ -136,12 +136,13 @@ One line each; the pinning tests carry the details.
   RosterSync.Liveness wire field); both pairing sides fan out a sync
   round the moment the joiner commits, so online cats have the full
   roster without waiting a tick (TestPairingFansOutRosterSync); leave
-  returns instantly — the signed goodbye is announced in the
-  background, in parallel with a 15s per-cat bound, and one reached cat
-  suffices (recipients re-broadcast, the tombstone rides sync to
-  sleepers); join shows its daemon-side progress (which DERP region it
-  is trying); `clow forget` accepts the short key prefix `clow status`
-  displays (TestForgetKeyPrefixMatchesStatusDisplay).
+  is synchronous and fast: the goodbye is announced in parallel, any
+  cat that does not answer within 3s is cut, and the command fails
+  without wiping when nobody heard it, so it can be retried; one
+  reached cat suffices (recipients re-broadcast, the tombstone rides
+  sync to sleepers); join shows its daemon-side progress (which DERP
+  region it is trying); `clow forget` accepts the short key prefix
+  `clow status` displays (TestForgetKeyPrefixMatchesStatusDisplay).
 - **Signed leave + roster entry signing**: Ed25519 keys derived from the
   node key seed sign every roster entry (merge requires the pinned sign
   key's signature, so no cat can inject or override entries via LWW) and
