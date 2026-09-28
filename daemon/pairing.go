@@ -251,6 +251,7 @@ func (d *Daemon) stopInvite() {
 }
 
 func (d *Daemon) servePairConn(conn net.Conn) {
+	started := time.Now()
 	pc := protocol.NewConn(conn)
 	defer func() { _ = pc.Close() }()
 	unregister := d.trackConn(pc)
@@ -262,6 +263,7 @@ func (d *Daemon) servePairConn(conn net.Conn) {
 		d.cfg.logf("clowder: pairing exchange failed: %v", err)
 		return
 	}
+	d.cfg.logf("clowder: pairing intro exchange with %s took %s", peer.Name, time.Since(started).Round(time.Millisecond))
 	// Refuse a name another key already claims (name lookups would be a coin
 	// flip); the refusal is explicit and the invite stays active.
 	claim, err := roster.NewCat(peer.Name, peer.Addr, time.Now().Unix())
@@ -282,6 +284,7 @@ func (d *Daemon) servePairConn(conn net.Conn) {
 		d.cfg.logf("clowder: pairing with %s not confirmed, invite stays active: %v", peer.Name, err)
 		return
 	}
+	d.cfg.logf("clowder: pairing ack from %s took %s", peer.Name, time.Since(started).Round(time.Millisecond))
 	if err := d.addPeerCat(peer); err != nil {
 		d.cfg.logf("clowder: adding paired cat: %v", err)
 		return
@@ -289,7 +292,7 @@ func (d *Daemon) servePairConn(conn net.Conn) {
 	// Fan out now: pairing is rare, and online cats should have the
 	// full roster without waiting a poll tick.
 	d.goBg(func() { d.syncPeers(context.Background()) })
-	d.cfg.logf("clowder: paired with %s", peer.Name)
+	d.cfg.logf("clowder: paired with %s, exchange took %s", peer.Name, time.Since(started).Round(time.Millisecond))
 	// Confirm the commit. A lost confirmation does not un-pair: the joiner
 	// commits optimistically once its ack was written.
 	if err := pc.WriteMsg(&protocol.Message{PairAck: &protocol.PairAck{}}); err != nil {
