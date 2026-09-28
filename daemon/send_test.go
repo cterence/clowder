@@ -1,13 +1,18 @@
 package daemon
 
 import (
+	"bytes"
 	"errors"
+	"net"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"clowder/envelope"
 	"clowder/protocol"
+	"clowder/roster"
 )
 
 // TestSendRefusesDuplicateName pins the ambiguous-name refusal: a name
@@ -189,4 +194,73 @@ func TestCancelAbortsInFlightStream(t *testing.T) {
 		}
 		t.Fatalf("receiver kept files after the cancel: %v", names)
 	}
+}
+
+// A receive stream that goes silent mid-flight (sender cancelled,
+// killed, or partitioned without closing) must abort at the idle
+// deadline and wipe its partial file, not sit out the whole stream
+// timeout holding a .tmp.
+func TestReceiveIdleStreamIsCleanedUp(t *testing.T) {
+	old := streamIdle
+	streamIdle = 300 * time.Millisecond
+	t.Cleanup(func() { streamIdle = old })
+
+	milo := startDaemon(t, "milo") // supplies the sender identity
+	receiver := startDaemon(t, "fluff")
+	trust(t, receiver, milo)
+
+	conn, err := net.Dial("tcp", receiver.Me().Addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	pc := protocol.NewConn(conn)
+	if err := pc.WriteMsg(&protocol.Message{Hello: &protocol.Hello{
+		Name: "milo", Key: milo.Me().Key, ClientKey: milo.Me().ClientKey,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pc.ReadMsg(); err != nil {
+		t.Fatal(err)
+	}
+	if err := pc.WriteMsg(&protocol.Message{Roster: &protocol.RosterSync{Cats: []roster.Cat{}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pc.ReadMsg(); err != nil {
+		t.Fatal(err)
+	}
+
+	data := strings.Repeat("nap", 4096)
+	var sealed bytes.Buffer
+	targetPub, err := parseKey(receiver.Me().Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := envelope.SealStream(milo.env.Identity.Private, targetPub, &sealed, strings.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	o := &protocol.Offer{
+		ID:         strings.Repeat("a", 32),
+		FileName:   "nap.txt",
+		Size:       int64(sealed.Len()),
+		From:       "milo",
+		TargetKey:  receiver.Me().Key,
+		TargetName: "fluff",
+	}
+	if err := pc.WriteMsg(&protocol.Message{Offer: o}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := pc.ReadMsg()
+	if err != nil || m.Answer == nil || !m.Answer.OK {
+		t.Fatalf("receiver refused the offer: %v %+v", err, m)
+	}
+	// Half the sealed stream, then silence: the connection stays open.
+	if _, err := conn.Write(sealed.Bytes()[:sealed.Len()/2]); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, func() bool {
+		des, err := os.ReadDir(receiver.InboxDir())
+		return err == nil && len(des) == 0
+	}, "the idle stream's partial file to be wiped")
 }

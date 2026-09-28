@@ -42,6 +42,28 @@ const (
 	recvReserve = 64 << 20
 )
 
+// streamIdle bounds a receive by inactivity, not total duration: a
+// sender that goes silent mid-stream (cancelled, killed, partitioned
+// without closing) must not hold the receiver's partial file for the
+// whole stream timeout. Overridable in tests.
+var streamIdle = 2 * time.Minute
+
+// idleReader pushes the connection deadline out on every read: a live
+// stream is never cut, a silent one dies at streamIdle and its partial
+// file is wiped.
+type idleReader struct {
+	pc *protocol.Conn
+	r  io.Reader
+}
+
+func (i idleReader) Read(p []byte) (int, error) {
+	n, err := i.r.Read(p)
+	if n > 0 {
+		_ = i.pc.SetDeadline(time.Now().Add(streamIdle))
+	}
+	return n, err
+}
+
 // Dir is required; created by Init, or holding compatible state.
 type Config struct {
 	Dir  string
@@ -623,7 +645,7 @@ func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *proto
 	if err := pc.Answer(o.ID, true, ""); err != nil {
 		return false
 	}
-	_ = pc.SetDeadline(time.Now().Add(streamTimeout))
+	_ = pc.SetDeadline(time.Now().Add(streamIdle))
 	d.prog.start(Progress{
 		ID:        o.ID,
 		FileName:  o.FileName,
@@ -633,7 +655,7 @@ func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *proto
 		Started:   time.Now().Unix(),
 	})
 	defer d.prog.end(o.ID)
-	plainSize, err := d.saveIncoming(o, countingReader{k: d.prog, id: o.ID, r: io.LimitReader(pc.Reader(), o.Size)}, d.env.Identity.Private)
+	plainSize, err := d.saveIncoming(o, countingReader{k: d.prog, id: o.ID, r: io.LimitReader(idleReader{pc: pc, r: pc.Reader()}, o.Size)}, d.env.Identity.Private)
 	if err != nil {
 		d.cfg.logf("clowder: receiving %s from %s: %v", o.FileName, from.Name, err)
 		return false
@@ -662,7 +684,7 @@ func (d *Daemon) receiveAsStorer(pc *protocol.Conn, o *protocol.Offer) bool {
 		return pc.Answer(o.ID, false, reason) == nil
 	}
 	defer d.releaseReserve(o.Size)
-	_ = pc.SetDeadline(time.Now().Add(streamTimeout))
+	_ = pc.SetDeadline(time.Now().Add(streamIdle))
 	meta := store.Meta{
 		ID:         o.ID,
 		FileName:   o.FileName,
@@ -675,7 +697,7 @@ func (d *Daemon) receiveAsStorer(pc *protocol.Conn, o *protocol.Offer) bool {
 	if err := pc.Answer(o.ID, true, ""); err != nil {
 		return false
 	}
-	if err := d.spool.Put(meta, io.LimitReader(pc.Reader(), o.Size)); err != nil {
+	if err := d.spool.Put(meta, io.LimitReader(idleReader{pc: pc, r: pc.Reader()}, o.Size)); err != nil {
 		d.cfg.logf("clowder: spooling %s for %s: %v", o.FileName, o.TargetName, err)
 		return false
 	}
