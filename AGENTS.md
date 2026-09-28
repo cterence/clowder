@@ -142,8 +142,10 @@ One line each; the pinning tests carry the details.
   mesh) is cut, and the command fails loudly but still wipes locally
   — a cat nobody trusts back must not become unleaveable; one reached
   cat suffices (recipients re-broadcast, the tombstone rides sync to
-  sleepers); join shows its daemon-side progress (which DERP region
-  it is trying), the joiner acks the roster push and the inviter
+  sleepers); join is a synchronous blocking RPC (a Ctrl-C'd attempt
+  keeps running in the daemon, so a retry with the now-dead code
+  reports a misleading timeout — re-pair with a fresh invite if that
+  happens), the joiner acks the roster push and the inviter
   closes the pairing channel on that ack so the confirmation cannot
   be black-holed by a close with bytes in flight (the old 45s "slow
   inviter" join, TestPairingHoldsChannelForJoinerAck), and the joiner

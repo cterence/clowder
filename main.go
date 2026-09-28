@@ -337,44 +337,14 @@ func cmdInvite() error {
 	return printResp(call(daemon.Request{Op: "invite"}))
 }
 
-// cmdJoin pairs via the daemon and follows its daemon-side state:
-// the attempt keeps running when the CLI exits, so Ctrl-C (or a lost
-// terminal) never half-kills a pairing — re-run the same command to see
-// how it went.
+// cmdJoin pairs via the daemon, blocking until the attempt finishes
+// (the daemon logs which phase it is in). A Ctrl-C'd attempt keeps
+// running in the daemon, so the pairing may still land.
 func cmdJoin(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: %s (the words from `clow invite`)", doc("join").usage)
+		return fmt.Errorf("usage: clow join <CODE> (the words from `clow invite`)")
 	}
-	code := strings.Join(args, " ")
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt)
-	defer signal.Stop(sig)
-	fmt.Println("pairing (Ctrl-C leaves it running in the daemon)")
-	var last string
-	for {
-		resp, err := call(daemon.Request{Op: "join", Words: code})
-		if err != nil {
-			return err
-		}
-		if !resp.OK {
-			return fmt.Errorf("%s", resp.Error)
-		}
-		if resp.Done {
-			fmt.Println(resp.Message)
-			return nil
-		}
-		// Surface the daemon's progress (which region it is trying).
-		if resp.Message != last {
-			fmt.Println(resp.Message)
-			last = resp.Message
-		}
-		select {
-		case <-sig:
-			fmt.Println("join keeps running in the daemon, re-run the same command to see how it went")
-			return nil
-		case <-time.After(500 * time.Millisecond):
-		}
-	}
+	return printResp(call(daemon.Request{Op: "join", Words: strings.Join(args, " ")}))
 }
 
 func cmdCancel(args []string) error {

@@ -394,40 +394,6 @@ var errNameTaken = errors.New("name already claimed by another cat")
 
 const joinTimeout = 2 * time.Minute
 
-// JoinRequest starts (or reports) the daemon-side join for code: the CLI
-// never blocks on the pairing, and a retry with the same code reports
-// the attempt's outcome instead of re-dialing a dead invite. A new code
-// supersedes the previous attempt.
-func (d *Daemon) JoinRequest(code string) (msg string, done, ok bool) {
-	d.joinMu.Lock()
-	if d.joinCode == code {
-		msg, done, ok = d.joinMsg, d.joinDone, d.joinOK
-		d.joinMu.Unlock()
-		return msg, done, ok
-	}
-	d.joinCode = code
-	d.joinMsg = "pairing in progress"
-	d.joinDone = false
-	d.joinOK = false
-	d.joinMu.Unlock()
-
-	d.goBg(func() {
-		err := d.Join(context.Background(), code)
-		d.joinMu.Lock()
-		// A newer attempt superseded this one: its result is the answer.
-		if d.joinCode == code {
-			if err != nil {
-				d.joinMsg, d.joinOK = err.Error(), false
-			} else {
-				d.joinMsg, d.joinOK = "paired", true
-			}
-			d.joinDone = true
-		}
-		d.joinMu.Unlock()
-	})
-	return "pairing in progress", false, false
-}
-
 // stampMeCat re-signs the local entry with a fresh Updated, so the
 // entry a cat presents at pairing is newer than any tombstone from an
 // earlier leave — without it, a leave-then-repair sequence loses to
@@ -437,16 +403,6 @@ func (d *Daemon) stampMeCat() {
 	d.meCat.Updated = time.Now().Unix()
 	d.meCat = roster.SignCat(d.env.SignPriv, d.meCat)
 	d.mu.Unlock()
-}
-
-// joinNote updates the current attempt's status for `clow join` to
-// show while it polls; a superseded attempt stays silent.
-func (d *Daemon) joinNote(code, format string, args ...any) {
-	d.joinMu.Lock()
-	if d.joinCode == code && !d.joinDone {
-		d.joinMsg = fmt.Sprintf(format, args...)
-	}
-	d.joinMu.Unlock()
 }
 
 // Join tries the encoded region first, then the sweep (pairRegions); the
@@ -477,8 +433,7 @@ func (d *Daemon) Join(ctx context.Context, code string) error {
 		if time.Now().After(deadline) {
 			break
 		}
-		d.joinNote(code, "pairing, trying DERP region %d", reg)
-		peer, err := d.pairOnRegion(ctx, code, keys, reg, deadline)
+		peer, err := d.pairOnRegion(ctx, keys, reg, deadline)
 		if err != nil {
 			if errors.Is(err, errPairRefused) || errors.Is(err, errNameTaken) {
 				return fmt.Errorf("daemon: %w", err)
@@ -501,7 +456,7 @@ func (d *Daemon) Join(ctx context.Context, code string) error {
 	return errors.New("daemon: could not reach the inviter before the invite expired (is `clow invite` still active?)")
 }
 
-func (d *Daemon) pairOnRegion(ctx context.Context, code string, keys *pairingKeys, region int, overall time.Time) (*protocol.PairIntro, error) {
+func (d *Daemon) pairOnRegion(ctx context.Context, keys *pairingKeys, region int, overall time.Time) (*protocol.PairIntro, error) {
 	started := time.Now()
 	ci := tailcat.ConnInfo{
 		ServerPublic:      tailcat.NodePublic{NodePublic: keys.inviterPub},
@@ -519,7 +474,6 @@ func (d *Daemon) pairOnRegion(ctx context.Context, code string, keys *pairingKey
 
 	// A wrong region fails the ping in seconds; the sweep retries the
 	// encoded region.
-	d.joinNote(code, "pairing, pinging region %d", region)
 	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if _, err := c.Ping(pingCtx); err != nil {
@@ -528,14 +482,12 @@ func (d *Daemon) pairOnRegion(ctx context.Context, code string, keys *pairingKey
 	d.cfg.logf("clowder: pairing ping on region %d took %s", region, time.Since(started).Round(time.Millisecond))
 	dialCtx, cancelDial := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelDial()
-	d.joinNote(code, "pairing, dialing the inviter on region %d", region)
 	dialed := time.Now()
 	conn, err := c.DialTCPPort(dialCtx, DefaultPort)
 	if err != nil {
 		return nil, err
 	}
 	d.cfg.logf("clowder: pairing dial on region %d took %s", region, time.Since(dialed).Round(time.Millisecond))
-	d.joinNote(code, "pairing, exchanging intros")
 	exchanged := time.Now()
 	pc := protocol.NewConn(conn)
 	defer func() { _ = pc.Close() }()

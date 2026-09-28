@@ -375,28 +375,18 @@ func TestPairingRefusesDuplicateName(t *testing.T) {
 	}
 }
 
-// Join is daemon-side state, not a blocking RPC: the first call starts
-// the attempt and returns immediately, and a retry with the same code
-// reports the attempt's outcome instead of re-dialing a dead invite.
-func TestJoinReportsDaemonState(t *testing.T) {
+// The join op is a blocking RPC: it replies with the pairing's
+// outcome, not an in-progress status.
+func TestJoinIPCSynchronous(t *testing.T) {
 	a := startDaemon(t, "a")
-	// Unparseable on purpose: the attempt fails at the code check, so the
-	// loopback suite stays off the DERP network.
-	const code = "not a pairing code"
-
-	resp := a.handleIPC(Request{Op: "join", Words: code})
-	if !resp.OK || resp.Done {
-		t.Fatalf("first join op = %+v, want in-progress (ok, not done)", resp)
+	// Unparseable on purpose: the attempt fails at the code check, so
+	// the loopback suite stays off the DERP network.
+	resp := a.handleIPC(Request{Op: "join", Words: "not a pairing code"})
+	if resp.OK {
+		t.Fatalf("join with a bad code = %+v, want failure", resp)
 	}
-	waitFor(t, func() bool { return a.handleIPC(Request{Op: "join", Words: code}).Done },
-		"join attempt to finish")
-
-	retry := a.handleIPC(Request{Op: "join", Words: code})
-	if retry.OK || !retry.Done {
-		t.Fatalf("retry with the dead code = %+v, want the recorded failure", retry)
-	}
-	if !strings.Contains(retry.Error, "pairing code") {
-		t.Fatalf("retry error = %q, want the recorded attempt error", retry.Error)
+	if !strings.Contains(resp.Error, "pairing code") {
+		t.Fatalf("join error = %q, want the code check to speak up", resp.Error)
 	}
 }
 

@@ -117,8 +117,9 @@ func TestLeaveReachesOfflinePeerViaSync(t *testing.T) {
 }
 
 // Leave waits only for cats that answer: a wedged peer is cut at
-// leaveTimeout, and when nobody at all answers the leave fails and
-// wipes nothing, so the command can simply be retried.
+// leaveTimeout, and when nobody at all answers the command fails loudly
+// but still wipes locally — a cat nobody trusts back must not become
+// unleaveable.
 func TestLeaveBoundedByWedgedPeer(t *testing.T) {
 	old := leaveTimeout
 	leaveTimeout = 200 * time.Millisecond
@@ -161,10 +162,10 @@ func TestLeaveBoundedByWedgedPeer(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 3*time.Second {
 		t.Fatalf("leave took %s with a wedged peer, want it cut at leaveTimeout", elapsed)
 	}
-	// Nobody heard the leave: local state must be untouched so the
-	// command can be retried.
-	if _, ok := a.Roster().GetByKey(wedged.Key); !ok {
-		t.Fatal("leave wiped the roster even though nobody heard it")
+	// Nobody heard the leave: the command failed, but the wipe still
+	// happened — the cat must not get stuck unable to leave.
+	if len(a.Roster().All()) != 0 {
+		t.Fatal("leave refused to wipe the roster when nobody heard it")
 	}
 }
 

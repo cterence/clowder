@@ -116,20 +116,16 @@ type Daemon struct {
 	pairLn   net.Listener
 	pairDone chan struct{}
 
-	// Daemon-side join state, so the CLI never blocks on a pairing and
-	// a retry with the same code reports instead of re-dialing.
-	joinMu   sync.Mutex
-	joinCode string
-	joinMsg  string
-	joinDone bool
-	joinOK   bool
-
 	// Unix time each key was last seen on a successful connection, either direction.
 	liveness map[string]int64
 
 	// Set by Leave: refuse roster syncs (peers would repopulate the clowder
 	// we left). A new pairing clears it.
 	left bool
+	// rosterMu serializes roster merges against the leave wipe: a sync
+	// that checked left before the leave must not land its merge after
+	// the wipe.
+	rosterMu sync.Mutex
 	// Newest leave time processed per leaver, so each leave is handled once.
 	leaveSeen map[string]int64
 
@@ -1085,8 +1081,12 @@ func (d *Daemon) handshakeClient(pc *protocol.Conn, timeout time.Duration) error
 }
 
 // mergeRemote applies tombstones first (a leave must land before the stale
-// entries riding with it), then cats. A cat that has left merges nothing.
+// entries riding with it), then cats. A cat that has left merges nothing;
+// the check and the merge run under rosterMu so a leave cannot wipe the
+// roster between them and get its leaver repopulated.
 func (d *Daemon) mergeRemote(sync *protocol.RosterSync) {
+	d.rosterMu.Lock()
+	defer d.rosterMu.Unlock()
 	if d.hasLeft() {
 		return
 	}

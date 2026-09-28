@@ -16,18 +16,23 @@ import (
 	"clowder/roster"
 )
 
-// Bounds each leave announce (dial, handshake and write). A live cat
-// answers the liveness ping in well under a second, so 3s only cuts
-// congested or dead paths — and a cat that misses the direct announce
-// still gets the tombstone via re-broadcast or roster sync.
-var leaveTimeout = 3 * time.Second
+// Bounds each leave announce (dial, handshake and write). Matches the
+// transport's own liveness bound: a COLD dial to an online cat pays
+// netcheck + relay attach before the ping, measured at ~3s on the real
+// mesh, and a warm one answers in well under a second — so anything
+// still silent at 10s is effectively dead. A cat that misses the
+// direct announce still gets the tombstone via re-broadcast or roster
+// sync.
+var leaveTimeout = 10 * time.Second
 
 // Leave announces the signed goodbye to every cat in parallel, waits,
 // and cuts any cat that does not answer within leaveTimeout, then wipes
 // the clowder locally (roster, outbox, spool, blocklist — tombstones
 // included; the identity is kept). When there were cats to tell and
-// none answered, it fails WITHOUT wiping, so the command can simply be
-// retried.
+// none answered, it wipes anyway but returns an error: the local wipe
+// must not be held hostage by cats that cannot hear the goodbye
+// (offline, or no longer trusting us), or a forgotten cat could never
+// leave at all.
 func (d *Daemon) Leave() (int, error) {
 	all := d.ros.All()
 	t := roster.SignTombstone(d.env.SignPriv, d.Me().Key, time.Now().Unix())
@@ -41,15 +46,15 @@ func (d *Daemon) Leave() (int, error) {
 	announced := 0
 	if len(all) > 0 {
 		announced = d.announceLeave(all, msg)
-		if announced == 0 {
-			return 0, fmt.Errorf("no cat answered within %s, the leave was not announced, your roster is unchanged, try again", leaveTimeout)
-		}
 	}
 
 	d.mu.Lock()
 	d.left = true
 	d.mu.Unlock()
-	if err := d.ros.Reset(); err != nil {
+	d.rosterMu.Lock()
+	err := d.ros.Reset()
+	d.rosterMu.Unlock()
+	if err != nil {
 		return announced, err
 	}
 	if _, err := d.ob.Clear(); err != nil {
@@ -62,13 +67,16 @@ func (d *Daemon) Leave() (int, error) {
 	}
 	d.mu.Lock()
 	d.blocked = map[string]bool{}
-	err := saveBlocked(d.cfg.Dir, d.blocked)
+	err = saveBlocked(d.cfg.Dir, d.blocked)
 	d.mu.Unlock()
 	if err != nil {
 		d.cfg.logf("clowder: clearing blocklist on leave: %v", err)
 	}
 
 	d.cfg.logf("clowder: left the clowder (told %d cat(s)); identity kept", announced)
+	if len(all) > 0 && announced == 0 {
+		return announced, fmt.Errorf("left the clowder locally, but no cat answered within %s and the goodbye was not announced: cats that still remember you will keep you until re-paired", leaveTimeout)
+	}
 	return announced, nil
 }
 
