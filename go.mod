@@ -4,7 +4,6 @@ go 1.27.1
 
 require (
 	github.com/fxamacker/cbor/v2 v2.9.0
-	github.com/google/go-cmp v0.7.0
 	github.com/tailscale/tailcat v0.7.1-0.20260925200634-aa8950c58f81
 	go4.org/mem v0.0.0-20240501181205-ae6ca9944745
 	golang.org/x/crypto v0.57.0
@@ -25,6 +24,7 @@ require (
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/google/btree v1.1.3 // indirect
+	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/hdevalence/ed25519consensus v0.2.0 // indirect
 	github.com/jsimonetti/rtnetlink v1.4.1 // indirect
 	github.com/klauspost/compress v1.19.1 // indirect
