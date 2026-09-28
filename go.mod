@@ -4,7 +4,6 @@ go 1.27.1
 
 require (
 	github.com/fxamacker/cbor/v2 v2.9.0
-	github.com/google/go-cmp v0.7.0
 	github.com/tailscale/tailcat v0.7.1-0.20260925200634-aa8950c58f81
 	go4.org/mem v0.0.0-20240501181205-ae6ca9944745
 	golang.org/x/crypto v0.57.0

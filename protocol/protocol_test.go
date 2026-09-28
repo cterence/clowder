@@ -4,9 +4,8 @@ import (
 	"bytes"
 	"io"
 	"net"
+	"reflect"
 	"testing"
-
-	"github.com/google/go-cmp/cmp"
 
 	"clowder/roster"
 )
@@ -45,8 +44,8 @@ func TestMessageRoundTrip(t *testing.T) {
 		if got.Kind() != m.Kind() {
 			t.Fatalf("round trip kind = %s, want %s", got.Kind(), m.Kind())
 		}
-		if diff := cmp.Diff(m, got); diff != "" {
-			t.Fatalf("round trip mismatch (-want +got):\n%s", diff)
+		if !reflect.DeepEqual(m, got) {
+			t.Fatalf("round trip mismatch:\nwant %+v\ngot  %+v", m, got)
 		}
 	}
 }

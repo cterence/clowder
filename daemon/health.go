@@ -18,16 +18,9 @@ func healthHandler(pprof bool) http.Handler {
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "ok\n")
 	}
+	// "{$}" matches only the root path; anything else 404s.
+	mux.HandleFunc("/{$}", ok)
 	mux.HandleFunc("/healthz", ok)
-	// "/" is a catch-all pattern in ServeMux, so the root handler
-	// answers only "/" exactly; other paths 404.
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			http.NotFound(w, r)
-			return
-		}
-		ok(w, r)
-	})
 	if pprof {
 		mux.HandleFunc("/debug/pprof/", netpprof.Index)
 		mux.HandleFunc("/debug/pprof/cmdline", netpprof.Cmdline)
