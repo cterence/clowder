@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"clowder/daemon"
 )
@@ -218,5 +219,24 @@ func TestCommandHelp(t *testing.T) {
 	// An unknown command's help falls back to the global usage.
 	if helpText("purr") != u {
 		t.Error("help(unknown) does not fall back to the global usage")
+	}
+}
+
+// "ago" times are coarse: seconds, minutes, hours, days — 53h19m35s
+// is precision nobody asked for.
+func TestSinceStrCoarse(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		dt   time.Duration
+		want string
+	}{
+		{45 * time.Second, "45s"},
+		{12 * time.Minute, "12m"},
+		{3*time.Hour + 17*time.Minute, "3h"},
+		{53*time.Hour + 19*time.Minute, "2d"},
+	} {
+		if got := sinceStr(now.Add(-tc.dt).Unix()); got != tc.want {
+			t.Errorf("sinceStr(-%s) = %q, want %q", tc.dt, got, tc.want)
+		}
 	}
 }

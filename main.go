@@ -707,8 +707,20 @@ func rateSuffix(p daemon.Progress) string {
 	return fmt.Sprintf(" at %s/s", daemon.HumanBytes(int64(p.Bps)))
 }
 
+// sinceStr renders a coarse "how long ago": seconds, then minutes,
+// hours, days — sub-unit precision is noise in a roster listing.
 func sinceStr(unix int64) string {
-	return time.Since(time.Unix(unix, 0)).Round(time.Second).String()
+	d := time.Since(time.Unix(unix, 0))
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
 }
 
 func inboxDir() string { return daemon.InboxDir(configDir()) }
