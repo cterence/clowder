@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
 
+# One run per ref: a burst of pushes cancels the superseded runs
+# instead of billing all of them (macOS runners are pricey).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest

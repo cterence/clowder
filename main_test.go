@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"clowder/daemon"
+	"clowder/roster"
 )
 
 func TestInitCreatesIdentity(t *testing.T) {
@@ -238,5 +239,32 @@ func TestSinceStrCoarse(t *testing.T) {
 		if got := sinceStr(now.Add(-tc.dt).Unix()); got != tc.want {
 			t.Errorf("sinceStr(-%s) = %q, want %q", tc.dt, got, tc.want)
 		}
+	}
+}
+
+// Status lists online cats above offline ones, name order within
+// each group — the mesh's live members should not be buried under
+// the sleepers.
+func TestOnlineFirst(t *testing.T) {
+	now := time.Now().Unix()
+	cats := []roster.Cat{
+		{Name: "abbey", Key: "k-abbey"}, {Name: "fluff", Key: "k-fluff"},
+		{Name: "milo", Key: "k-milo"}, {Name: "niko", Key: "k-niko"},
+		{Name: "sable", Key: "k-sable"},
+	}
+	liveness := map[string]int64{
+		"k-fluff": now - 30,     // online
+		"k-sable": now - 30,     // online
+		"k-milo":  now - 3*3600, // offline: seen
+		// abbey, niko: never seen
+	}
+	got := onlineFirst(cats, liveness)
+	want := []string{"fluff", "sable", "abbey", "milo", "niko"}
+	var names []string
+	for _, c := range got {
+		names = append(names, c.Name)
+	}
+	if strings.Join(names, ",") != strings.Join(want, ",") {
+		t.Errorf("onlineFirst = %v, want %v", names, want)
 	}
 }

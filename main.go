@@ -452,7 +452,7 @@ func dupTag(c roster.Cat, dup bool) string {
 	if !dup {
 		return ""
 	}
-	return fmt.Sprintf(" [duplicate name · key %s · updated %s ago]", shortKey(c.Key), sinceStr(c.Updated))
+	return fmt.Sprintf(" [duplicate name, key %s, updated %s ago]", shortKey(c.Key), sinceStr(c.Updated))
 }
 
 // shortKey renders the identifying prefix of a node key ("nodekey:...").
@@ -622,14 +622,14 @@ func cmdStatus(args []string) error {
 
 	dups := nameCounts(resp.Cats)
 	fmt.Printf("\nclowder: %d %s\n", len(resp.Cats), plural(len(resp.Cats), "cat", "cats"))
-	for _, c := range resp.Cats {
+	for _, c := range onlineFirst(resp.Cats, resp.Liveness) {
 		name := c.Name + storerTag(c.Storer, c.Dropbox)
 		seen, ok := resp.Liveness[c.Key]
 		var life string
 		switch {
 		case !ok:
 			life = "offline (never seen)"
-		case time.Since(time.Unix(seen, 0)) < 2*time.Minute:
+		case time.Since(time.Unix(seen, 0)) < onlineWithin:
 			life = fmt.Sprintf("online (seen %s ago)", sinceStr(seen))
 		default:
 			life = fmt.Sprintf("offline (seen %s ago)", sinceStr(seen))
@@ -705,6 +705,26 @@ func rateSuffix(p daemon.Progress) string {
 		return ""
 	}
 	return fmt.Sprintf(" at %s/s", daemon.HumanBytes(int64(p.Bps)))
+}
+
+// onlineWithin is how recently a cat must have been seen to count as
+// online, shared by the status line and its ordering.
+const onlineWithin = 2 * time.Minute
+
+// onlineFirst orders cats for `clow status`: online above offline,
+// name order within each group. The input is name-sorted, so the
+// stable partition keeps names ordered.
+func onlineFirst(cats []roster.Cat, liveness map[string]int64) []roster.Cat {
+	online := make([]roster.Cat, 0, len(cats))
+	offline := make([]roster.Cat, 0, len(cats))
+	for _, c := range cats {
+		if time.Since(time.Unix(liveness[c.Key], 0)) < onlineWithin {
+			online = append(online, c)
+		} else {
+			offline = append(offline, c)
+		}
+	}
+	return append(online, offline...)
 }
 
 // sinceStr renders a coarse "how long ago": seconds, then minutes,
