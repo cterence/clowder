@@ -53,7 +53,7 @@ func run(args []string) error {
 	case "forget":
 		return cmdForget(rest)
 	case "leave":
-		return printResp(call(daemon.Request{Op: "leave"}))
+		return cmdLeave()
 	case "reset":
 		return cmdReset(rest)
 	case "send":
@@ -406,6 +406,13 @@ func cmdForget(args []string) error {
 // owns the dir.
 var resetFS = flag.NewFlagSet("reset", flag.ContinueOnError)
 var resetYes = resetFS.Bool("yes", false, "skip the confirmation prompt")
+
+// cmdLeave announces the leave through the daemon. Announcing to every
+// cat can take a few seconds, so say so before the blocking call.
+func cmdLeave() error {
+	fmt.Println("leaving the clowder, announcing the goodbye to every cat")
+	return printResp(call(daemon.Request{Op: "leave"}))
+}
 
 func cmdReset(args []string) error {
 	if err := resetFS.Parse(args); err != nil {

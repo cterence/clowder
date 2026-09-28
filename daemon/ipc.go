@@ -143,7 +143,7 @@ func (d *Daemon) handleIPC(req Request) Response {
 		if err != nil {
 			return fail(err)
 		}
-		return okMsg(fmt.Sprintf("left the clowder (told %d cat(s)); your identity is kept — pair again with clow invite or clow join", n))
+		return okMsg(fmt.Sprintf("left the clowder, told %d cat(s). your identity is kept, pair again with clow invite or clow join", n))
 
 	case "forget":
 		if req.Target == "" {
