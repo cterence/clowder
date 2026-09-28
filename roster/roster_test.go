@@ -218,3 +218,20 @@ func TestGetByPrefix(t *testing.T) {
 		}
 	}
 }
+
+// All must be deterministic: duplicate names (identity is the key)
+// need a tie-break, or the status listing shuffles between runs.
+func TestAllDeterministicWithDuplicateNames(t *testing.T) {
+	r := New()
+	for _, k := range []string{"nodekey:4218c02d", "nodekey:13922016"} {
+		if err := r.Add(Cat{Name: "zenfone", Key: k, Updated: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 50; i++ {
+		all := r.All()
+		if all[0].Key != "nodekey:13922016" {
+			t.Fatalf("All() = [%s, %s], want the smaller key first (run %d)", all[0].Key, all[1].Key, i)
+		}
+	}
+}

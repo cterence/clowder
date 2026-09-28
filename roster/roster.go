@@ -347,10 +347,18 @@ func (r *Roster) RemoveKey(key string) (Cat, bool) {
 	return c, true
 }
 
+// sortCats orders by name, keys breaking ties: duplicate names must
+// land in one deterministic order, or listings shuffle between runs.
 func sortCats(cats []Cat) {
 	slices.SortFunc(cats, func(a, b Cat) int {
 		if a.Name != b.Name {
 			if a.Name < b.Name {
+				return -1
+			}
+			return 1
+		}
+		if a.Key != b.Key {
+			if a.Key < b.Key {
 				return -1
 			}
 			return 1
