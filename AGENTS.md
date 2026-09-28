@@ -21,7 +21,9 @@ tailcat. Go module `clowder`, depends on upstream
 
 Conventions: commits go through the prek pre-commit hooks; tests are
 table-driven and loopback-only (no DERP/network in CI); every transfer
-path must be exercised by a daemon integration test.
+path must be exercised by a daemon integration test. Pushes to origin
+main are pre-authorized: commit and push without asking (force-push
+still needs explicit approval).
 
 ## Layout
 
