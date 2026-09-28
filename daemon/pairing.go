@@ -163,6 +163,9 @@ func fetchDERPMap(ctx context.Context, url string) (*tailcfg.DERPMap, error) {
 // identity. A new invite replaces an older one; expiry is pairTTL or the
 // first successful join.
 func (d *Daemon) StartInvite(ctx context.Context) (string, error) {
+	// The entry we present must outrank any tombstone from an earlier
+	// leave of ours, or the re-pair cannot stick against it.
+	d.stampMeCat()
 	words, err := generatePairWords()
 	if err != nil {
 		return "", err
@@ -425,6 +428,17 @@ func (d *Daemon) JoinRequest(code string) (msg string, done, ok bool) {
 	return "pairing in progress", false, false
 }
 
+// stampMeCat re-signs the local entry with a fresh Updated, so the
+// entry a cat presents at pairing is newer than any tombstone from an
+// earlier leave — without it, a leave-then-repair sequence loses to
+// the leave's tombstone and the re-pair is silently un-paired.
+func (d *Daemon) stampMeCat() {
+	d.mu.Lock()
+	d.meCat.Updated = time.Now().Unix()
+	d.meCat = roster.SignCat(d.env.SignPriv, d.meCat)
+	d.mu.Unlock()
+}
+
 // joinNote updates the current attempt's status for `clow join` to
 // show while it polls; a superseded attempt stays silent.
 func (d *Daemon) joinNote(code, format string, args ...any) {
@@ -438,6 +452,9 @@ func (d *Daemon) joinNote(code, format string, args ...any) {
 // Join tries the encoded region first, then the sweep (pairRegions); the
 // whole join gives up after joinTimeout.
 func (d *Daemon) Join(ctx context.Context, code string) error {
+	// The entry we present must outrank any tombstone from an earlier
+	// leave of ours, or the re-pair cannot stick against it.
+	d.stampMeCat()
 	words, region, err := parsePairCode(code)
 	if err != nil {
 		return err

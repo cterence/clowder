@@ -587,9 +587,13 @@ func TestRepairSurvivesStaleTombstone(t *testing.T) {
 	fluff.meCat = roster.SignCat(fluff.env.SignPriv, fluff.meCat)
 	fluff.mu.Unlock()
 
-	// The tombstone from fluff's original leave, still carried by
-	// peers that never saw the re-pair.
-	stale := roster.SignTombstone(fluff.env.SignPriv, fluff.Me().Key, time.Now().Add(-time.Hour).Unix())
+	// The tombstone from fluff's leave AFTER its daemon started —
+	// newer than the entry it was created with, as a real
+	// leave-then-repair sequence produces — still carried by peers
+	// that never saw the re-pair.
+	stale := roster.SignTombstone(fluff.env.SignPriv, fluff.Me().Key, time.Now().Add(-2*time.Second).Unix())
+	// Join stamps the entry it presents: it must outrank the tombstone.
+	fluff.stampMeCat()
 
 	c1, c2 := tcpPair(t)
 	var wg sync.WaitGroup
