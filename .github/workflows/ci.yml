@@ -67,10 +67,16 @@ jobs:
       - run: CLOWDER_INTEGRATION=1 go test . -run TestIntegrationEndToEnd -count=1 -timeout 10m -v
 
   # Build the flake's package and push the results to the niks3 binary
-  # cache (S3-backed, GitHub-OIDC auth, no secrets). Fork PRs build but
-  # do not push: GitHub withholds id-token from them.
+  # cache (S3-backed, GitHub-OIDC auth, no secrets). One leg per system:
+  # ubuntu builds x86_64-linux, the arm64 mac runner builds
+  # aarch64-darwin. Fork PRs build but do not push: GitHub withholds
+  # id-token from them.
   nix:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     permissions:
       id-token: write
