@@ -3,6 +3,17 @@
 Findings from running the mesh for real. One line each, newest first;
 promote to pending work in AGENTS.md when a fix is agreed.
 
+- 2026-09-28: reproduced the ~50s join on the real mesh with both
+  daemons instrumented: the inviter finished the exchange in 18ms, the
+  joiner never received the confirmation — the inviter closed the
+  pairing channel with bytes still in the tunnel, black-holing them.
+  Fixed: the joiner acks the roster push and the inviter closes on
+  that ack. Joins now take ~3.5s (the cold relay ping dominates).
+- 2026-09-28: a re-pair was silently un-paired seconds later by the
+  stale tombstone from the cat's original leave (the ghost-state root
+  cause: pairing entries were unsigned and un-stamped, so the rejoin
+  refusal could not apply). Fixed: the joiner signs and stamps its
+  intro, and the entry outranks any earlier tombstone.
 - 2026-09-28: android inbox tab showed "nothing received yet" despite
   files arriving — the MediaStore query matched `Download/clowder`
   without the trailing slash MediaProvider stores; fixed in the same
