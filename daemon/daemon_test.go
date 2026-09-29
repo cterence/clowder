@@ -68,6 +68,11 @@ func (t *LocalTransport) Dial(ctx context.Context, addr string) (net.Conn, error
 
 func (t *LocalTransport) Allow(key.NodePublic) {}
 
+// Loopback is a direct path by construction.
+func (t *LocalTransport) Probe(ctx context.Context, addr string) (string, error) {
+	return "direct", nil
+}
+
 func (t *LocalTransport) PeerKey(net.Addr) (key.NodePublic, bool) {
 	return key.NodePublic{}, false
 }

@@ -185,6 +185,24 @@ func (t *TailcatTransport) Dial(ctx context.Context, addr string) (net.Conn, err
 	return &dialConn{Conn: conn, t: t, addr: addr}, nil
 }
 
+// Probe classifies how a dial would reach addr: the disco pong's
+// endpoint when a direct UDP path answered, else the DERP relay that
+// carried it.
+func (t *TailcatTransport) Probe(ctx context.Context, addr string) (string, error) {
+	r, err := t.clientFor(addr).DiscoPing(ctx)
+	if err != nil {
+		return "", err
+	}
+	if r.Endpoint != "" {
+		return "direct", nil
+	}
+	code := r.DERPRegionCode
+	if code == "" {
+		code = fmt.Sprint(r.DERPRegionID)
+	}
+	return "derp " + code, nil
+}
+
 // dialConn decrements its address's in-flight count on Close, so the
 // idle sweeper never closes a client an open stream is using.
 type dialConn struct {

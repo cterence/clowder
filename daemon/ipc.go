@@ -193,11 +193,11 @@ func (d *Daemon) handleIPC(req Request) Response {
 		}
 		pingCtx, cancel := context.WithTimeout(ctx, pingTimeout)
 		defer cancel()
-		c, rtt, err := d.Ping(pingCtx, req.Target)
+		msg, err := d.Ping(pingCtx, req.Target)
 		if err != nil {
 			return fail(err)
 		}
-		return okMsg(fmt.Sprintf("%s online, round trip %s", c.Name, rtt.Round(time.Millisecond)))
+		return okMsg(msg)
 
 	case "status":
 		me := d.Me()

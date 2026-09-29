@@ -18,6 +18,10 @@ type Transport interface {
 	MyAddr() string
 	// Dial connects to the cat at addr.
 	Dial(ctx context.Context, addr string) (net.Conn, error)
+	// Probe reports how a dial would reach addr: "direct" when a UDP
+	// path answered, else the DERP relay that carried the probe
+	// (e.g. "derp fra").
+	Probe(ctx context.Context, addr string) (string, error)
 	// Allow permits a peer node key to connect. Idempotent; must work
 	// both before and after Listen.
 	Allow(peer key.NodePublic)

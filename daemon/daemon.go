@@ -237,15 +237,9 @@ func (d *Daemon) Spool() *store.Spool { return d.spool }
 // `clow status` displays, or a name — when two cats claim one name, only
 // the key is unambiguous.
 func (d *Daemon) Forget(who string) (roster.Cat, bool) {
-	c, ok := d.ros.GetByKey(who)
+	c, ok := d.resolveCat(who)
 	if !ok {
-		c, ok = d.ros.Get(who)
-	}
-	if !ok {
-		c, ok = d.ros.GetByPrefix(who)
-		if !ok {
-			return roster.Cat{}, false
-		}
+		return roster.Cat{}, false
 	}
 	c, ok = d.ros.RemoveKey(c.Key)
 	if !ok {
@@ -264,10 +258,9 @@ func (d *Daemon) Forget(who string) (roster.Cat, bool) {
 	return c, true
 }
 
-// Ping proves a cat is reachable with the same authenticated handshake
-// a sync uses — a real round trip, so liveness is marked both ways —
-// and reports how long it took.
-func (d *Daemon) Ping(ctx context.Context, who string) (roster.Cat, time.Duration, error) {
+// resolveCat finds a cat by name, full key, or the short key prefix
+// status displays — the handle forget and ping accept.
+func (d *Daemon) resolveCat(who string) (roster.Cat, bool) {
 	c, ok := d.ros.GetByKey(who)
 	if !ok {
 		c, ok = d.ros.Get(who)
@@ -275,16 +268,34 @@ func (d *Daemon) Ping(ctx context.Context, who string) (roster.Cat, time.Duratio
 	if !ok {
 		c, ok = d.ros.GetByPrefix(who)
 	}
+	return c, ok
+}
+
+// Ping proves a cat is reachable with the same authenticated handshake
+// a sync uses — a real round trip, so liveness is marked both ways —
+// and reports how long it took and whether the path is direct or via
+// a DERP relay.
+func (d *Daemon) Ping(ctx context.Context, who string) (string, error) {
+	c, ok := d.resolveCat(who)
 	if !ok {
-		return roster.Cat{}, 0, fmt.Errorf("no cat named %s", who)
+		return "", fmt.Errorf("no cat named %s", who)
 	}
 	start := time.Now()
 	pc, err := d.connect(ctx, c, pingTimeout)
 	if err != nil {
-		return c, 0, err
+		return "", err
 	}
-	_ = pc.Close()
-	return c, time.Since(start), nil
+	defer func() { _ = pc.Close() }()
+	// The handshake's dial probe triggers direct-path discovery, so
+	// classifying after it reports the path the next dial would take.
+	// A probe that fails anyway is not a ping failure: the handshake
+	// already proved the cat online.
+	path, _ := d.tr.Probe(ctx, c.Addr)
+	msg := fmt.Sprintf("%s online, round trip %s", c.Name, time.Since(start).Round(time.Millisecond))
+	if path != "" {
+		msg += ", " + path
+	}
+	return msg, nil
 }
 
 // Cancel drops pending sends: one by transfer ID, or all when id is

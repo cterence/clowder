@@ -23,6 +23,10 @@ func TestPing(t *testing.T) {
 	if !strings.Contains(resp.Message, "fluff") {
 		t.Fatalf("ping message = %q, want it to name the cat", resp.Message)
 	}
+	// The loopback transport is a direct path, so the message must say so.
+	if !strings.Contains(resp.Message, "direct") {
+		t.Fatalf("ping message = %q, want it to name the path", resp.Message)
+	}
 	if milo.SeenAt(fluff.Me().Key) == 0 {
 		t.Fatal("ping did not mark fluff live on milo")
 	}
