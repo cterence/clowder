@@ -109,10 +109,7 @@ func (r *Roster) ApplyTombstones(ts []Tombstone) []Tombstone {
 		}
 		old, hasEntry := r.cats[t.Key]
 		if hasEntry {
-			// ponytail: a pre-signing entry (no pinned sign key)
-			// accepts any validly signed tombstone — an upgrade
-			// seam; drop it once no pre-signing roster survives.
-			if old.SignKey != "" && old.SignKey != t.SignKey {
+			if old.SignKey != t.SignKey {
 				continue // foreign sign key: not the leaver's
 			}
 			if old.SignKey == t.SignKey && old.Updated > t.Time && verifyEntry(old) {

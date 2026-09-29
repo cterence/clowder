@@ -147,9 +147,10 @@ type Daemon struct {
 	blocked map[string]bool
 
 	// Step logs: long ops (join, leave) stream their progress to the
-	// connected CLI. One stream at a time — the newest IPC connection
-	// carries the steps (concurrent ops are homelab-rare).
-	// ponytail: per-conn streams if concurrent long ops ever matter.
+	// connected CLI. One step stream at a time, carried by the newest
+	// IPC connection — decided behavior: every connection still gets
+	// its own final response, so concurrent long ops lose only their
+	// intermediate progress lines, nothing more.
 	stepMu   sync.Mutex
 	stepEmit func(string)
 

@@ -3,7 +3,6 @@ package cloud.terence.clowder
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.app.Service
 import android.os.Handler
 import android.os.IBinder
@@ -142,7 +141,6 @@ class ClowdService : Service() {
     }
 
     private fun publishInbox() {
-        if (Build.VERSION.SDK_INT < 29) return // ponytail: no MediaStore.Downloads below API 29; files stay in the sandbox
         // ".tmp-*" is an interrupted atomic write: never promote a
         // partial file into Downloads (the daemon sweeps them too).
         val files = inboxDir(this).listFiles()

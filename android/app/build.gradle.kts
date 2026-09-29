@@ -10,7 +10,9 @@ android {
 
     defaultConfig {
         applicationId = "cloud.terence.clowder"
-        minSdk = 26
+        // MediaStore.Downloads (the publisher and the inbox receipt log)
+        // is API 29+; raising the floor deleted the below-29 branches.
+        minSdk = 29
         targetSdk = 34
         versionCode = 1
         versionName = "0.1"

@@ -223,3 +223,25 @@ func TestResetClearsRosterAndTombstones(t *testing.T) {
 		t.Fatal("Reset did not persist the wipe")
 	}
 }
+
+// The upgrade seam is closed: a pre-signing entry (no pinned sign
+// key) no longer accepts any validly signed tombstone — the mesh
+// re-paired, no pre-signing roster survives.
+func TestTombstoneRefusedForPreSigningEntry(t *testing.T) {
+	r := New()
+	old := cat(t, "milo")
+	old.SignKey = "" // a pre-signing entry, before pinning existed
+	if err := r.Add(old); err != nil {
+		t.Fatal(err)
+	}
+	// A foreign keypair signs the leave: with the seam, this was
+	// accepted; pinning must now hold everywhere.
+	_, attacker := signCat(t, cat(t, "attacker"))
+	ts := SignTombstone(attacker, old.Key, time.Now().Unix())
+	if applied := r.ApplyTombstones([]Tombstone{ts}); len(applied) != 0 {
+		t.Fatalf("pre-signing entry accepted a foreign-signed tombstone: %v", applied)
+	}
+	if _, ok := r.GetByKey(old.Key); !ok {
+		t.Fatal("the entry was dropped by a foreign-signed tombstone")
+	}
+}

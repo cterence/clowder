@@ -5,7 +5,6 @@ import android.content.Intent
 import android.net.LocalSocketAddress
 import android.net.LocalSocket
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.os.FileObserver
 import android.provider.MediaStore
@@ -811,22 +810,20 @@ fun InboxScreen(onClose: () -> Unit) {
     LaunchedEffect(refreshKey) {
         entries = withContext(Dispatchers.IO) {
             val uris = HashMap<String, Uri>()
-            if (Build.VERSION.SDK_INT >= 29) {
-                ctx.contentResolver.query(
-                    MediaStore.Downloads.EXTERNAL_CONTENT_URI,
-                    arrayOf(
-                        MediaStore.MediaColumns._ID,
-                        MediaStore.MediaColumns.DISPLAY_NAME,
-                    ),
-                    "${MediaStore.MediaColumns.RELATIVE_PATH}=?",
-                    arrayOf("Download/clowder/"),
-                    null,
-                )?.use { c ->
-                    while (c.moveToNext()) {
-                        uris[c.getString(1)] = ContentUris.withAppendedId(
-                            MediaStore.Downloads.EXTERNAL_CONTENT_URI, c.getLong(0),
-                        )
-                    }
+            ctx.contentResolver.query(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                arrayOf(
+                    MediaStore.MediaColumns._ID,
+                    MediaStore.MediaColumns.DISPLAY_NAME,
+                ),
+                "${MediaStore.MediaColumns.RELATIVE_PATH}=?",
+                arrayOf("Download/clowder/"),
+                null,
+            )?.use { c ->
+                while (c.moveToNext()) {
+                    uris[c.getString(1)] = ContentUris.withAppendedId(
+                        MediaStore.Downloads.EXTERNAL_CONTENT_URI, c.getLong(0),
+                    )
                 }
             }
             val arr = ClowdService.readInboxLog(ctx)
