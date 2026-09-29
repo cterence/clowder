@@ -80,6 +80,21 @@ fun ipc(socket: File, op: String, target: String? = null, path: String? = null, 
     }
 }
 
+/** ipc() for user-triggered ops: the daemon's socket appears a second
+ *  or two after the app opens, so a send fired in that window races
+ *  connect with ENOENT — wait out the startup instead of failing. */
+fun ipcWait(socket: File, op: String, target: String? = null, path: String? = null, words: String? = null): JSONObject {
+    val deadline = System.currentTimeMillis() + 4000
+    while (true) {
+        try {
+            return ipc(socket, op, target, path, words)
+        } catch (e: Exception) {
+            if (System.currentTimeMillis() > deadline || !ClowdService.running) throw e
+            Thread.sleep(250)
+        }
+    }
+}
+
 /** Parses the status op's response into the models the UI renders. */
 fun parseStatus(r: JSONObject): Status {
     fun catOf(o: JSONObject) = Cat(

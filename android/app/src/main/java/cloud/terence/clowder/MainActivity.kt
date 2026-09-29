@@ -546,7 +546,7 @@ private fun CatScreen(cat: Cat, onClose: () -> Unit) {
                 )
                 TextButton(onClick = {
                     scope.launch {
-                        val r = withContextOrNull { ipc(ClowdService.socketFile(ctx), "ping", target = cat.name) }
+                        val r = withContextOrNull { ipcWait(ClowdService.socketFile(ctx), "ping", target = cat.name) }
                         pingResult = when {
                             r == null -> "daemon not reachable"
                             r.optBoolean("ok", false) -> r.optString("message")
@@ -658,7 +658,7 @@ private fun PairScreen(onClose: () -> Unit) {
                 )
                 FilledTonalButton(onClick = {
                     scope.launch {
-                        val r = withContextOrNull { ipc(ClowdService.socketFile(ctx), "invite") }
+                        val r = withContextOrNull { ipcWait(ClowdService.socketFile(ctx), op = "invite") }
                         inviteMessage = if (r != null && r.optBoolean("ok", false)) {
                             r.optString("message").removePrefix("ask the other cat to run: clow join ")
                         } else {
@@ -693,7 +693,7 @@ private fun PairScreen(onClose: () -> Unit) {
                     onClick = {
                         scope.launch {
                             val r = withContextOrNull {
-                                ipc(ClowdService.socketFile(ctx), words = joinCode.trim(), op = "join")
+                                ipcWait(ClowdService.socketFile(ctx), words = joinCode.trim(), op = "join")
                             }
                             when {
                                 r == null -> joinResult = "daemon not reachable"
@@ -719,7 +719,7 @@ private fun sendUri(ctx: android.content.Context, uri: Uri, target: String): Str
     ctx.contentResolver.openInputStream(uri)!!.use { input ->
         staging.outputStream().use { input.copyTo(it) }
     }
-    val r = ipc(ClowdService.socketFile(ctx), op = "send", target = target, path = staging.absolutePath)
+    val r = ipcWait(ClowdService.socketFile(ctx), op = "send", target = target, path = staging.absolutePath)
     if (r.optBoolean("ok", false)) r.optString("message") else r.optString("error")
 } catch (e: Exception) {
     "send failed: ${e.message}"

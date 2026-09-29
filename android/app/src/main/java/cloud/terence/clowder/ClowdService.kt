@@ -111,7 +111,11 @@ class ClowdService : Service() {
 
     private fun publishInbox() {
         if (Build.VERSION.SDK_INT < 29) return // ponytail: no MediaStore.Downloads below API 29; files stay in the sandbox
-        val files = inboxDir(this).listFiles()?.filter { it.isFile } ?: return
+        // ".tmp-*" is an interrupted atomic write: never promote a
+        // partial file into Downloads (the daemon sweeps them too).
+        val files = inboxDir(this).listFiles()
+            ?.filter { it.isFile && !it.name.startsWith(".tmp-") }
+            ?: return
         for (f in files) {
             val mime = MimeTypeMap.getSingleton()
                 .getMimeTypeFromExtension(f.extension) ?: "application/octet-stream"

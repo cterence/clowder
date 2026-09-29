@@ -51,6 +51,29 @@ func TestInboxPath(t *testing.T) {
 	}
 }
 
+// A daemon killed mid-receive leaves ".tmp-*" atomic-write leftovers
+// in the inbox; the next start must sweep them — the app's publisher
+// would otherwise promote the partial file into Downloads.
+func TestInboxSweepsStaleTemps(t *testing.T) {
+	dir := t.TempDir()
+	if err := Init(dir, "milo"); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	inbox := t.TempDir()
+	if err := SetInboxAt(dir, inbox); err != nil {
+		t.Fatalf("SetInboxAt: %v", err)
+	}
+	stale := filepath.Join(inbox, ".tmp-1234567890")
+	if err := os.WriteFile(stale, []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	startDaemonAt(t, dir)
+	waitFor(t, func() bool {
+		_, err := os.Stat(stale)
+		return os.IsNotExist(err)
+	}, "the stale inbox temp to be swept")
+}
+
 func FuzzInboxPath(f *testing.F) {
 	f.Add("nap.txt")
 	f.Add("../../../etc/passwd")

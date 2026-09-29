@@ -415,6 +415,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return err
 	}
 	defer unlock()
+	// Nothing is in flight under the lock: sweep atomic-write
+	// leftovers from a previous daemon killed mid-receive.
+	tmps, _ := filepath.Glob(filepath.Join(d.InboxDir(), ".tmp-*"))
+	for _, tmp := range tmps {
+		_ = os.Remove(tmp)
+	}
 	ln, err := d.tr.Listen(ctx)
 	if err != nil {
 		return fmt.Errorf("daemon: listening: %w", err)
