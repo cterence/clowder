@@ -1069,20 +1069,16 @@ func (d *Daemon) deliverStream(ctx context.Context, peer roster.Cat, e Entry, ta
 // sendSealed runs one Offer/Answer/stream/Ack exchange, shared by
 // deliveries (track enables status progress).
 func (d *Daemon) sendSealed(ctx context.Context, peer roster.Cat, o *protocol.Offer, src io.Reader, wantAck string, track bool) error {
-	// The connect must fail fast so the sender can fall back to a
-	// storer: a cat still silent after the same 10s budget leave
-	// gives one cat is effectively dead. Only the dial+handshake is
-	// bounded — the stream keeps the caller's deadline.
-	connectCtx, cancelConnect := context.WithTimeout(ctx, leaveTimeout)
-	defer cancelConnect()
-	pc, err := d.connect(connectCtx, peer, leaveTimeout)
+	// No tighter connect bound here: a dead target is detected by the
+	// dial's own disco probe (~10s), and a cold-but-online target —
+	// netcheck + relay attach, >10s on slow links — needs the dial's
+	// full internal bound. A uniform 10s cut the latter and broke the
+	// CI integration pair-send.
+	pc, err := d.connect(ctx, peer, msgTimeout)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = pc.Close() }()
-	// Liveness proven under the fast budget; the offer/answer round
-	// gets its own deadline back — the handshake's lingers otherwise.
-	_ = pc.SetDeadline(time.Now().Add(msgTimeout))
 	// A cancel aborts at the wire: closing the conn fails this stream
 	// and the peer's, so the receiver drops its partial file instead
 	// of waiting out the stream deadline.

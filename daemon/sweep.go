@@ -40,19 +40,17 @@ func (d *Daemon) sweepSpoolFor(ctx context.Context, targetKey string) {
 
 // deliverHeld pushes one spooled file; the entry is deleted on delivery ack.
 func (d *Daemon) deliverHeld(ctx context.Context, cat roster.Cat, m store.Meta) error {
-	// Same liveness budget as leave: a target still silent at 10s is
-	// dead, and the sweep must not sit 30s on one offline cat while
-	// others wait behind the one-sweep-at-a-time guard.
-	ctx, cancel := context.WithTimeout(ctx, leaveTimeout)
+	// Generous on purpose: the target may be cold-but-online (slow
+	// netcheck + relay attach); dead targets are cut by the dial's
+	// internal disco probe long before this.
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	pc, err := d.connect(ctx, cat, leaveTimeout)
+	pc, err := d.connect(ctx, cat, msgTimeout)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = pc.Close() }()
-	// Liveness proven; the offer/answer round gets its own deadline.
-	_ = pc.SetDeadline(time.Now().Add(msgTimeout))
 
 	offer := &protocol.Offer{
 		ID:         m.ID,
