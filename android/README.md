@@ -86,7 +86,9 @@ open; the mesh's storer role is the answer for offline delivery.
 - The config dir is `<filesDir>/clowder`; the inbox is
   `<filesDir>/Downloads/clowder`. Nothing is shared with Termux or
   other installs; a cat initialized in the app is a new cat.
-- Sending uses the system file picker: the picked document is copied
+- Sending picks files first, sends after: the system picker allows
+  multiple documents, the selection is removable, and one send button
+  queues them all. Each picked document is copied
   into the app cache (the daemon needs a real path, not a content
   URI) and queued through the normal outbox.
 - Battery: the daemon runs only while the app is on screen — it uses

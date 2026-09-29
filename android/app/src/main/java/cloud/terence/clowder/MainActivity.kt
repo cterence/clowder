@@ -468,11 +468,20 @@ private fun CatScreen(cat: Cat, onClose: () -> Unit) {
         }
     }
 
-    val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            scope.launch {
-                sendResult = withContext(Dispatchers.IO) { sendUri(ctx, uri, cat.name) }
+    // Pick first, send after: multi-select, removable, one explicit
+    // send for the whole selection.
+    var selected by remember { mutableStateOf(listOf<Uri>()) }
+    var names by remember { mutableStateOf(mapOf<Uri, String>()) }
+    val pickFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) selected = (selected + uris).distinct()
+    }
+    LaunchedEffect(selected) {
+        val missing = selected.filter { it !in names }
+        if (missing.isNotEmpty()) {
+            val resolved = withContext(Dispatchers.IO) {
+                missing.associateWith { queryName(ctx, it) ?: "file" }
             }
+            names = names + resolved
         }
     }
 
@@ -559,12 +568,49 @@ private fun CatScreen(cat: Cat, onClose: () -> Unit) {
                 Text(it, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 4.dp))
             }
             if (canSend) {
-                Button(
-                    onClick = { pickFile.launch(arrayOf("*/*")) },
+                OutlinedButton(
+                    onClick = { pickFiles.launch(arrayOf("*/*")) },
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(top = 16.dp),
-                ) { Text("send a file to ${cat.name}") }
+                ) { Text("choose file(s) to send") }
+                selected.forEach { uri ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            names[uri] ?: "…",
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(vertical = 6.dp),
+                        )
+                        IconButton(onClick = { selected = selected - uri }) {
+                            Icon(Icons.Outlined.Close, contentDescription = "remove")
+                        }
+                    }
+                }
+                Button(
+                    onClick = {
+                        val toSend = selected
+                        scope.launch {
+                            var sent = 0
+                            var failure: String? = null
+                            for (uri in toSend) {
+                                val r = withContext(Dispatchers.IO) { sendUri(ctx, uri, cat.name) }
+                                if (r.startsWith("queued")) sent++ else failure = r
+                            }
+                            selected = emptyList()
+                            sendResult = when (val f = failure) {
+                                null -> "queued ${sent} file(s) for ${cat.name}"
+                                else -> "queued ${sent}, failed: $f"
+                            }
+                        }
+                    },
+                    enabled = selected.isNotEmpty(),
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("send ${selected.size} file(s) to ${cat.name}") }
             } else {
                 Text(
                     "storers and dropboxes hold files — send to a regular cat",
