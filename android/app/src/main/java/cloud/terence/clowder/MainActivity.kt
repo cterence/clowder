@@ -695,10 +695,11 @@ private fun PairScreen(onClose: () -> Unit) {
                             val r = withContextOrNull {
                                 ipc(ClowdService.socketFile(ctx), words = joinCode.trim(), op = "join")
                             }
-                            joinResult = when {
-                                r == null -> "daemon not reachable"
-                                r.optBoolean("ok", false) -> "paired"
-                                else -> r.optString("error")
+                            when {
+                                r == null -> joinResult = "daemon not reachable"
+                                // A paired cat shows on home within a poll tick.
+                                r.optBoolean("ok", false) -> onClose()
+                                else -> joinResult = r.optString("error")
                             }
                         }
                     },
