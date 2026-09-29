@@ -52,6 +52,8 @@ func run(args []string) error {
 		return cmdCancel(rest)
 	case "forget":
 		return cmdForget(rest)
+	case "ping":
+		return cmdPing(rest)
 	case "leave":
 		return cmdLeave()
 	case "reset":
@@ -137,6 +139,9 @@ var commandDocs = []commandDoc{
 	{"forget", "mesh state",
 		"drop a cat from the roster for good",
 		"clow forget <CAT-OR-KEY>", nil, []string{hintDaemon}},
+	{"ping", "mesh state",
+		"check a cat is online (real round trip, marks liveness both ways)",
+		"clow ping <CAT-OR-KEY>", nil, []string{hintDaemon}},
 }
 
 // usageText is the root help, urfave-cli style: command names aligned
@@ -387,6 +392,17 @@ func cmdForget(args []string) error {
 		return fmt.Errorf("usage: %s", doc("forget").usage)
 	}
 	return printResp(call(daemon.Request{Op: "forget", Target: fs.Arg(0)}))
+}
+
+func cmdPing(args []string) error {
+	fs := flag.NewFlagSet("ping", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: %s", doc("ping").usage)
+	}
+	return printResp(call(daemon.Request{Op: "ping", Target: fs.Arg(0)}))
 }
 
 // cmdReset wipes the config dir (the inbox is kept). Refuses while the

@@ -435,6 +435,7 @@ private fun CatScreen(cat: Cat, onClose: () -> Unit) {
     val ctx = LocalContext.current
     var status by remember { mutableStateOf<Status?>(null) }
     var sendResult by remember { mutableStateOf<String?>(null) }
+    var pingResult by remember { mutableStateOf<String?>(null) }
     var forgetConfirm by remember { mutableStateOf(false) }
     var forgetError by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
@@ -508,7 +509,10 @@ private fun CatScreen(cat: Cat, onClose: () -> Unit) {
 
             val seen = status?.liveness?.get(cat.key)?.takeIf { it != 0L }
             val online = seen != null && System.currentTimeMillis() / 1000 - seen < 120
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
                 LivenessDot(online)
                 Text(
                     livenessText(seen) +
@@ -518,7 +522,21 @@ private fun CatScreen(cat: Cat, onClose: () -> Unit) {
                             else -> ""
                         },
                     style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f),
                 )
+                TextButton(onClick = {
+                    scope.launch {
+                        val r = withContextOrNull { ipc(ClowdService.socketFile(ctx), "ping", target = cat.name) }
+                        pingResult = when {
+                            r == null -> "daemon not reachable"
+                            r.optBoolean("ok", false) -> r.optString("message")
+                            else -> r.optString("error")
+                        }
+                    }
+                }) { Text("ping") }
+            }
+            pingResult?.let {
+                Text(it, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 4.dp))
             }
             if (canSend) {
                 Button(

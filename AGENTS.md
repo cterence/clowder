@@ -176,7 +176,9 @@ One line each; the pinning tests carry the details.
   only).
 - **Liveness and sync**: all-peers roster sync every poll tick and at
   start; symmetric liveness marking. The sync IS the keepalive —
-  nothing else probes or pings periodically.
+  nothing else probes periodically; `clow ping <CAT-OR-KEY>` is the
+  on-demand check (the same authenticated handshake, marks liveness
+  both ways, bounded 15s).
 - **Local trust commands**: `clow forget <CAT-OR-KEY>` (roster +
   outbox; refused by roster merge, so it sticks against re-adds;
   re-pairing clears the blocklist — the way back), and duplicate-name

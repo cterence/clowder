@@ -38,6 +38,9 @@ const (
 	msgTimeout             = 2 * time.Minute
 	streamTimeout          = 30 * time.Minute
 	maxConcurrentTransfers = 4
+	// A ping is a cold dial away from netcheck + relay attach (~3s on
+	// the real mesh); bound it so the CLI answer comes in seconds.
+	pingTimeout = 15 * time.Second
 	// Free-space floor beyond the announced size, so a sender cannot fill the disk.
 	recvReserve = 64 << 20
 )
@@ -259,6 +262,29 @@ func (d *Daemon) Forget(who string) (roster.Cat, bool) {
 		}
 	}
 	return c, true
+}
+
+// Ping proves a cat is reachable with the same authenticated handshake
+// a sync uses — a real round trip, so liveness is marked both ways —
+// and reports how long it took.
+func (d *Daemon) Ping(ctx context.Context, who string) (roster.Cat, time.Duration, error) {
+	c, ok := d.ros.GetByKey(who)
+	if !ok {
+		c, ok = d.ros.Get(who)
+	}
+	if !ok {
+		c, ok = d.ros.GetByPrefix(who)
+	}
+	if !ok {
+		return roster.Cat{}, 0, fmt.Errorf("no cat named %s", who)
+	}
+	start := time.Now()
+	pc, err := d.connect(ctx, c, pingTimeout)
+	if err != nil {
+		return c, 0, err
+	}
+	_ = pc.Close()
+	return c, time.Since(start), nil
 }
 
 // Cancel drops pending sends: one by transfer ID, or all when id is

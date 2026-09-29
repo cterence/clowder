@@ -14,7 +14,7 @@ import (
 )
 
 // Request is one command from the clow CLI to the daemon. Ops: send,
-// cancel, cats, storer, status, setinbox, invite, join.
+// cancel, cats, storer, status, setinbox, invite, join, ping.
 type Request struct {
 	Op      string `json:"op"`
 	Target  string `json:"target,omitempty"`
@@ -186,6 +186,18 @@ func (d *Daemon) handleIPC(req Request) Response {
 			return okMsg("cancelled the pending send")
 		}
 		return okMsg(fmt.Sprintf("cancelled %d pending send(s)", n))
+
+	case "ping":
+		if req.Target == "" {
+			return fail(fmt.Errorf("ping needs a cat name or key"))
+		}
+		pingCtx, cancel := context.WithTimeout(ctx, pingTimeout)
+		defer cancel()
+		c, rtt, err := d.Ping(pingCtx, req.Target)
+		if err != nil {
+			return fail(err)
+		}
+		return okMsg(fmt.Sprintf("%s online, round trip %s", c.Name, rtt.Round(time.Millisecond)))
 
 	case "status":
 		me := d.Me()

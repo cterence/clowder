@@ -54,7 +54,7 @@ the system back gesture closes it.
 |---|---|
 | init | exec `libclowder.so init --name <name>` with `CLOWDER_DIR` and `HOME` pointing into the app sandbox |
 | home | the cat roster (liveness, roles) with in-flight transfers and the outbox, polled over `status` op |
-| cat detail | tap a cat: send (system file picker), its live transfers and queued sends, and a confirmed `forget` — the CLI's local-only forget |
+| cat detail | tap a cat: send (system file picker), ping (online check, marks liveness), its live transfers and queued sends, and a confirmed `forget` — the CLI's local-only forget |
 | pair | top-bar `+`: IPC ops (`invite`, `join`) over `clow.sock`, the same wire the CLI speaks |
 | inbox | top-bar mail icon: the daemon delivers into `$HOME/Downloads/clowder` inside the app's sandbox; ClowdService's publisher then moves each file into the system's `Download/clowder` via `MediaStore.Downloads` (API 29+; below that files stay sandboxed), so the real Downloads and every file manager see them — no DocumentsProvider needed. The inbox screen lists the Downloads bucket; below API 29 it lists the sandbox |
 | settings | top-bar gear: stop/start the daemon, view/clear the log, leave the clowder, reset (announces the leave — `leave` op, so the clowder learns this cat is gone — then stops the daemon, waits out its IPC socket, then exec's `libclowder.so reset --yes` and returns to init) |
