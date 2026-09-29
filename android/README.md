@@ -12,13 +12,28 @@ not a daemon fork. The daemon package carries no Android code.
 
 ## Build
 
-Everything comes from the flake — no Android Studio, no SDK
-installer, no wrapper jar:
+The canonical build is one command, fully hermetic: the daemon is a
+nix cross-build (GOOS=android), the gradle/maven caches are one
+hash-pinned fetch verified against
+`android/gradle/verification-metadata.xml` (the go.sum equivalent —
+every artifact's sha256 is checked in), and the APK builds offline
+from those caches. nix/android.nix holds the derivations.
 
-    nix develop .#android          # SDK + JDK 17 + gradle + go
-    ./android/build-native.sh      # the daemon into jniLibs (arm64)
+    nix build .#clowder-android
+    # -> result/clowder-debug.apk, signed with keystore-debug.keystore
+
+Iterating in the devshell (SDK + JDK 17 + gradle, no Android Studio,
+no wrapper jar):
+
+    nix develop .#android
+    ./android/build-native.sh      # the daemon into jniLibs, from the nix build
     cd android && gradle assembleDebug
-    # -> app/build/outputs/apk/debug/app-debug.apk
+
+Updating pinned dependencies (both change together):
+- regenerate `gradle/verification-metadata.xml` with a fresh cache:
+  `GRADLE_USER_HOME=$(mktemp -d) gradle --write-verification-metadata sha256 assembleDebug`
+- update the `gradleDeps` `outputHash` in nix/android.nix — a build
+  with a stale hash prints the got-hash.
 
 The SDK matches app/build.gradle.kts (compileSdk 34, build-tools
 34.0.0, AGP 8.5.2, JDK 17) — bump them together in flake.nix. The

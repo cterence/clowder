@@ -22,6 +22,15 @@ android {
         }
     }
 
+    signingConfigs {
+        // The repo's pinned key: every build (local, nix, CI) signs
+        // identically, so an update installs over the previous one
+        // instead of failing on a signature mismatch.
+        getByName("debug") {
+            storeFile = rootProject.file("keystore-debug.keystore")
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

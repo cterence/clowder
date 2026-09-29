@@ -61,15 +61,18 @@
       # tailscale.com declare it and own the floor), so the build pins
       # nixpkgs' go_1_27 rather than the default `go` alias, which may
       # still be a release behind.
-      packages = forEachSupportedSystem (
-        { pkgs }:
-        {
+      packages =
+        let
+          version = "unstable-2026-09-26";
+          goPackages = forEachSupportedSystem (
+            { pkgs }:
+            {
               # buildGoModule's `go` attribute does not reach the
               # go-modules fetch derivation; overriding the builder swaps
               # the toolchain everywhere, module fetch included.
               default = (pkgs.buildGoModule.override { go = pkgs.go_1_27; }) {
                 pname = "clow";
-                version = "unstable-2026-09-26";
+                inherit version;
                 src = self;
                 vendorHash = "sha256-B0NZyZgmJqKRNZ+9iHPPM1LBdx5UpVxkdEkOIlllXTc=";
                 # go names the binary after the module; users type clow.
@@ -79,6 +82,27 @@
               };
             }
           );
+
+          # The Android app, built hermetically (nix/android.nix): the
+          # daemon is a nix cross-build (GOOS=android), the
+          # gradle/maven caches are one fixed-output fetch, and the
+          # APK itself builds offline from them. Only the two
+          # androidSystems hosts can build it (the SDK composition
+          # exists there — same restriction as the android devShell).
+          androidPackages = forEachAndroidSystem (
+            { pkgs, android-sdk, ... }:
+            import ./nix/android.nix {
+              inherit pkgs android-sdk;
+              src = self;
+              inherit version;
+              vendorHash = "sha256-B0NZyZgmJqKRNZ+9iHPPM1LBdx5UpVxkdEkOIlllXTc=";
+            }
+          );
+        in
+        nixpkgs.lib.mapAttrs (
+          system: pkgsSet:
+          pkgsSet // (androidPackages.${system} or { })
+        ) goPackages;
 
       # NixOS: services.clowder, a systemd unit wrapping the flake
       # package. The wrapper's pattern must name the standard module

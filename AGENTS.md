@@ -123,6 +123,9 @@ Update this list and the README when something ships.
    app; then boot-receive, delivery notifications, and the storer-role
    UI. Termux is explicitly NOT a goal (the app is
    the answer); on-device builds blocked until Termux ships go >= 1.27.1.
+   The APK also builds hermetically: `nix build .#clowder-android`
+   (nix/android.nix; the devshell + build-native.sh remains the fast
+   iteration loop).
 3. **Multiple clowders** — named clowders: per-clowder roster files,
    `--clowder` on invite/join/send, Hello carries the clowder name so a
    connection routes to the right roster. One identity, one daemon,
@@ -204,7 +207,11 @@ One line each; the pinning tests carry the details.
   fuzz targets (ReadMsg, parsePairCode, inboxPath), disco-ping dial
   probe (meow Ping is one-shot per client), allocation-bounded
   OpenStream.
-- **Packaging and ops**: nix flake `packages.default`, Dockerfile with
+- **Packaging and ops**: nix flake `packages.default`,
+  `packages.clowder-android` (the APK: the daemon is a nix
+  GOOS=android cross-build, the gradle caches one hash-pinned fetch
+  verified against android/gradle/verification-metadata.xml, the APK
+  an offline replay — nix/android.nix), Dockerfile with
   auto-init and CLOWDER_NAME/CLOWDER_STORER, HTTP health endpoint,
   opt-in pprof, self-hosted DERP map; CI nix job builds the flake
   package for x86_64-linux and aarch64-darwin and pushes both to the

@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
-# Builds the clowder daemon binary for Android into the app's jniLibs.
-# The binary ships as libclowder.so so the package manager extracts it
-# to nativeLibraryDir (executable); the foreground service exec's it.
-# arm64-v8a for devices; the emulator runs the arm64 binary under
-# translation on modern hosts, so there is one build (amd64 needs cgo).
+# Puts the daemon into the app's jniLibs for the devshell gradle build
+# (nix develop .#android). The canonical APK build is
+# `nix build .#clowder-android`, which wires the daemon in itself.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-out=android/app/src/main/jniLibs
-CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o "$out/arm64-v8a/libclowder.so" .
-echo "built:"
-ls -l "$out/arm64-v8a/"
+out=$(nix build --no-link --print-out-paths .#clowder-android-daemon)
+install -D "$out/lib/arm64-v8a/libclowder.so" \
+  android/app/src/main/jniLibs/arm64-v8a/libclowder.so
+echo "installed: android/app/src/main/jniLibs/arm64-v8a/libclowder.so"
