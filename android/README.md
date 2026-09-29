@@ -72,7 +72,7 @@ the system back gesture closes it.
 | home | the cat roster (liveness, roles) with in-flight transfers and the outbox, polled over `status` op |
 | cat detail | tap a cat: send (system file picker), ping (online check, marks liveness), its live transfers and queued sends, and a confirmed `forget` — the CLI's local-only forget |
 | pair | top-bar `+`: IPC ops (`invite`, `join`) over `clow.sock`, the same wire the CLI speaks |
-| inbox | top-bar mail icon: the daemon delivers into `$HOME/Downloads/clowder` inside the app's sandbox; ClowdService's publisher then moves each file into the system's `Download/clowder` via `MediaStore.Downloads` (API 29+; below that files stay sandboxed), so the real Downloads and every file manager see them — no DocumentsProvider needed. The inbox screen lists the Downloads bucket; below API 29 it lists the sandbox |
+| inbox | top-bar mail icon: a receipt log, not a directory view — every delivered file is logged when the publisher moves it into the system's `Download/clowder` (`MediaStore.Downloads`, API 29+), entries survive deleting the file from Downloads, "clear" empties the log only, and "open in files" jumps straight to the folder in the Files app |
 | settings | top-bar gear: stop/start the daemon, view/clear the log, leave the clowder, reset (announces the leave — `leave` op, so the clowder learns this cat is gone — then stops the daemon, waits out its IPC socket, then exec's `libclowder.so reset --yes` and returns to init) |
 
 The daemon runs only while the app is on screen: MainActivity starts
@@ -95,9 +95,9 @@ open; the mesh's storer role is the answer for offline delivery.
   nothing in the background. The flip side: nothing is received while
   the app is closed; expect the storer to matter on a phone.
 - The inbox updates live: a FileObserver watches the daemon's
-  inbox directory, so received files appear without a refresh. The
-  log — opened from the Settings screen, not a tab — tails the
-  daemon's ring buffer in selectable text, with an autoscroll
-  checkbox to pin or free the tail.
+  inbox directory, so receipts appear without a refresh, and each
+  delivery raises a toast. The daemon log — opened from the Settings
+  screen, not a tab — tails the daemon's ring buffer in selectable
+  text, with an autoscroll checkbox to pin or free the tail.
 - Not implemented yet: start on boot, per-cat notification on
   delivery, the storer role UI.

@@ -81,7 +81,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import androidx.core.content.FileProvider
+import android.provider.DocumentsContract
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -654,6 +654,16 @@ private fun CatScreen(cat: Cat, onClose: () -> Unit) {
                     ListItem(
                         headlineContent = { Text(e.fileName) },
                         supportingContent = { Text("waiting to deliver") },
+                        trailingContent = {
+                            TextButton(onClick = {
+                                scope.launch {
+                                    // The 3s status poll refreshes the row away.
+                                    withContextOrNull {
+                                        ipcWait(ClowdService.socketFile(ctx), "cancel", target = e.id)
+                                    }
+                                }
+                            }) { Text("cancel") }
+                        },
                     )
                 }
             }
@@ -782,59 +792,50 @@ private fun queryName(ctx: android.content.Context, uri: Uri): String? {
     return null
 }
 
-/** One inbox row: either a MediaStore Downloads item (the publisher
- *  moves arrivals there on API 29+) or a sandbox file below that. */
-data class InboxItem(
-    val uri: Uri?,
-    val file: File?,
+/** One inbox log entry: the receipt for a delivered file, plus where
+ *  to open it if the file still exists in Downloads. */
+private data class InboxEntry(
     val name: String,
-    val size: Long,
-    val modified: Long,
+    val bytes: Long,
+    val at: Long,
+    val uri: Uri?,
 )
 
 @Composable
 fun InboxScreen(onClose: () -> Unit) {
     val ctx = LocalContext.current
-    var items by remember { mutableStateOf(listOf<InboxItem>()) }
+    var entries by remember { mutableStateOf(listOf<InboxEntry>()) }
     var refreshKey by remember { mutableIntStateOf(0) }
 
+    // The inbox is the receipt log, not a directory view: deleting a
+    // file from Downloads keeps its entry (open just greys out).
     LaunchedEffect(refreshKey) {
-        items = withContext(Dispatchers.IO) {
+        entries = withContext(Dispatchers.IO) {
+            val uris = HashMap<String, Uri>()
             if (Build.VERSION.SDK_INT >= 29) {
-                val out = mutableListOf<InboxItem>()
                 ctx.contentResolver.query(
                     MediaStore.Downloads.EXTERNAL_CONTENT_URI,
                     arrayOf(
                         MediaStore.MediaColumns._ID,
                         MediaStore.MediaColumns.DISPLAY_NAME,
-                        MediaStore.MediaColumns.SIZE,
-                        MediaStore.MediaColumns.DATE_ADDED,
                     ),
                     "${MediaStore.MediaColumns.RELATIVE_PATH}=?",
-                    // MediaProvider stores the bucket WITH a trailing
-                    // slash; matching without it lists nothing.
                     arrayOf("Download/clowder/"),
-                    "${MediaStore.MediaColumns.DATE_ADDED} DESC",
+                    null,
                 )?.use { c ->
                     while (c.moveToNext()) {
-                        out += InboxItem(
-                            uri = ContentUris.withAppendedId(
-                                MediaStore.Downloads.EXTERNAL_CONTENT_URI, c.getLong(0),
-                            ),
-                            file = null,
-                            name = c.getString(1),
-                            size = c.getLong(2),
-                            modified = c.getLong(3) * 1000,
+                        uris[c.getString(1)] = ContentUris.withAppendedId(
+                            MediaStore.Downloads.EXTERNAL_CONTENT_URI, c.getLong(0),
                         )
                     }
                 }
-                out
-            } else {
-                ClowdService.inboxDir(ctx).listFiles()
-                    ?.sortedByDescending { it.lastModified() }
-                    ?.map { InboxItem(null, it, it.name, it.length(), it.lastModified()) }
-                    ?: emptyList()
             }
+            val arr = ClowdService.readInboxLog(ctx)
+            (0 until arr.length()).map { i ->
+                val o = arr.getJSONObject(i)
+                val name = o.getString("name")
+                InboxEntry(name, o.optLong("bytes"), o.optLong("at"), uris[name])
+            }.asReversed() // newest first
         }
     }
 
@@ -870,9 +871,13 @@ fun InboxScreen(onClose: () -> Unit) {
                 Icon(Icons.Outlined.KeyboardArrowLeft, contentDescription = "back")
             }
             Text("inbox", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+            TextButton(onClick = {
+                ClowdService.clearInboxLog(ctx)
+                entries = emptyList()
+            }) { Text("clear") }
             OutlinedButton(onClick = { openInFilesApp(ctx) }) { Text("open in files") }
         }
-        if (items.isEmpty()) {
+        if (entries.isEmpty()) {
             Text(
                 "nothing received yet",
                 style = MaterialTheme.typography.bodyMedium,
@@ -881,18 +886,26 @@ fun InboxScreen(onClose: () -> Unit) {
             )
         }
         LazyColumn {
-            items(items) { f ->
+            items(entries) { f ->
                 ListItem(
                     headlineContent = { Text(f.name) },
                     supportingContent = {
                         Text(
-                            "${humanBytes(f.size)} · " +
-                                DateUtils.getRelativeTimeSpanString(f.modified).toString(),
+                            "${humanBytes(f.bytes)} · " +
+                                DateUtils.getRelativeTimeSpanString(f.at).toString(),
                         )
                     },
                     modifier = Modifier.fillMaxWidth(),
                     trailingContent = {
-                        TextButton(onClick = { openInboxItem(ctx, f) }) { Text("open") }
+                        if (f.uri != null) {
+                            TextButton(onClick = { openInboxItem(ctx, f) }) { Text("open") }
+                        } else {
+                            Text(
+                                "file deleted",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     },
                 )
             }
@@ -900,19 +913,27 @@ fun InboxScreen(onClose: () -> Unit) {
     }
 }
 
-private fun openInboxItem(ctx: android.content.Context, item: InboxItem) {
-    val uri = item.uri ?: FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", item.file!!)
+private fun openInboxItem(ctx: android.content.Context, item: InboxEntry) {
+    val uri = item.uri ?: return
     val intent = Intent(Intent.ACTION_VIEW)
         .setDataAndType(uri, ctx.contentResolver.getType(uri) ?: "application/octet-stream")
         .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     runCatching { ctx.startActivity(Intent.createChooser(intent, item.name)) }
 }
 
-/** Opens the phone's file manager. DocumentsUI is the platform's
- *  (AOSP and Pixel package names); received files live in the real
- *  Download/clowder directory, so any file manager shows them.
- *  Without a Files app at all, fall back to the downloads UI. */
+/** Opens the phone's file manager at Download/clowder itself;
+ *  DevicesUI understands ACTION_VIEW on a document URI. Falls back
+ *  to the Files app's root screen, then to the downloads UI. */
 private fun openInFilesApp(ctx: android.content.Context) {
+    val folder = DocumentsContract.buildDocumentUri(
+        "com.android.externalstorage.documents", "primary:Download/clowder",
+    )
+    runCatching {
+        ctx.startActivity(
+            Intent(Intent.ACTION_VIEW, folder).addCategory(Intent.CATEGORY_BROWSABLE),
+        )
+        return
+    }
     for (pkg in listOf("com.android.documentsui", "com.google.android.documentsui")) {
         val intent = ctx.packageManager.getLaunchIntentForPackage(pkg)
         if (intent != null) {

@@ -5,10 +5,15 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.app.Service
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.provider.MediaStore
 import android.util.Log
 import android.webkit.MimeTypeMap
+import android.widget.Toast
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -55,6 +60,33 @@ class ClowdService : Service() {
         fun inboxDir(ctx: Context): File = File(File(ctx.filesDir, "Downloads"), "clowder")
         fun binaryFile(ctx: Context): File =
             File(ctx.applicationInfo.nativeLibraryDir, BINARY)
+
+        // The inbox is a receipt log, not a directory view: files can be
+        // deleted from Downloads without losing the record.
+        private val inboxLogLock = Any()
+        fun inboxLogFile(ctx: Context): File = File(ctx.filesDir, "inbox-log.json")
+
+        fun appendInboxLog(ctx: Context, name: String, bytes: Long) {
+            synchronized(inboxLogLock) {
+                val arr = runCatching { JSONArray(inboxLogFile(ctx).readText()) }.getOrElse { JSONArray() }
+                arr.put(
+                    JSONObject()
+                        .put("name", name)
+                        .put("bytes", bytes)
+                        .put("at", System.currentTimeMillis()),
+                )
+                while (arr.length() > 200) arr.remove(0)
+                inboxLogFile(ctx).writeText(arr.toString())
+            }
+        }
+
+        fun readInboxLog(ctx: Context): JSONArray = synchronized(inboxLogLock) {
+            runCatching { JSONArray(inboxLogFile(ctx).readText()) }.getOrElse { JSONArray() }
+        }
+
+        fun clearInboxLog(ctx: Context) = synchronized(inboxLogLock) {
+            inboxLogFile(ctx).writeText("[]")
+        }
 
         fun isInitialized(ctx: Context): Boolean =
             File(configDir(ctx), "me.json").isFile
@@ -117,6 +149,7 @@ class ClowdService : Service() {
             ?.filter { it.isFile && !it.name.startsWith(".tmp-") }
             ?: return
         for (f in files) {
+            val size = f.length()
             val mime = MimeTypeMap.getSingleton()
                 .getMimeTypeFromExtension(f.extension) ?: "application/octet-stream"
             val values = ContentValues().apply {
@@ -137,7 +170,13 @@ class ClowdService : Service() {
             runCatching { contentResolver.update(uri, values, null, null) }
             if (copied) {
                 f.delete()
+                appendInboxLog(this, f.name, size)
                 appendLog("inbox: ${f.name} moved to Downloads/clowder")
+                // Delivery only happens while the app is open, so a
+                // toast is visible exactly when it lands.
+                Handler(Looper.getMainLooper()).post {
+                    Toast.makeText(this, "received ${f.name}", Toast.LENGTH_SHORT).show()
+                }
             }
         }
     }
