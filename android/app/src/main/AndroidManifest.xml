@@ -2,10 +2,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
         android:label="@string/app_name"
@@ -23,13 +19,12 @@
             </intent-filter>
         </activity>
 
-        <!-- Runs the clowder daemon binary: a partial wake lock (Android
-             kills the daemon without one) plus a foreground notification
-             keep it alive across screen-off and doze. -->
+        <!-- Runs the clowder daemon binary while the app is on screen
+             (started in onStart, stopped in onStop) — no foreground
+             service, no wake lock, no background battery use. -->
         <service
             android:name=".ClowdService"
-            android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:exported="false" />
 
         <!-- Shares inbox files for viewing/sending to other apps. -->
         <provider

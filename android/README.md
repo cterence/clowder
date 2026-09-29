@@ -3,9 +3,9 @@
 A thin app around the daemon. The daemon is the same `clowder` binary
 the other cats run, cross-compiled with `GOOS=android` (tailcat patches
 Android DNS, CA certificates and interface discovery at init — see its
-`android_linux.go`): the app ships it as `libclowder.so` and a
-foreground service exec's it with a wake lock, which is the answer to
-both Android's process lifecycle and the daemon+client UX. The UI is
+`android_linux.go`): the app ships it as `libclowder.so` and exec's it
+while the app is on screen — no foreground service, no wake lock, no
+background battery use. The UI is
 plain Jetpack Compose and talks to the daemon over the same
 unix-socket JSON IPC the `clow` CLI uses — the app is a second CLI,
 not a daemon fork. The daemon package carries no Android code.
@@ -59,9 +59,11 @@ the system back gesture closes it.
 | inbox | top-bar mail icon: the daemon delivers into `$HOME/Downloads/clowder` inside the app's sandbox; ClowdService's publisher then moves each file into the system's `Download/clowder` via `MediaStore.Downloads` (API 29+; below that files stay sandboxed), so the real Downloads and every file manager see them — no DocumentsProvider needed. The inbox screen lists the Downloads bucket; below API 29 it lists the sandbox |
 | settings | top-bar gear: stop/start the daemon, view/clear the log, leave the clowder, reset (announces the leave — `leave` op, so the clowder learns this cat is gone — then stops the daemon, waits out its IPC socket, then exec's `libclowder.so reset --yes` and returns to init) |
 
-The daemon starts with the app (no manual start): `ClowdService`, a
-`dataSync` foreground service holding a partial wake lock, restarts
-the process with backoff if it dies.
+The daemon runs only while the app is on screen: MainActivity starts
+`ClowdService` in `onStart` and stops it in `onStop`; the service
+restarts the process with backoff if it dies while the app is open.
+Files are received — and transfers finish — only while the app is
+open; the mesh's storer role is the answer for offline delivery.
 
 ## Notes and limits
 
@@ -71,9 +73,9 @@ the process with backoff if it dies.
 - Sending uses the system file picker: the picked document is copied
   into the app cache (the daemon needs a real path, not a content
   URI) and queued through the normal outbox.
-- Battery: doze can still throttle network for background apps; the
-  wake lock keeps transfers alive with the screen off, but this is a
-  phone — expect the storer to matter.
+- Battery: the daemon runs only while the app is on screen — it uses
+  nothing in the background. The flip side: nothing is received while
+  the app is closed; expect the storer to matter on a phone.
 - The inbox updates live: a FileObserver watches the daemon's
   inbox directory, so received files appear without a refresh. The
   log — opened from the Settings screen, not a tab — tails the

@@ -109,16 +109,19 @@ Update this list and the README when something ships.
    this misled us on the real mesh).
 2. **Android app client** — architecture DECIDED, app scaffolded in
    android/. The daemon is the plain GOOS=android binary shipped as
-   libclowder.so (nativeLibraryDir is executable), exec'd by ClowdService,
-   a dataSync foreground service with a wake lock and restart-with-backoff
+   libclowder.so (nativeLibraryDir is executable), exec'd by ClowdService
    — NOT gomobile bindings; the daemon package stays Android-dep-free;
    the UI is plain Compose speaking the same unix-socket JSON IPC as the
-   CLI (daemon/ipc.go shapes). REMAINING: dogfood — the APK builds green
+   CLI (daemon/ipc.go shapes). The daemon runs ONLY while the app is on
+   screen (MainActivity onStart/onStop drives the service; no
+   foreground service, no wake lock, no background battery use —
+   receiving while the app is closed is the storer's job). REMAINING:
+   dogfood — the APK builds green
    from the flake (`nix develop .#android`, build-native.sh, `gradle
    assembleDebug`; the emulator shell `nix develop .#emulator` runs it on
    Apple Silicon) — then pair with a real cat, send/receive through the
    app; then boot-receive, delivery notifications, and the storer-role
-   UI. Termux is explicitly NOT a goal (the foreground-service app is
+   UI. Termux is explicitly NOT a goal (the app is
    the answer); on-device builds blocked until Termux ships go >= 1.27.1.
 3. **Multiple clowders** — named clowders: per-clowder roster files,
    `--clowder` on invite/join/send, Hello carries the clowder name so a

@@ -96,6 +96,18 @@ class MainActivity : ComponentActivity() {
             ClowderTheme { ClowderApp() }
         }
     }
+
+    // The daemon runs only while the app is on screen: started when
+    // the activity becomes visible, stopped when it does not.
+    override fun onStart() {
+        super.onStart()
+        if (ClowdService.isInitialized(this)) ClowdService.start(this)
+    }
+
+    override fun onStop() {
+        ClowdService.stop(this)
+        super.onStop()
+    }
 }
 
 /** A pushed screen; null is home. Each is a full-screen overlay —
@@ -127,12 +139,6 @@ fun ClowderApp() {
 
     var screen by remember { mutableStateOf<Screen?>(null) }
     BackHandler(enabled = screen != null) { screen = null }
-    // The daemon is the app: it starts with the UI (this effect
-    // composes once the cat is initialized) and is stopped from the
-    // settings screen.
-    LaunchedEffect(Unit) {
-        if (!ClowdService.running) ClowdService.start(ctx)
-    }
     Scaffold { padding ->
         Box(Modifier.padding(padding)) {
             when (val s = screen) {
@@ -297,16 +303,21 @@ private fun HomeScreen(
 ) {
     val ctx = LocalContext.current
     var status by remember { mutableStateOf<Status?>(null) }
-    var error by remember { mutableStateOf<String?>(null) }
+    var notice by remember { mutableStateOf<String?>(null) }
+    var noticeIsError by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         while (true) {
             val s = withContextOrNull { parseStatus(ipc(ClowdService.socketFile(ctx), "status")) }
             if (s == null) {
-                error = "daemon not reachable"
+                // A poll miss while the daemon process is alive is just
+                // startup: say so instead of crying unreachable.
+                noticeIsError = !ClowdService.running
+                notice = if (ClowdService.running) "daemon starting…" else "daemon not reachable"
                 status = null
             } else {
-                error = if (s.ok) null else s.error
+                notice = if (s.ok) null else s.error
+                noticeIsError = true
                 status = s
             }
             delay(3000)
@@ -325,7 +336,7 @@ private fun HomeScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                LivenessDot(ClowdService.running)
+                LivenessDot(status?.ok == true)
                 Text("clowder", style = MaterialTheme.typography.titleLarge)
                 Spacer(Modifier.weight(1f))
                 IconButton(onClick = onInbox) {
@@ -338,9 +349,18 @@ private fun HomeScreen(
                     Icon(Icons.Outlined.Settings, contentDescription = "settings")
                 }
             }
-            error?.let {
+            notice?.let {
                 ListItem(
-                    headlineContent = { Text(it, color = MaterialTheme.colorScheme.error) },
+                    headlineContent = {
+                        Text(
+                            it,
+                            color = if (noticeIsError) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                    },
                 )
             }
         }
