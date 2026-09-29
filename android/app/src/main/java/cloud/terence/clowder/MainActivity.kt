@@ -1,13 +1,17 @@
 package cloud.terence.clowder
 
+import android.content.ContentUris
 import android.content.Intent
-import android.net.LocalSocket
 import android.net.LocalSocketAddress
+import android.net.LocalSocket
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.FileObserver
+import android.provider.MediaStore
 import android.text.format.DateUtils
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -36,34 +40,24 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Email
-import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.KeyboardArrowLeft
 import androidx.compose.material.icons.outlined.KeyboardArrowRight
-import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.PlayArrow
-import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -72,7 +66,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -89,9 +82,6 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
-import android.content.ContentUris
-import android.os.Build
-import android.provider.MediaStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -108,10 +98,18 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private data class Tab(val label: String, val icon: androidx.compose.ui.graphics.vector.ImageVector)
+/** A pushed screen; null is home. Each is a full-screen overlay —
+ *  the home list underneath stops composing (and polling). */
+private sealed interface Screen {
+    data class Cat(val cat: cloud.terence.clowder.Cat) : Screen
+    data object Pairing : Screen
+    data object Inbox : Screen
+    data object Settings : Screen
+    data object Log : Screen
+}
 
-/** The overlay screens' short swipe: in from the right, out the same
- *  way, 200 ms — a navigation push. */
+/** A pushed screen's short swipe: in from the right, out the same
+ *  way, 200 ms. */
 private val SwipeIn =
     slideInHorizontally(animationSpec = tween(200)) { it } + fadeIn(tween(200))
 private val SwipeOut =
@@ -127,66 +125,50 @@ fun ClowderApp() {
         return
     }
 
-    val tabs = listOf(
-        Tab("Status", Icons.Outlined.Home),
-        Tab("Pair", Icons.Outlined.Add),
-        Tab("Send", Icons.Outlined.Share),
-        Tab("Inbox", Icons.Outlined.Email),
-    )
-    var tab by remember { mutableIntStateOf(0) }
-    var showSettings by remember { mutableStateOf(false) }
-    var showLog by remember { mutableStateOf(false) }
+    var screen by remember { mutableStateOf<Screen?>(null) }
+    BackHandler(enabled = screen != null) { screen = null }
     // The daemon is the app: it starts with the UI (this effect
     // composes once the cat is initialized) and is stopped from the
-    // settings dialog.
+    // settings screen.
     LaunchedEffect(Unit) {
         if (!ClowdService.running) ClowdService.start(ctx)
     }
-    Scaffold(
-        bottomBar = {
-            NavigationBar {
-                tabs.forEachIndexed { i, t ->
-                    NavigationBarItem(
-                        selected = tab == i,
-                        onClick = { tab = i },
-                        label = { Text(t.label) },
-                        icon = { Icon(t.icon, contentDescription = t.label) },
-                    )
+    Scaffold { padding ->
+        Box(Modifier.padding(padding)) {
+            when (val s = screen) {
+                null -> HomeScreen(
+                    onCat = { screen = Screen.Cat(it) },
+                    onPair = { screen = Screen.Pairing },
+                    onInbox = { screen = Screen.Inbox },
+                    onSettings = { screen = Screen.Settings },
+                )
+                else -> {}
+            }
+            AnimatedVisibility(visible = screen is Screen.Cat, enter = SwipeIn, exit = SwipeOut) {
+                (screen as? Screen.Cat)?.let {
+                    CatScreen(it.cat, onClose = { screen = null })
                 }
             }
-        },
-    ) { padding ->
-        Box(Modifier.padding(padding)) {
-            when (tab) {
-                0 -> StatusScreen(onShowSettings = { showSettings = true })
-                1 -> PairScreen()
-                2 -> SendScreen()
-                3 -> InboxScreen()
+            AnimatedVisibility(visible = screen is Screen.Pairing, enter = SwipeIn, exit = SwipeOut) {
+                PairScreen(onClose = { screen = null })
+            }
+            AnimatedVisibility(visible = screen is Screen.Inbox, enter = SwipeIn, exit = SwipeOut) {
+                InboxScreen(onClose = { screen = null })
+            }
+            AnimatedVisibility(visible = screen is Screen.Settings, enter = SwipeIn, exit = SwipeOut) {
+                SettingsScreen(
+                    onClose = { screen = null },
+                    onShowLog = { screen = Screen.Log },
+                    // A reset that succeeds lands on init; everything
+                    // above stops composing because initialized flips
+                    // false first.
+                    onReset = { initialized = false },
+                )
+            }
+            AnimatedVisibility(visible = screen is Screen.Log, enter = SwipeIn, exit = SwipeOut) {
+                LogScreen(onClose = { screen = Screen.Settings })
             }
         }
-    }
-    // Settings and the log open as full screens over the scaffold
-    // (bottom bar included) while they show, with a short swipe —
-    // a navigation push, not a pop.
-    AnimatedVisibility(
-        visible = showSettings,
-        enter = SwipeIn,
-        exit = SwipeOut,
-    ) {
-        SettingsScreen(
-            onClose = { showSettings = false },
-            onShowLog = { showLog = true },
-            // A reset that succeeds lands on init; everything above
-            // stops composing because initialized flips false first.
-            onReset = { initialized = false },
-        )
-    }
-    AnimatedVisibility(
-        visible = showLog,
-        enter = SwipeIn,
-        exit = SwipeOut,
-    ) {
-        LogScreen(onClose = { showLog = false })
     }
 }
 
@@ -303,81 +285,19 @@ private fun LivenessDot(online: Boolean) {
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+/** Home: the cat list. Sending is the point of the app, so the cats
+ *  are the list, and everything else (inbox, pair, settings) hangs
+ *  off the top bar; a cat's detail screen carries the send action. */
 @Composable
-fun StatusScreen(onShowSettings: () -> Unit) {
+private fun HomeScreen(
+    onCat: (Cat) -> Unit,
+    onPair: () -> Unit,
+    onInbox: () -> Unit,
+    onSettings: () -> Unit,
+) {
     val ctx = LocalContext.current
     var status by remember { mutableStateOf<Status?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
-    // The cat tapped for its stats popup, and the one pending a
-    // forget confirmation.
-    var sheetCat by remember { mutableStateOf<Cat?>(null) }
-    var forgetTarget by remember { mutableStateOf<Cat?>(null) }
-    var forgetError by remember { mutableStateOf<String?>(null) }
-    val scope = rememberCoroutineScope()
-
-    sheetCat?.let { c ->
-        AlertDialog(
-            onDismissRequest = {
-                sheetCat = null
-                forgetError = null
-            },
-            title = { Text(c.name) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    val seen = status?.liveness?.get(c.key)?.takeIf { it != 0L }
-                    Text(livenessText(seen), style = MaterialTheme.typography.bodyMedium)
-                    HorizontalDivider(Modifier.padding(vertical = 4.dp))
-                    forgetError?.let {
-                        Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    sheetCat = null
-                    forgetError = null
-                }) { Text("Close") }
-            },
-            dismissButton = {
-                TextButton(onClick = { forgetTarget = c }) {
-                    Text("Forget", color = MaterialTheme.colorScheme.error)
-                }
-            },
-        )
-    }
-
-    forgetTarget?.let { c ->
-        AlertDialog(
-            onDismissRequest = { forgetTarget = null },
-            title = { Text("Forget ${c.name}?") },
-            text = {
-                Text(
-                    "Drops ${c.name} from your roster and cancels any pending " +
-                        "sends to it. Local only: ${c.name} keeps you in its roster.",
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    forgetTarget = null
-                    scope.launch {
-                        val r = withContextOrNull {
-                            ipc(ClowdService.socketFile(ctx), "forget", target = c.name)
-                        }
-                        if (r == null || !r.optBoolean("ok")) {
-                            forgetError = r?.optString("error")?.ifEmpty { null } ?: "daemon not reachable"
-                        } else {
-                            forgetError = null
-                            sheetCat = null
-                        }
-                    }
-                }) { Text("Forget", color = MaterialTheme.colorScheme.error) }
-            },
-            dismissButton = {
-                TextButton(onClick = { forgetTarget = null }) { Text("Cancel") }
-            },
-        )
-    }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -403,15 +323,18 @@ fun StatusScreen(onShowSettings: () -> Unit) {
             Row(
                 Modifier.padding(top = 16.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 LivenessDot(ClowdService.running)
-                Text(
-                    if (ClowdService.running) "daemon running" else "daemon stopped",
-                    style = MaterialTheme.typography.titleMedium,
-                )
+                Text("clowder", style = MaterialTheme.typography.titleLarge)
                 Spacer(Modifier.weight(1f))
-                IconButton(onClick = onShowSettings) {
+                IconButton(onClick = onInbox) {
+                    Icon(Icons.Outlined.Email, contentDescription = "inbox")
+                }
+                IconButton(onClick = onPair) {
+                    Icon(Icons.Outlined.Add, contentDescription = "pair a cat")
+                }
+                IconButton(onClick = onSettings) {
                     Icon(Icons.Outlined.Settings, contentDescription = "settings")
                 }
             }
@@ -440,20 +363,25 @@ fun StatusScreen(onShowSettings: () -> Unit) {
             }
         }
 
-        item { SectionHeader("clowder · ${st.cats.size} cats") }
+        item { SectionHeader("cats · ${st.cats.size}") }
         if (st.cats.isEmpty()) {
             item {
-                Text(
-                    "no cats yet — pair one from the Pair tab",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        "no cats yet — pair one to start sending",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 8.dp),
+                    )
+                    FilledTonalButton(onClick = onPair) { Text("pair a cat") }
+                }
             }
         }
         items(st.cats) { c ->
             val seen = st.liveness[c.key]?.takeIf { it != 0L }
+            val online = seen != null && System.currentTimeMillis() / 1000 - seen < 120
             ListItem(
-                modifier = Modifier.clickable { sheetCat = c },
+                modifier = Modifier.clickable { onCat(c) },
                 headlineContent = { Text(c.name) },
                 supportingContent = {
                     val role = when {
@@ -463,9 +391,7 @@ fun StatusScreen(onShowSettings: () -> Unit) {
                     }
                     Text(livenessText(seen) + role)
                 },
-                leadingContent = {
-                    LivenessDot(seen != null && System.currentTimeMillis() / 1000 - seen < 120)
-                },
+                leadingContent = { LivenessDot(online) },
             )
         }
 
@@ -501,8 +427,166 @@ fun StatusScreen(onShowSettings: () -> Unit) {
     }
 }
 
+/** One cat: the send action, what is moving to/from it right now,
+ *  what is queued for it, and forget. */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PairScreen() {
+private fun CatScreen(cat: Cat, onClose: () -> Unit) {
+    val ctx = LocalContext.current
+    var status by remember { mutableStateOf<Status?>(null) }
+    var sendResult by remember { mutableStateOf<String?>(null) }
+    var forgetConfirm by remember { mutableStateOf(false) }
+    var forgetError by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    val canSend = !cat.storer && !cat.dropbox
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            status = withContextOrNull { parseStatus(ipc(ClowdService.socketFile(ctx), "status")) }
+            delay(3000)
+        }
+    }
+
+    val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            scope.launch {
+                sendResult = withContext(Dispatchers.IO) { sendUri(ctx, uri, cat.name) }
+            }
+        }
+    }
+
+    if (forgetConfirm) {
+        AlertDialog(
+            onDismissRequest = { forgetConfirm = false },
+            title = { Text("Forget ${cat.name}?") },
+            text = {
+                Text(
+                    "Drops ${cat.name} from your roster and cancels any pending " +
+                        "sends to it. Local only: ${cat.name} keeps you in its roster.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    forgetConfirm = false
+                    scope.launch {
+                        val r = withContextOrNull {
+                            ipc(ClowdService.socketFile(ctx), "forget", target = cat.name)
+                        }
+                        if (r == null || !r.optBoolean("ok")) {
+                            forgetError = r?.optString("error")?.ifEmpty { null } ?: "daemon not reachable"
+                        } else {
+                            onClose()
+                        }
+                    }
+                }) { Text("Forget", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { forgetConfirm = false }) { Text("Cancel") }
+            },
+        )
+    }
+
+    Surface(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+            Row(
+                Modifier.padding(top = 16.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = onClose) {
+                    Icon(Icons.Outlined.KeyboardArrowLeft, contentDescription = "back")
+                }
+                Text(cat.name, style = MaterialTheme.typography.titleLarge)
+                Spacer(Modifier.weight(1f))
+                Text(
+                    cat.key.take(8),
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            HorizontalDivider(Modifier.padding(bottom = 8.dp))
+
+            val seen = status?.liveness?.get(cat.key)?.takeIf { it != 0L }
+            val online = seen != null && System.currentTimeMillis() / 1000 - seen < 120
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                LivenessDot(online)
+                Text(
+                    livenessText(seen) +
+                        when {
+                            cat.dropbox -> " · dropbox"
+                            cat.storer -> " · storer"
+                            else -> ""
+                        },
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+            if (canSend) {
+                Button(
+                    onClick = { pickFile.launch(arrayOf("*/*")) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 16.dp),
+                ) { Text("send a file to ${cat.name}") }
+            } else {
+                Text(
+                    "storers and dropboxes hold files — send to a regular cat",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 16.dp),
+                )
+            }
+            sendResult?.let {
+                Text(it, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 8.dp))
+            }
+            forgetError?.let {
+                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+            }
+
+            val transfers = status?.transfers?.filter { it.peer == cat.name } ?: emptyList()
+            if (transfers.isNotEmpty()) {
+                SectionHeader("transfers")
+                transfers.forEach { t ->
+                    ListItem(
+                        headlineContent = { Text("${if (t.receiving) "receiving" else "sending"} ${t.fileName}") },
+                        supportingContent = {
+                            Column {
+                                Text("${100 * t.done / t.total.coerceAtLeast(1)}%")
+                                LinearProgressIndicator(
+                                    progress = { t.done.toFloat() / t.total.coerceAtLeast(1).toFloat() },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 4.dp),
+                                )
+                            }
+                        },
+                    )
+                }
+            }
+
+            val outbox = status?.outbox?.filter { it.targetName == cat.name } ?: emptyList()
+            if (outbox.isNotEmpty()) {
+                SectionHeader("queued for ${cat.name} · ${outbox.size}")
+                outbox.forEach { e ->
+                    ListItem(
+                        headlineContent = { Text(e.fileName) },
+                        supportingContent = { Text("waiting to deliver") },
+                    )
+                }
+            }
+
+            Spacer(Modifier.weight(1f))
+            TextButton(
+                onClick = { forgetConfirm = true },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 24.dp),
+            ) { Text("Forget ${cat.name}", color = MaterialTheme.colorScheme.error) }
+        }
+    }
+}
+
+@Composable
+private fun PairScreen(onClose: () -> Unit) {
     val ctx = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
@@ -510,152 +594,86 @@ fun PairScreen() {
     var joinCode by remember { mutableStateOf("") }
     var joinResult by remember { mutableStateOf<String?>(null) }
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        SectionHeader("invite")
-        Text(
-            "Generates a fresh one-off code, valid 5 minutes. Read it to the other cat.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        FilledTonalButton(onClick = {
-            scope.launch {
-                val r = withContextOrNull { ipc(ClowdService.socketFile(ctx), "invite") }
-                inviteMessage = if (r != null && r.optBoolean("ok", false)) {
-                    r.optString("message").removePrefix("ask the other cat to run: clow join ")
-                } else {
-                    r?.optString("error") ?: "daemon not reachable"
-                }
-            }
-        }) { Text("new invite code") }
-
-        inviteMessage?.let { code ->
-            ElevatedCard(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        code,
-                        fontFamily = FontFamily.Monospace,
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                    TextButton(onClick = { clipboard.setText(AnnotatedString(code)) }) { Text("copy code") }
-                }
-            }
-        }
-
-        HorizontalDivider(Modifier.padding(top = 8.dp))
-
-        SectionHeader("join")
-        OutlinedTextField(
-            value = joinCode,
-            onValueChange = { joinCode = it },
-            label = { Text("pairing code (8 words + region)") },
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Button(
-            onClick = {
-                scope.launch {
-                    val r = withContextOrNull { ipc(ClowdService.socketFile(ctx), words = joinCode.trim(), op = "join") }
-                    joinResult = when {
-                        r == null -> "daemon not reachable"
-                        r.optBoolean("ok", false) -> "paired"
-                        else -> r.optString("error")
-                    }
-                }
-            },
-            enabled = joinCode.isNotBlank(),
-        ) { Text("join") }
-        joinResult?.let { Text(it) }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun SendScreen() {
-    val ctx = LocalContext.current
-    var expanded by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-    var cats by remember { mutableStateOf<List<Cat>>(emptyList()) }
-    var target by remember { mutableStateOf<String?>(null) }
-    var result by remember { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(Unit) {
-        val r = withContextOrNull { ipc(ClowdService.socketFile(ctx), "cats") }
-        r?.optJSONArray("cats")?.let { arr ->
-            cats = (0 until arr.length()).mapNotNull { i ->
-                arr.getJSONObject(i).let { o ->
-                    if (o.optBoolean("storer", false) || o.optBoolean("dropbox", false)) null
-                    else Cat(o.optString("name"), false, false, o.optString("key"))
-                }
-            }
-        }
-    }
-
-    val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null && target != null) {
-            scope.launch {
-                result = withContext(Dispatchers.IO) { sendUri(ctx, uri, target!!) }
-            }
-        }
-    }
-
-    Column(
-        Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        SectionHeader("send a file")
-        if (cats.isEmpty()) {
-            Text(
-                "no cats to send to yet — pair one from the Pair tab",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        } else {
-            ExposedDropdownMenuBox(
-                expanded = expanded,
-                onExpandedChange = { expanded = it },
+    Surface(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+            Row(
+                Modifier.padding(top = 16.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                OutlinedTextField(
-                    value = target ?: "",
-                    onValueChange = {},
-                    readOnly = true,
-                    label = { Text("send to") },
-                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .menuAnchor(MenuAnchorType.PrimaryNotEditable),
+                IconButton(onClick = onClose) {
+                    Icon(Icons.Outlined.KeyboardArrowLeft, contentDescription = "back")
+                }
+                Text("pair a cat", style = MaterialTheme.typography.titleLarge)
+            }
+            HorizontalDivider(Modifier.padding(bottom = 8.dp))
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .padding(top = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                SectionHeader("invite")
+                Text(
+                    "Generates a fresh one-off code, valid 5 minutes. Read it to the other cat.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                DropdownMenu(
-                    expanded = expanded,
-                    onDismissRequest = { expanded = false },
-                ) {
-                    cats.forEach { c ->
-                        DropdownMenuItem(
-                            text = { Text(c.name) },
-                            onClick = {
-                                target = c.name
-                                expanded = false
-                            },
-                        )
+                FilledTonalButton(onClick = {
+                    scope.launch {
+                        val r = withContextOrNull { ipc(ClowdService.socketFile(ctx), "invite") }
+                        inviteMessage = if (r != null && r.optBoolean("ok", false)) {
+                            r.optString("message").removePrefix("ask the other cat to run: clow join ")
+                        } else {
+                            r?.optString("error") ?: "daemon not reachable"
+                        }
+                    }
+                }) { Text("new invite code") }
+
+                inviteMessage?.let { code ->
+                    ElevatedCard(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                code,
+                                fontFamily = FontFamily.Monospace,
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            TextButton(onClick = { clipboard.setText(AnnotatedString(code)) }) { Text("copy code") }
+                        }
                     }
                 }
+
+                HorizontalDivider(Modifier.padding(top = 8.dp))
+
+                SectionHeader("join")
+                OutlinedTextField(
+                    value = joinCode,
+                    onValueChange = { joinCode = it },
+                    label = { Text("pairing code (8 words + region)") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Button(
+                    onClick = {
+                        scope.launch {
+                            val r = withContextOrNull {
+                                ipc(ClowdService.socketFile(ctx), words = joinCode.trim(), op = "join")
+                            }
+                            joinResult = when {
+                                r == null -> "daemon not reachable"
+                                r.optBoolean("ok", false) -> "paired"
+                                else -> r.optString("error")
+                            }
+                        }
+                    },
+                    enabled = joinCode.isNotBlank(),
+                ) { Text("join") }
+                joinResult?.let { Text(it) }
             }
         }
-        Button(
-            onClick = { pickFile.launch(arrayOf("*/*")) },
-            enabled = target != null,
-        ) { Text("pick a file for ${target ?: "…"}") }
-        result?.let { Text(it) }
     }
 }
 
 /** Copies the picked SAF document into the sandbox (the daemon needs a
- * real path, not a content URI) and queues the send. */
+ *  real path, not a content URI) and queues the send. */
 private fun sendUri(ctx: android.content.Context, uri: Uri, target: String): String = try {
     val name = queryName(ctx, uri) ?: "file"
     val staging = File(ctx.cacheDir, name)
@@ -690,7 +708,7 @@ data class InboxItem(
 )
 
 @Composable
-fun InboxScreen() {
+fun InboxScreen(onClose: () -> Unit) {
     val ctx = LocalContext.current
     var items by remember { mutableStateOf(listOf<InboxItem>()) }
     var refreshKey by remember { mutableIntStateOf(0) }
@@ -760,10 +778,13 @@ fun InboxScreen() {
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(start = 24.dp, end = 24.dp, top = 24.dp, bottom = 8.dp),
+                .padding(start = 12.dp, end = 24.dp, top = 16.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("inbox", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            IconButton(onClick = onClose) {
+                Icon(Icons.Outlined.KeyboardArrowLeft, contentDescription = "back")
+            }
+            Text("inbox", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
             OutlinedButton(onClick = { openInFilesApp(ctx) }) { Text("open in files") }
         }
         if (items.isEmpty()) {
@@ -820,8 +841,8 @@ private fun openInFilesApp(ctx: android.content.Context) {
 }
 
 /** Settings as a full screen, not a popup: daemon lifecycle, the
- *  daemon log, and reset. Reset keeps its confirmation dialog — a
- *  destructive action should interrupt. */
+ *  daemon log, leave and reset. Each keeps its confirmation dialog —
+ *  a destructive action should interrupt. */
 @Composable
 fun SettingsScreen(onClose: () -> Unit, onShowLog: () -> Unit, onReset: () -> Unit) {
     val ctx = LocalContext.current
@@ -917,12 +938,11 @@ fun SettingsScreen(onClose: () -> Unit, onShowLog: () -> Unit, onReset: () -> Un
             Row(
                 Modifier.padding(top = 16.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 IconButton(onClick = onClose) {
                     Icon(Icons.Outlined.KeyboardArrowLeft, contentDescription = "back")
                 }
-                Text("Settings", style = MaterialTheme.typography.titleLarge)
+                Text("settings", style = MaterialTheme.typography.titleLarge)
             }
             HorizontalDivider(Modifier.padding(bottom = 8.dp))
             Row(
@@ -1050,8 +1070,8 @@ fun LogScreen(onClose: () -> Unit) {
 }
 
 /** Runs [block] on Dispatchers.IO, returning null on any failure (a
- * socket error means the daemon is down; the UI treats null as
- * unreachable). */
+ *  socket error means the daemon is down; the UI treats null as
+ *  unreachable). */
 private suspend fun <T> withContextOrNull(block: () -> T): T? = withContext(Dispatchers.IO) {
     runCatching { block() }.getOrNull()
 }
