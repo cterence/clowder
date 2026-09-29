@@ -25,11 +25,18 @@ let
     pname = "clowder-android-daemon";
     inherit version src vendorHash;
     doCheck = false;
-    env = {
-      CGO_ENABLED = "0";
-      GOOS = "android";
-      GOARCH = "arm64";
-    };
+    env.CGO_ENABLED = "0";
+    # module.nix pins GOOS/GOARCH to the host platform (darwin here);
+    # exporting in preBuild — after the env is set, before go build —
+    # is what actually crosses to android/arm64.
+    preBuild = ''
+      export GOOS=android GOARCH=arm64
+    '';
+    postBuild = ''
+      # go puts cross binaries in $GOPATH/bin/android_arm64; module.nix
+      # normalizes that only for a cross stdenv, and this one is native.
+      mv "$GOPATH/bin/android_arm64"/* "$GOPATH/bin/"
+    '';
     postInstall = ''
       install -D $out/bin/clowder $out/lib/arm64-v8a/libclowder.so
       rm $out/bin/clowder
