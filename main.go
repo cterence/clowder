@@ -565,7 +565,18 @@ func watchSend(id, file, target string) error {
 			}
 		}
 		if !queued {
-			fmt.Printf("\r%-72s\n", fmt.Sprintf("sent %s to %s (delivered, or held by a storer until it is online)", file, target))
+			var done string
+			switch {
+			case resp.Settled[id] == "delivered":
+				done = fmt.Sprintf("sent %s to %s (delivered)", file, target)
+			case strings.HasPrefix(resp.Settled[id], "stored via "):
+				storer := strings.TrimPrefix(resp.Settled[id], "stored via ")
+				done = fmt.Sprintf("sent %s to %s (held by storer %s until %s is online)", file, target, storer, target)
+			default:
+				// Daemon restart pruned the outcome history.
+				done = fmt.Sprintf("sent %s to %s (delivered, or held by a storer until it is online)", file, target)
+			}
+			fmt.Printf("\r%-72s\n", done)
 			return nil
 		}
 		line := fmt.Sprintf("waiting: %s queued for %s", file, target)

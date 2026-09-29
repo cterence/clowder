@@ -128,6 +128,9 @@ type Daemon struct {
 
 	// Unix time each key was last seen on a successful connection, either direction.
 	liveness map[string]int64
+	// Bounded transfer-outcome history for the status op.
+	settled      map[string]string
+	settledOrder []string
 
 	// Set by Leave: refuse roster syncs (peers would repopulate the clowder
 	// we left). A new pairing clears it.
@@ -338,6 +341,40 @@ func (d *Daemon) markSeen(key string) {
 	d.mu.Lock()
 	d.liveness[key] = time.Now().Unix()
 	d.mu.Unlock()
+}
+
+// settle records how a transfer ended, bounded to settledMax entries:
+// a watcher that misses the window (daemon restart) gets no answer and
+// falls back to hedging.
+const settledMax = 100
+
+func (d *Daemon) settle(id, outcome string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.settled == nil {
+		d.settled = map[string]string{}
+	}
+	if _, ok := d.settled[id]; !ok {
+		d.settledOrder = append(d.settledOrder, id)
+	}
+	d.settled[id] = outcome
+	if len(d.settledOrder) > settledMax {
+		delete(d.settled, d.settledOrder[0])
+		d.settledOrder = d.settledOrder[1:]
+	}
+}
+
+func (d *Daemon) settledSnapshot() map[string]string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.settled) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(d.settled))
+	for k, v := range d.settled {
+		out[k] = v
+	}
+	return out
 }
 
 func (d *Daemon) SeenAt(key string) int64 {
@@ -935,6 +972,7 @@ func (d *Daemon) deliver(e Entry) {
 	}
 	if cat, ok := d.ros.GetByKey(e.TargetKey); ok {
 		if err := d.deliverStream(ctx, cat, e, cat.Key, cat.Name, protocol.AckDelivered); err == nil {
+			d.settle(e.ID, "delivered")
 			_ = d.ob.Delete(e.ID)
 			return
 		} else {
@@ -946,6 +984,7 @@ func (d *Daemon) deliver(e Entry) {
 			continue // never relay through a cat we distrust
 		}
 		if err := d.deliverStream(ctx, s, e, e.TargetKey, e.TargetName, protocol.AckStored); err == nil {
+			d.settle(e.ID, "stored via "+s.Name)
 			_ = d.ob.Delete(e.ID)
 			return
 		} else {

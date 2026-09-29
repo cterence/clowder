@@ -46,6 +46,10 @@ type Response struct {
 	Liveness map[string]int64 `json:"liveness,omitempty"`
 	// Progress lists the in-flight transfers (status op).
 	Progress []Progress `json:"progress,omitempty"`
+	// Settled maps a finished transfer ID to how it ended —
+	// "delivered", or "stored via <storer>" — for the status op,
+	// so a watcher can say which one happened. Bounded history.
+	Settled map[string]string `json:"settled,omitempty"`
 }
 
 func fail(err error) Response { return Response{OK: false, Error: err.Error()} }
@@ -212,6 +216,7 @@ func (d *Daemon) handleIPC(req Request) Response {
 			Stats:      &st,
 			Liveness:   d.livenessSnapshot(),
 			Progress:   d.prog.snapshot(),
+			Settled:    d.settledSnapshot(),
 		}
 
 	default:

@@ -264,3 +264,46 @@ func TestReceiveIdleStreamIsCleanedUp(t *testing.T) {
 		return err == nil && len(des) == 0
 	}, "the idle stream's partial file to be wiped")
 }
+
+// The status op reports how a transfer settled — delivered directly,
+// or stored by a named storer — so the CLI can say which one happened
+// instead of hedging.
+func TestSettledOutcome(t *testing.T) {
+	milo := startDaemon(t, "milo")
+	fluff := startDaemon(t, "fluff")
+	trust(t, milo, fluff)
+	trust(t, fluff, milo)
+
+	src := writeSource(t, "direct nap")
+	id, err := milo.Send("fluff", src)
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	waitFor(t, func() bool { return len(milo.ob.All()) == 0 }, "the direct send to settle")
+	resp := milo.handleIPC(Request{Op: "status"})
+	if got := resp.Settled[id]; got != "delivered" {
+		t.Fatalf("direct send settled as %q, want %q", got, "delivered")
+	}
+
+	// An offline target parks the file on a storer: the outcome names it.
+	storer := startDaemon(t, "box")
+	if err := storer.SetStorer(true, 1<<30); err != nil {
+		t.Fatal(err)
+	}
+	trust(t, milo, storer)
+	trust(t, storer, milo)
+	niko, _ := offlineCat(t)
+	addCat(t, milo, niko)
+	addCat(t, storer, niko)
+
+	src2 := writeSource(t, "stored nap")
+	id2, err := milo.Send("niko", src2)
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	waitFor(t, func() bool { return storer.Spool().Count() == 1 }, "the storer to hold the file")
+	resp = milo.handleIPC(Request{Op: "status"})
+	if got := resp.Settled[id2]; got != "stored via box" {
+		t.Fatalf("storer send settled as %q, want %q", got, "stored via box")
+	}
+}
