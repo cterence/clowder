@@ -1,57 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="108dp"
-    android:height="108dp"
-    android:viewportWidth="108"
-    android:viewportHeight="108">
-    <!-- Three cats huddled: the clowder mark. Two back cats with tails
-         curled outward, one in front; mascot style like tailcat's. -->
-    <group
-        android:translateX="39"
-        android:translateY="49"
-        android:scaleX="-1">
-        <path
-            android:fillColor="#F2B450"
-            android:pathData="M-8,-4 L-11,-14 L-2,-8.5 Z M8,-4 L11,-14 L2,-8.5 Z" />
-        <path
-            android:fillColor="#F2B450"
-            android:pathData="M-9.5,0 a9.5,9.5 0 1,1 19,0 a9.5,9.5 0 1,1 -19,0" />
-        <path
-            android:strokeColor="#F2B450"
-            android:strokeWidth="2.8"
-            android:strokeLineCap="round"
-            android:pathData="M7,8 C14,7 16,0 10.5,-4" />
-    </group>
-    <group
-        android:translateX="69"
-        android:translateY="49">
-        <path
-            android:fillColor="#7FB4D9"
-            android:pathData="M-8,-4 L-11,-14 L-2,-8.5 Z M8,-4 L11,-14 L2,-8.5 Z" />
-        <path
-            android:fillColor="#7FB4D9"
-            android:pathData="M-9.5,0 a9.5,9.5 0 1,1 19,0 a9.5,9.5 0 1,1 -19,0" />
-        <path
-            android:strokeColor="#7FB4D9"
-            android:strokeWidth="2.8"
-            android:strokeLineCap="round"
-            android:pathData="M7,8 C14,7 16,0 10.5,-4" />
-    </group>
-    <group
-        android:translateX="54"
-        android:translateY="63"
-        android:scaleX="1.15"
-        android:scaleY="1.15">
-        <path
-            android:fillColor="#C96F5A"
-            android:pathData="M-8,-4 L-11,-14 L-2,-8.5 Z M8,-4 L11,-14 L2,-8.5 Z" />
-        <path
-            android:fillColor="#C96F5A"
-            android:pathData="M-9.5,0 a9.5,9.5 0 1,1 19,0 a9.5,9.5 0 1,1 -19,0" />
-        <path
-            android:strokeColor="#C96F5A"
-            android:strokeWidth="2.8"
-            android:strokeLineCap="round"
-            android:pathData="M7,8 C14,7 16,0 10.5,-4" />
-    </group>
-</vector>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Three tailcat mascots (the upstream logo): two back, one front. -->
+    <item
+        android:drawable="@drawable/tailcat"
+        android:left="26dp"
+        android:top="31.2dp"
+        android:width="25dp"
+        android:height="29.5dp" />
+    <item
+        android:drawable="@drawable/tailcat"
+        android:left="57dp"
+        android:top="31.2dp"
+        android:width="25dp"
+        android:height="29.5dp" />
+    <item
+        android:drawable="@drawable/tailcat"
+        android:left="38.5dp"
+        android:top="40.7dp"
+        android:width="31dp"
+        android:height="36.6dp" />
+</layer-list>
