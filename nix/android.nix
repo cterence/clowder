@@ -88,9 +88,10 @@ in
   # loop; clowder-android wires it in itself.
   clowder-android-daemon = daemon;
 
-  # nix build .#clowder-android → the debug APK.
+  # nix build .#clowder-android → the debug APK itself as the output
+  # (a single-file output, like a fetchurl): result IS the apk.
   clowder-android = pkgs.stdenv.mkDerivation {
-    name = "clowder-android-${version}";
+    name = "clowder-android-${version}.apk";
     inherit src;
     nativeBuildInputs = [ pkgs.jdk17 pkgs.gradle ];
     inherit (gradleEnv) ANDROID_HOME ANDROID_SDK_ROOT JAVA_HOME GRADLE_OPTS NIX_SSL_CERT_FILE;
@@ -111,9 +112,7 @@ in
       runHook postBuild
     '';
     installPhase = ''
-      mkdir -p $out
-      cp android/app/build/outputs/apk/debug/app-debug.apk \
-         $out/clowder-debug.apk
+      cp android/app/build/outputs/apk/debug/app-debug.apk $out
     '';
   };
 }

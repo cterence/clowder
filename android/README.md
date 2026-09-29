@@ -19,8 +19,9 @@ hash-pinned fetch verified against
 every artifact's sha256 is checked in), and the APK builds offline
 from those caches. nix/android.nix holds the derivations.
 
-    nix build .#clowder-android
-    # -> result/clowder-debug.apk, signed with keystore-debug.keystore
+    nix build -o result.apk .#clowder-android
+    # result.apk IS the APK (single-file output), signed with
+    # keystore-debug.keystore; adb insists on the extension, hence -o
 
 Iterating in the devshell (SDK + JDK 17 + gradle, no Android Studio,
 no wrapper jar):
