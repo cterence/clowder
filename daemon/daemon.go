@@ -377,6 +377,19 @@ func (d *Daemon) settledSnapshot() map[string]string {
 	return out
 }
 
+func (d *Daemon) blockedSnapshot() map[string]bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.blocked) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(d.blocked))
+	for k := range d.blocked {
+		out[k] = true
+	}
+	return out
+}
+
 func (d *Daemon) SeenAt(key string) int64 {
 	d.mu.Lock()
 	defer d.mu.Unlock()

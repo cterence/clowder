@@ -620,3 +620,43 @@ func TestFileDigestMatchesContent(t *testing.T) {
 }
 
 var _ = io.Discard // keep io import if unused by future edits
+
+// The status op reports the local blocklist and leave tombstones, so
+// a mysterious refusal is one command to diagnose.
+func TestStatusReportsBlockedAndTombstoned(t *testing.T) {
+	milo := startDaemon(t, "milo")
+	fluff := startDaemon(t, "fluff")
+	trust(t, milo, fluff)
+	trust(t, fluff, milo)
+
+	// fluff leaves: milo records the tombstone and blocks the leaver.
+	if _, err := fluff.Leave(); err != nil {
+		t.Fatalf("Leave: %v", err)
+	}
+	waitFor(t, func() bool { return milo.isBlockedKey(fluff.Me().Key) },
+		"milo to block the leaver")
+	resp := milo.handleIPC(Request{Op: "status"})
+	if !resp.Blocked[fluff.Me().Key] {
+		t.Errorf("blocked keys = %v, want fluff's key", resp.Blocked)
+	}
+	found := false
+	for _, ts := range resp.Tombstones {
+		if ts.Key == fluff.Me().Key && ts.Time > 0 {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("tombstones = %+v, want fluff's key with a leave time", resp.Tombstones)
+	}
+
+	// A forgotten cat is reported too.
+	one, _ := offlineCat(t)
+	addCat(t, milo, one)
+	if _, ok := milo.Forget(one.Name); !ok {
+		t.Fatal("Forget failed")
+	}
+	resp = milo.handleIPC(Request{Op: "status"})
+	if !resp.Blocked[one.Key] {
+		t.Errorf("blocked keys = %v, want the forgotten cat's key", resp.Blocked)
+	}
+}

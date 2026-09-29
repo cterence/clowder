@@ -50,6 +50,12 @@ type Response struct {
 	// "delivered", or "stored via <storer>" — for the status op,
 	// so a watcher can say which one happened. Bounded history.
 	Settled map[string]string `json:"settled,omitempty"`
+	// Blocked lists the keys this cat refuses (forget, or a leave
+	// tombstone it applied): connections and roster re-adds both.
+	Blocked map[string]bool `json:"blocked,omitempty"`
+	// Tombstones lists the signed leaves on record, so a refusal can
+	// be traced to when the cat left.
+	Tombstones []roster.Tombstone `json:"tombstones,omitempty"`
 }
 
 func fail(err error) Response { return Response{OK: false, Error: err.Error()} }
@@ -217,6 +223,8 @@ func (d *Daemon) handleIPC(req Request) Response {
 			Liveness:   d.livenessSnapshot(),
 			Progress:   d.prog.snapshot(),
 			Settled:    d.settledSnapshot(),
+			Blocked:    d.blockedSnapshot(),
+			Tombstones: d.ros.Tombstones(),
 		}
 
 	default:

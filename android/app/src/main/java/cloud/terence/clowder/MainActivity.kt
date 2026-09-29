@@ -956,8 +956,10 @@ fun SettingsScreen(onClose: () -> Unit, onShowLog: () -> Unit, onReset: () -> Un
             text = {
                 Text(
                     "Its identity, rosters, spool and outbox are deleted and " +
-                        "you will name a new cat. Received files are kept. " +
-                        "This cannot be undone.",
+                        "you will name a new cat. The clowder is told goodbye " +
+                        "first: every cat will drop this one, and only a fresh " +
+                        "pair with EACH cat brings the new cat back. " +
+                        "Received files are kept. This cannot be undone.",
                 )
             },
             confirmButton = {
@@ -997,7 +999,8 @@ fun SettingsScreen(onClose: () -> Unit, onShowLog: () -> Unit, onReset: () -> Un
                 Text(
                     "Says a signed goodbye to every reachable cat, then wipes " +
                         "your roster, spool and outbox. Your identity is kept: " +
-                        "pair again with invite or join.",
+                        "pair again with invite or join. Every cat will drop " +
+                        "you — re-pairing with EACH cat is the only way back.",
                 )
             },
             confirmButton = {

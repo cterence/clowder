@@ -622,6 +622,7 @@ func cmdStorer(args []string) error {
 
 var statusFS = flag.NewFlagSet("status", flag.ContinueOnError)
 var statusAddresses = statusFS.Bool("addresses", false, "also print each cat's tailcat address")
+var statusBlocked = statusFS.Bool("blocked", false, "also list cats this cat refuses: blocklist and leave tombstones")
 
 func cmdStatus(args []string) error {
 	if err := statusFS.Parse(args); err != nil {
@@ -705,7 +706,52 @@ func cmdStatus(args []string) error {
 			st.Received, plural(int(st.Received), "file", "files"), daemon.HumanBytes(st.ReceivedBytes))
 		fmt.Printf("        spooled %d, pushed %d\n", st.Spooled, st.Pushed)
 	}
+
+	if *statusBlocked && (len(resp.Blocked) > 0 || len(resp.Tombstones) > 0) {
+		fmt.Println("\nrefused here (re-pair with each to recover):")
+		// One line per cat: the leave time and name where known.
+		left := map[string]int64{}
+		for _, ts := range resp.Tombstones {
+			left[ts.Key] = ts.Time
+		}
+		seen := map[string]bool{}
+		for key := range resp.Blocked {
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			fmt.Printf("  %s  %s\n", shortKey(key), refusedAs(key, left[key], resp.Cats))
+		}
+		for key, at := range left {
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			fmt.Printf("  %s  %s\n", shortKey(key), refusedAs(key, at, resp.Cats))
+		}
+	}
 	return nil
+}
+
+// refusedAs describes one locally-refused cat: name when the roster
+// still knows it, and how it got refused.
+func refusedAs(key string, leftAt int64, cats []roster.Cat) string {
+	name := ""
+	for _, c := range cats {
+		if c.Key == key {
+			name = c.Name
+		}
+	}
+	switch {
+	case name != "" && leftAt > 0:
+		return fmt.Sprintf("%s — blocked (left %s ago), still in roster", name, sinceStr(leftAt))
+	case name != "":
+		return fmt.Sprintf("%s — blocked", name)
+	case leftAt > 0:
+		return fmt.Sprintf("tombstone, left %s ago", sinceStr(leftAt))
+	default:
+		return "blocked"
+	}
 }
 
 func sendingID(progress []daemon.Progress, id string) (daemon.Progress, bool) {
