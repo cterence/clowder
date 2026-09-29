@@ -1,22 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Three tailcat mascots (the upstream logo): two back, one front. -->
+    <!-- Three tailcat mascots in a centered row: symmetric so every
+         mask shape (round, squircle) shows them centered. -->
     <item
         android:drawable="@drawable/tailcat"
-        android:left="26dp"
-        android:top="31.2dp"
-        android:width="25dp"
-        android:height="29.5dp" />
+        android:left="24dp"
+        android:top="42.2dp"
+        android:width="20dp"
+        android:height="23.6dp" />
     <item
         android:drawable="@drawable/tailcat"
-        android:left="57dp"
-        android:top="31.2dp"
-        android:width="25dp"
-        android:height="29.5dp" />
+        android:left="44dp"
+        android:top="42.2dp"
+        android:width="20dp"
+        android:height="23.6dp" />
     <item
         android:drawable="@drawable/tailcat"
-        android:left="38.5dp"
-        android:top="40.7dp"
-        android:width="31dp"
-        android:height="36.6dp" />
+        android:left="64dp"
+        android:top="42.2dp"
+        android:width="20dp"
+        android:height="23.6dp" />
 </layer-list>
