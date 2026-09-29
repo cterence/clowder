@@ -88,13 +88,13 @@ func (t *LocalTransport) Close() error {
 
 // ---- harness ----
 
-func startDaemon(t *testing.T, name string) *Daemon {
+func startDaemon(t *testing.T, name string, overrides ...func(*Config)) *Daemon {
 	t.Helper()
 	dir := t.TempDir()
 	if err := Init(dir, name); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	return startDaemonAt(t, dir)
+	return startDaemonAt(t, dir, overrides...)
 }
 
 // daemonStops maps a running loopback daemon to its stop function, so
@@ -114,9 +114,9 @@ func stopDaemon(d *Daemon) {
 
 // startDaemonAt runs a daemon on a config dir that Init (or a sleeping
 // offline cat) already prepared.
-func startDaemonAt(t *testing.T, dir string) *Daemon {
+func startDaemonAt(t *testing.T, dir string, overrides ...func(*Config)) *Daemon {
 	t.Helper()
-	return runDaemon(t, dir, &LocalTransport{})
+	return runDaemon(t, dir, &LocalTransport{}, overrides...)
 }
 
 // testPollEvery is the harness sync tick; tests that need to tell an
@@ -125,7 +125,7 @@ var testPollEvery = 150 * time.Millisecond
 
 // runDaemon starts a daemon on a prepared config dir with a custom
 // transport.
-func runDaemon(t *testing.T, dir string, tr Transport) *Daemon {
+func runDaemon(t *testing.T, dir string, tr Transport, overrides ...func(*Config)) *Daemon {
 	t.Helper()
 	// Keep the default inbox (under $HOME/Downloads/clowder) inside the
 	// test sandbox.
@@ -135,6 +135,9 @@ func runDaemon(t *testing.T, dir string, tr Transport) *Daemon {
 		RetryEvery: 150 * time.Millisecond,
 		PollEvery:  testPollEvery,
 		Logf:       t.Logf,
+	}
+	for _, o := range overrides {
+		o(&cfg)
 	}
 	d, err := New(cfg, tr)
 	if err != nil {

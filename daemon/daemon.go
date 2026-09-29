@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tailscale/tailcat"
@@ -34,6 +35,9 @@ const DefaultPort = 2569
 const (
 	defaultRetryEvery = 30 * time.Second
 	defaultPollEvery  = 60 * time.Second
+	// A cat with the app open should not wait a poll tick for a held
+	// file; the sweep is cheap when the spool is empty.
+	defaultSpoolSweepEvery = 5 * time.Second
 
 	msgTimeout             = 2 * time.Minute
 	streamTimeout          = 30 * time.Minute
@@ -79,7 +83,10 @@ type Config struct {
 	// Overrides where tailcat fetches its DERP map (server, dials, pairing).
 	DERPMapURL string
 	RetryEvery,
-	PollEvery time.Duration
+	PollEvery,
+	// SpoolSweepEvery is the storer push cadence, independent of the
+	// roster poll: a cat coming online gets its held files within it.
+	SpoolSweepEvery time.Duration
 	Logf func(format string, args ...any)
 }
 
@@ -146,6 +153,7 @@ type Daemon struct {
 	// In-flight transfer claims: refuse a second concurrent attempt per ID
 	// (retry/sweep races).
 	deliveryClaims *claimSet
+	sweeping       atomic.Bool // one spool sweep at a time
 	receiveClaims  *claimSet
 	// Guards reserved: the capacity check and claim are one atomic operation.
 	resMu    sync.Mutex
@@ -161,6 +169,9 @@ func New(cfg Config, tr Transport) (*Daemon, error) {
 	}
 	if cfg.PollEvery <= 0 {
 		cfg.PollEvery = defaultPollEvery
+	}
+	if cfg.SpoolSweepEvery <= 0 {
+		cfg.SpoolSweepEvery = defaultSpoolSweepEvery
 	}
 	env, err := Open(cfg.Dir)
 	if err != nil {
@@ -485,6 +496,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 	defer retry.Stop()
 	poll := time.NewTicker(d.cfg.PollEvery)
 	defer poll.Stop()
+	spool := time.NewTicker(d.cfg.SpoolSweepEvery)
+	defer spool.Stop()
 
 	d.goBg(func() { d.syncPeers(context.WithoutCancel(ctx)) })
 
@@ -506,7 +519,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 			d.goBg(d.retryOutbox)
 		case <-poll.C:
 			d.goBg(func() { d.syncPeers(context.WithoutCancel(ctx)) })
-			d.goBg(func() { d.sweepSpool(context.WithoutCancel(ctx)) })
+		case <-spool.C:
+			// One sweep at a time: a target's dialing timeout must
+			// not stack attempts.
+			d.goBg(func() {
+				if d.sweeping.CompareAndSwap(false, true) {
+					defer d.sweeping.Store(false)
+					d.sweepSpool(context.WithoutCancel(ctx))
+				}
+			})
 		}
 	}
 }
@@ -995,11 +1016,20 @@ func (d *Daemon) deliverStream(ctx context.Context, peer roster.Cat, e Entry, ta
 // sendSealed runs one Offer/Answer/stream/Ack exchange, shared by
 // deliveries (track enables status progress).
 func (d *Daemon) sendSealed(ctx context.Context, peer roster.Cat, o *protocol.Offer, src io.Reader, wantAck string, track bool) error {
-	pc, err := d.connect(ctx, peer, msgTimeout)
+	// The connect must fail fast so the sender can fall back to a
+	// storer: a cat still silent after the same 10s budget leave
+	// gives one cat is effectively dead. Only the dial+handshake is
+	// bounded — the stream keeps the caller's deadline.
+	connectCtx, cancelConnect := context.WithTimeout(ctx, leaveTimeout)
+	defer cancelConnect()
+	pc, err := d.connect(connectCtx, peer, leaveTimeout)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = pc.Close() }()
+	// Liveness proven under the fast budget; the offer/answer round
+	// gets its own deadline back — the handshake's lingers otherwise.
+	_ = pc.SetDeadline(time.Now().Add(msgTimeout))
 	// A cancel aborts at the wire: closing the conn fails this stream
 	// and the peer's, so the receiver drops its partial file instead
 	// of waiting out the stream deadline.

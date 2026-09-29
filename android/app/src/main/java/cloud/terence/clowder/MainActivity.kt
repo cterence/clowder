@@ -81,7 +81,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import android.provider.DocumentsContract
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -921,19 +920,11 @@ private fun openInboxItem(ctx: android.content.Context, item: InboxEntry) {
     runCatching { ctx.startActivity(Intent.createChooser(intent, item.name)) }
 }
 
-/** Opens the phone's file manager at Download/clowder itself;
- *  DevicesUI understands ACTION_VIEW on a document URI. Falls back
- *  to the Files app's root screen, then to the downloads UI. */
+/** Opens the phone's file manager. DocumentsUI is the platform's
+ *  (AOSP and Pixel package names); received files live in the real
+ *  Download/clowder directory, so any file manager shows them.
+ *  Without a Files app at all, fall back to the downloads UI. */
 private fun openInFilesApp(ctx: android.content.Context) {
-    val folder = DocumentsContract.buildDocumentUri(
-        "com.android.externalstorage.documents", "primary:Download/clowder",
-    )
-    runCatching {
-        ctx.startActivity(
-            Intent(Intent.ACTION_VIEW, folder).addCategory(Intent.CATEGORY_BROWSABLE),
-        )
-        return
-    }
     for (pkg in listOf("com.android.documentsui", "com.google.android.documentsui")) {
         val intent = ctx.packageManager.getLaunchIntentForPackage(pkg)
         if (intent != null) {
