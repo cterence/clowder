@@ -99,40 +99,18 @@ beats leader election at this scale.
 
 ## Pending work
 
-Ordered by complexity, easiest first; do not reorder without a reason.
-Update this list and the README when something ships.
+Track todos as GitHub issues, not in this file: file an issue for
+new work and reference it here only when the context an agent needs is
+not already captured there.
 
-1. **`clow version`** — a version command with the build's revision
-   wired through (ldflags from the flake, which currently hardcodes
-   `unstable-2026-09-26` in the store path name, so every build looks
-   identical and a stale daemon is indistinguishable from a fresh one —
-   this misled us on the real mesh).
-2. **Android app client** — architecture DECIDED, app scaffolded in
-   android/. The daemon is the plain GOOS=android binary shipped as
-   libclowder.so (nativeLibraryDir is executable), exec'd by ClowdService
-   — NOT gomobile bindings; the daemon package stays Android-dep-free;
-   the UI is plain Compose speaking the same unix-socket JSON IPC as the
-   CLI (daemon/ipc.go shapes). The daemon runs ONLY while the app is on
-   screen (MainActivity onStart/onStop drives the service; no
-   foreground service, no wake lock, no background battery use —
-   receiving while the app is closed is the storer's job). REMAINING:
-   dogfood — the APK builds green
-   from the flake (`nix develop .#android`, build-native.sh, `gradle
-   assembleDebug`; the emulator shell `nix develop .#emulator` runs it on
-   Apple Silicon) — then pair with a real cat, send/receive through the
-   app; then boot-receive, delivery notifications, and the storer-role
-   UI. Termux is explicitly NOT a goal (the app is
-   the answer); on-device builds blocked until Termux ships go >= 1.27.1.
-   The APK also builds hermetically: `nix build .#clowder-android`
-   (nix/android.nix; the devshell + build-native.sh remains the fast
-   iteration loop).
-3. **Multiple clowders** — named clowders: per-clowder roster files,
-   `--clowder` on invite/join/send, Hello carries the clowder name so a
-   connection routes to the right roster. One identity, one daemon,
-   clowders stay disjoint. Largest refactor; do last, design tombstones
-   against the final roster shape. Sync scaling lands here too: every
-   peer is synced every poll tick, so a full-roster exchange is O(N²)
-   bytes per cycle — fine at homelab scale.
+Tracked in GitHub issues:
+
+- Security and DoS findings from the 2026-09 security review: #6-#16
+- `clow version` (build revision through the flake): #17
+- Android app dogfooding (pair, send/receive, boot-receive,
+  notifications, storer UI): #18
+- Multiple clowders (named clowders, per-clowder rosters; sync
+  scaling lands here too, tracked in #16): #19
 
 ## Shipped
 
