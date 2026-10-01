@@ -99,6 +99,10 @@ beats leader election at this scale.
 
 ## Pending work
 
+Track todos as GitHub issues, not in this file: file an issue for
+new work and reference it here only when the context an agent needs is
+not already captured there.
+
 Tracked in GitHub issues:
 
 - Security and DoS findings from the 2026-09 security review: #6-#16
