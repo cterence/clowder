@@ -110,8 +110,8 @@ not already captured there.
 
 Tracked in GitHub issues:
 
-- Security and DoS findings from the 2026-09 security review: #6-#16
-- `clow version` (build revision through the flake): #17
+- Security and DoS findings from the 2026-09 security review: #7-#12,
+  #15, #16 (fixed by the hardening pass: #6, #9, #13, #14)
 - Android app dogfooding (pair, send/receive, boot-receive,
   notifications, storer UI): #18
 - Multiple clowders (named clowders, per-clowder rosters; sync
@@ -121,6 +121,17 @@ Tracked in GitHub issues:
 
 One line each; the pinning tests carry the details.
 
+- **Security hardening pass** (#6, #9, #13, #14): a sync is not a
+  trust root — unsigned entries for unknown keys no longer propagate
+  and a tailcat address's Key must derive from the Addr (TestSyncRejects
+  UnknownUnsignedEntry); an authenticated client key can only mark its
+  own roster identity seen and the liveness map is bounded
+  (TestServeConnMarksOnlyKnownIdentities, TestMarkSeenBounded); the
+  pairing code is never logged whole (TestInviteCodeStaysOutOfLogs);
+  IPC is unix-socket-only, the path-sniffed TCP fallback is gone
+  (TestIPCPathWithColonStaysUnix).
+- **`clow version`** (#17): the flake wires the build revision through
+  ldflags, so a stale daemon is distinguishable from a fresh one.
 - **Pairing and roster UX**: join is daemon-side state — the CLI
   returns at once and polls, Ctrl-C leaves the attempt running, and a
   retry with the same code reports the recorded outcome instead of
@@ -240,3 +251,9 @@ One line each; the pinning tests carry the details.
   Hello — so a cat upgrading mid-attack can be pinned wrong once; and a
   tombstone for a key a cat never knew is unverifiable and dropped, so
   a brand-new member can be fed a stale pre-leave entry by a stale peer.
+- Unsigned sync entries for unknown keys are refused, but a SIGNED
+  entry still propagates for unknown keys: a paired cat can pre-register
+  a victim's key (with the victim's real address and a newer timestamp)
+  under its own sign key, and the victim's genuine entry is then refused
+  until they re-pair. Closing that needs sign keys bound to node keys
+  on the wire.

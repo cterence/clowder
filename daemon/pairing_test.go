@@ -103,9 +103,7 @@ func TestPairIntroExchange(t *testing.T) {
 	// valid tailcat addresses; give each cat its identity-derived one
 	// for the exchange.
 	for _, d := range []*Daemon{inviter, joiner} {
-		d.mu.Lock()
-		d.meCat.Addr = string(d.env.Identity.Public.Addr())
-		d.mu.Unlock()
+		withRealAddr(d)
 	}
 
 	// A TCP loopback pair, not net.Pipe: the exchange has both sides
@@ -238,9 +236,7 @@ func TestPairIntroUnconfirmedDoesNotCommit(t *testing.T) {
 	inviter := startDaemon(t, "milo")
 	joiner := startDaemon(t, "fluff")
 	for _, d := range []*Daemon{inviter, joiner} {
-		d.mu.Lock()
-		d.meCat.Addr = string(d.env.Identity.Public.Addr())
-		d.mu.Unlock()
+		withRealAddr(d)
 	}
 	c1, c2 := tcpPair(t)
 
@@ -276,9 +272,7 @@ func TestPairIntroCommitsDespiteLostConfirmation(t *testing.T) {
 	inviter := startDaemon(t, "milo")
 	joiner := startDaemon(t, "fluff")
 	for _, d := range []*Daemon{inviter, joiner} {
-		d.mu.Lock()
-		d.meCat.Addr = string(d.env.Identity.Public.Addr())
-		d.mu.Unlock()
+		withRealAddr(d)
 	}
 	c1, c2 := tcpPair(t)
 
@@ -321,9 +315,7 @@ func TestPairingRefusesDuplicateName(t *testing.T) {
 	pretender := startDaemon(t, "fluff") // same name, different identity
 	niche := startDaemon(t, "niche")     // a legit later joiner
 	for _, d := range []*Daemon{inviter, squatter, pretender, niche} {
-		d.mu.Lock()
-		d.meCat.Addr = string(d.env.Identity.Public.Addr())
-		d.mu.Unlock()
+		withRealAddr(d)
 	}
 	addCat(t, inviter, squatter.Me())
 
@@ -400,9 +392,7 @@ func TestJoinRosterPush(t *testing.T) {
 	addCat(t, inviter, third)
 	inviter.markSeen(third.Key)
 	for _, d := range []*Daemon{inviter, joiner} {
-		d.mu.Lock()
-		d.meCat.Addr = string(d.env.Identity.Public.Addr())
-		d.mu.Unlock()
+		withRealAddr(d)
 	}
 
 	c1, c2 := tcpPair(t)
@@ -452,9 +442,7 @@ func TestPairingFansOutRosterSync(t *testing.T) {
 	trust(t, inviter, third)
 	trust(t, third, inviter)
 	for _, d := range []*Daemon{inviter, joiner} {
-		d.mu.Lock()
-		d.meCat.Addr = string(d.env.Identity.Public.Addr())
-		d.mu.Unlock()
+		withRealAddr(d)
 	}
 
 	c1, c2 := tcpPair(t)
@@ -517,9 +505,7 @@ func TestPairingHoldsChannelForJoinerAck(t *testing.T) {
 	inviter := startDaemon(t, "milo")
 	joiner := startDaemon(t, "fluff")
 	for _, d := range []*Daemon{inviter, joiner} {
-		d.mu.Lock()
-		d.meCat.Addr = string(d.env.Identity.Public.Addr())
-		d.mu.Unlock()
+		withRealAddr(d)
 	}
 
 	c1, c2 := tcpPair(t)
@@ -572,10 +558,7 @@ func TestRepairSurvivesStaleTombstone(t *testing.T) {
 	// The loopback transport's address is not a valid tailcat address;
 	// pair against the identity-derived one, re-signed so the intro's
 	// signature covers it.
-	fluff.mu.Lock()
-	fluff.meCat.Addr = string(fluff.env.Identity.Public.Addr())
-	fluff.meCat = roster.SignCat(fluff.env.SignPriv, fluff.meCat)
-	fluff.mu.Unlock()
+	withRealAddr(fluff)
 
 	// The tombstone from fluff's leave AFTER its daemon started —
 	// newer than the entry it was created with, as a real

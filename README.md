@@ -91,6 +91,7 @@ path if lost — except the identity.
                                                         a local wipe — run clow leave
                                                         first to depart, and stop the
                                                         daemon first
+    clow version                                        print the build revision
 
 ## Running in a container
 

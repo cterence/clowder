@@ -42,9 +42,7 @@ func TestJoinRefusesTakenName(t *testing.T) {
 	inviter := startDaemon(t, "niko") // same name, different identity
 	// A real tailcat address, so the joiner can derive the inviter's
 	// key from the intro (LocalTransport addresses do not parse).
-	inviter.mu.Lock()
-	inviter.meCat.Addr = string(inviter.env.Identity.Public.Addr())
-	inviter.mu.Unlock()
+	withRealAddr(inviter)
 
 	c1, c2 := tcpPair(t)
 	var wg sync.WaitGroup

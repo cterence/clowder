@@ -7,7 +7,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"clowder/roster"
@@ -64,12 +63,9 @@ func okMsg(s string) Response { return Response{OK: true, Message: s} }
 // IPCPath returns the daemon's IPC socket path for a config dir.
 func IPCPath(dir string) string { return filepath.Join(dir, "clow.sock") }
 
-// listenIPC listens on a unix socket (0600: any local process could
-// otherwise drive the daemon), or TCP if path contains a colon (tests).
+// listenIPC listens on a unix socket, user-only (any local process
+// could otherwise drive the daemon).
 func listenIPC(path string) (net.Listener, error) {
-	if strings.Contains(path, ":") {
-		return net.Listen("tcp", path)
-	}
 	_ = os.Remove(path)
 	ln, err := net.Listen("unix", path)
 	if err != nil {
@@ -258,13 +254,7 @@ func WatchIPC(path string, req Request, logf func(string)) (Response, error) {
 }
 
 func dialIPC(path string) (net.Conn, error) {
-	var conn net.Conn
-	var err error
-	if strings.Contains(path, ":") {
-		conn, err = net.Dial("tcp", path)
-	} else {
-		conn, err = net.Dial("unix", path)
-	}
+	conn, err := net.Dial("unix", path)
 	if err != nil {
 		return nil, fmt.Errorf("daemon not running (%s): %w", path, err)
 	}

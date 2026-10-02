@@ -232,7 +232,9 @@ func (d *Daemon) StartInvite(ctx context.Context) (string, error) {
 	})
 
 	code := fmt.Sprintf("%s-%d", strings.Join(words, "-"), region)
-	d.cfg.logf("clowder: pairing invite %s active for %s", code, pairTTL)
+	// The code is a 5-minute credential and logs outlive it: redact all
+	// but the first word, enough to match an invite without replaying it.
+	d.cfg.logf("clowder: pairing invite active for %s (first word: %s)", pairTTL, words[0])
 	return code, nil
 }
 

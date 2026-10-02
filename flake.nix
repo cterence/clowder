@@ -63,7 +63,9 @@
       # still be a release behind.
       packages =
         let
-          version = "unstable-2026-09-26";
+          # Every build names its revision, so a stale daemon is
+          # distinguishable from a fresh one (`clow version`).
+          version = "unstable-${self.shortRev or self.lastModifiedDate}";
           goPackages = forEachSupportedSystem (
             { pkgs }:
             {
@@ -75,6 +77,7 @@
                 inherit version;
                 src = self;
                 vendorHash = "sha256-B0NZyZgmJqKRNZ+9iHPPM1LBdx5UpVxkdEkOIlllXTc=";
+                ldflags = [ "-X main.version=${version}" ];
                 # go names the binary after the module; users type clow.
                 postInstall = ''
                   mv $out/bin/clowder $out/bin/clow
