@@ -335,12 +335,25 @@ func (d *Daemon) Cancel(id string) (int, error) {
 	return n, nil
 }
 
+// livenessMax bounds the liveness map: honest rosters stay far below
+// it, and whatever a malicious peer claims cannot grow it without end.
+const livenessMax = 4096
+
 func (d *Daemon) markSeen(key string) {
 	if key == "" {
 		return
 	}
 	d.mu.Lock()
 	d.liveness[key] = time.Now().Unix()
+	if len(d.liveness) > livenessMax {
+		oldestKey, oldest := "", int64(1<<62)
+		for k, v := range d.liveness {
+			if v < oldest {
+				oldestKey, oldest = k, v
+			}
+		}
+		delete(d.liveness, oldestKey)
+	}
 	d.mu.Unlock()
 }
 
@@ -699,8 +712,10 @@ func (d *Daemon) serveConn(pc *protocol.Conn, authKey key.NodePublic, authed boo
 		// Serve newer peers anyway: an upgrade must never partition the clowder.
 		d.cfg.logf("clowder: %s speaks protocol version %d, newer than ours (%d); serving anyway", peer.Name, peer.Version, protocol.HelloVersion)
 	}
-	d.markSeen(peer.Key)
-	d.pinSignKey(peer)
+	if !authed || d.helloIdentityKnown(peer) {
+		d.markSeen(peer.Key)
+		d.pinSignKey(peer)
+	}
 	if err := pc.WriteMsg(&protocol.Message{Hello: d.helloMsg()}); err != nil {
 		return
 	}
@@ -1255,6 +1270,19 @@ func (d *Daemon) mergeRemote(sync *protocol.RosterSync) {
 		if d.isBlockedKey(c.Key) || d.isBlockedKey(c.ClientKey) {
 			continue
 		}
+		// A sync is not a trust root: an entry for a key we do not hold
+		// must be signed (pairing is the only unsigned path in), and a
+		// tailcat address carries the identity key, so the claimed Key
+		// must be derivable from the Addr. Loopback tests use raw TCP
+		// addrs, which carry nothing to check.
+		if _, known := d.ros.GetByKey(c.Key); !known && !roster.VerifyEntry(c) {
+			continue
+		}
+		if ci, err := tailcat.ParseAddr(tailcat.Addr(c.Addr)); err == nil {
+			if ci.ServerPublic.String() != c.Key {
+				continue
+			}
+		}
 		filtered = append(filtered, c)
 	}
 	changed, err := d.ros.Merge(filtered)
@@ -1274,6 +1302,15 @@ func (d *Daemon) mergeRemote(sync *protocol.RosterSync) {
 
 // pinSignKey records the Hello's sign key on the peer's roster entry; the
 // connection is transport-authenticated, and later merges verify against it.
+// helloIdentityKnown reports whether the Hello's claimed identity key
+// belongs to the authenticated client: a roster entry under that key
+// whose ClientKey matches. Pre-client-key entries cannot be checked
+// and stay trusted as before.
+func (d *Daemon) helloIdentityKnown(peer *protocol.Hello) bool {
+	c, ok := d.ros.GetByKey(peer.Key)
+	return ok && (c.ClientKey == "" || c.ClientKey == peer.ClientKey)
+}
+
 func (d *Daemon) pinSignKey(peer *protocol.Hello) {
 	if peer.SignKey == "" {
 		return

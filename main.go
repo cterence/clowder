@@ -20,6 +20,10 @@ import (
 	"clowder/roster"
 )
 
+// version is the build revision, wired through the flake's ldflags;
+// plain `go build` reports "dev".
+var version = "dev"
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintf(os.Stderr, "clow: %v\n", err)
@@ -66,6 +70,9 @@ func run(args []string) error {
 		return cmdStatus(rest)
 	case "inbox":
 		return cmdInbox(rest)
+	case "version":
+		fmt.Println("clow " + version)
+		return nil
 	default:
 		return fmt.Errorf("unknown command %q (run \"clow --help\" for usage)", cmd)
 	}
@@ -142,6 +149,9 @@ var commandDocs = []commandDoc{
 	{"ping", "mesh state",
 		"check a cat is online (real round trip, marks liveness both ways)",
 		"clow ping <CAT-OR-KEY>", nil, []string{hintDaemon}},
+	{"version", "mesh state",
+		"print the build revision",
+		"clow version", nil, nil},
 }
 
 // usageText is the root help, urfave-cli style: command names aligned
@@ -162,7 +172,7 @@ func usageText() string {
 }
 
 // cmdWidth is the longest command name; keep it honest when adding one.
-const cmdWidth = len("daemon")
+const cmdWidth = len("version")
 
 func printUsage() error {
 	fmt.Print(usageText())

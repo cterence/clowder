@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -266,5 +267,27 @@ func TestOnlineFirst(t *testing.T) {
 	}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Errorf("onlineFirst = %v, want %v", names, want)
+	}
+}
+
+func TestVersionCommand(t *testing.T) {
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	runErr := run([]string{"version"})
+	w.Close()
+	os.Stdout = old
+	out, _ := io.ReadAll(r)
+	if runErr != nil {
+		t.Fatalf("version: %v", runErr)
+	}
+	if !strings.HasPrefix(string(out), "clow ") {
+		t.Fatalf("version output = %q", out)
+	}
+	if doc("version").name == "" {
+		t.Error("version has no help entry")
 	}
 }

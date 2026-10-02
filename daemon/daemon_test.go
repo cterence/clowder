@@ -162,6 +162,16 @@ func runDaemon(t *testing.T, dir string, tr Transport, overrides ...func(*Config
 	return d
 }
 
+// withRealAddr swaps a loopback daemon's transport address for its
+// identity-derived tailcat address, re-signing the entry so the intro's
+// signature covers it.
+func withRealAddr(d *Daemon) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.meCat.Addr = string(d.env.Identity.Public.Addr())
+	d.meCat = roster.SignCat(d.env.SignPriv, d.meCat)
+}
+
 // trust makes d know and allow another daemon.
 func trust(t *testing.T, d *Daemon, other *Daemon) {
 	t.Helper()
@@ -187,14 +197,14 @@ func offlineCat(t *testing.T) (roster.Cat, string) {
 		t.Fatalf("Open: %v", err)
 	}
 	signPub := env.SignPriv.Public().(ed25519.PublicKey)
-	return roster.Cat{
+	return roster.SignCat(env.SignPriv, roster.Cat{
 		Name:      name,
 		Addr:      "127.0.0.1:1", // nothing listens here
 		Key:       env.Identity.Public.ServerPublic.String(),
 		ClientKey: env.ClientIdentity.Public().String(),
 		SignKey:   hex.EncodeToString(signPub),
 		Updated:   time.Now().Unix(),
-	}, dir
+	}), dir
 }
 
 // addCat records a raw roster entry.
@@ -441,8 +451,8 @@ func TestSyncPeersDialsEveryPeer(t *testing.T) {
 			t.Errorf("syncPeers skipped %s; every roster entry must be reached each sync", c.Name)
 		}
 	}
-	if _, ok := milo.Roster().GetByKey(cedar.Key); !ok {
-		t.Error("milo did not learn cedar from fluff in one sync")
+	if _, ok := milo.Roster().GetByKey(cedar.Key); ok {
+		t.Error("milo learned cedar from fluff: an unsigned entry for an unknown key must not propagate via sync")
 	}
 }
 
