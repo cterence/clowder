@@ -11,6 +11,11 @@ tailcat. Go module `clowder`, depends on upstream
 `github.com/tailscale/tailcat` (pinned to the commit that added
 `Server.PeerKey`).
 
+## Skills
+
+Always load the `go` and `ponytail` skills before writing or
+reviewing code in this repo.
+
 ## Commands
 
     nix develop                    # devshell: go, gopls, golangci-lint, prek; installs git hooks
@@ -181,6 +186,12 @@ One line each; the pinning tests carry the details.
   immediately. Ctrl-C (or `clow cancel [<ID>]`, all sends when no
   ID) drops the outbox entry and aborts an in-flight attempt
   through its delivery claim.
+- **Clipboard send**: `clow send --clipboard <CAT>` and the Android
+  app's send-clipboard button stage the clipboard as a file
+  (`<configdir>/staging` on the CLI, cacheDir on Android — outbox
+  retries re-read the source, so the copy must outlive the send)
+  and the CLI removes it once the send settles; `--async` and
+  refused-IPC paths can leave it behind.
 - **Wire-adjacent**: Hello wire-version field (logged, never refused),
   fuzz targets (ReadMsg, parsePairCode, inboxPath), disco-ping dial
   probe (meow Ping is one-shot per client), allocation-bounded

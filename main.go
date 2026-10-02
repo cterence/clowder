@@ -3,14 +3,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"syscall"
@@ -122,8 +125,8 @@ var commandDocs = []commandDoc{
 		"pair with the cat that invited",
 		"clow join <CODE>", nil, []string{hintPair, hintDaemon}},
 	{"send", "transferring files",
-		"send a file, watching progress until it is delivered or a storer holds it",
-		"clow send [--async] <CAT> <FILE>", sendFS, []string{hintDaemon}},
+		"send a file or the clipboard, watching progress until it is delivered or a storer holds it",
+		"clow send [--async] [--clipboard] <CAT> [<FILE>]", sendFS, []string{hintDaemon}},
 	{"inbox", "transferring files",
 		"list received files, or move the inbox",
 		"clow inbox [--set DIR]", inboxFS, []string{hintInbox}},
@@ -500,31 +503,109 @@ func storerTag(storer, dropbox bool) string {
 
 var sendFS = flag.NewFlagSet("send", flag.ContinueOnError)
 var sendAsync = sendFS.Bool("async", false, "queue the send and return (default: watch until delivered or a storer holds it)")
+var sendClipboard = sendFS.Bool("clipboard", false, "send the system clipboard as a text file (takes only the target cat)")
 
 func cmdSend(args []string) error {
 	if err := sendFS.Parse(args); err != nil {
 		return err
 	}
-	async := *sendAsync
-	if sendFS.NArg() != 2 {
+	async, clip := *sendAsync, *sendClipboard
+	if (clip && sendFS.NArg() != 1) || (!clip && sendFS.NArg() != 2) {
 		return fmt.Errorf("usage: %s", doc("send").usage)
 	}
-	path, err := filepath.Abs(sendFS.Arg(1))
-	if err != nil {
+	target := sendFS.Arg(0)
+	var path string
+	var staged bool
+	if clip {
+		content, err := readClipboard()
+		if err != nil {
+			return err
+		}
+		path, err = stageClipboard(content)
+		if err != nil {
+			return err
+		}
+		staged = true
+	} else {
+		var err error
+		path, err = filepath.Abs(sendFS.Arg(1))
+		if err != nil {
+			return err
+		}
+	}
+	if refused, err := queueAndWatch(target, path, async); err != nil {
+		// The outbox re-reads its source on retries, so the staged copy
+		// stays for a transfer that may still be live (an errored
+		// watch or a lost IPC reply); a refusal queued nothing.
+		if staged && refused {
+			_ = os.Remove(path)
+		}
 		return err
 	}
-	resp, err := call(daemon.Request{Op: "send", Target: sendFS.Arg(0), Path: path})
+	if staged {
+		_ = os.Remove(path)
+	}
+	return nil
+}
+
+// queueAndWatch queues the send and follows it unless async. refused
+// reports the daemon's explicit no — nothing was queued.
+func queueAndWatch(target, path string, async bool) (bool, error) {
+	resp, err := call(daemon.Request{Op: "send", Target: target, Path: path})
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !resp.OK {
-		return fmt.Errorf("%s", resp.Error)
+		return true, fmt.Errorf("%s", resp.Error)
 	}
 	fmt.Println(resp.Message)
 	if async || resp.ID == "" {
-		return nil
+		return false, nil
 	}
-	return watchSend(resp.ID, filepath.Base(path), sendFS.Arg(0))
+	return false, watchSend(resp.ID, filepath.Base(path), target)
+}
+
+// clipboardCmd is the platform's own clipboard dumper: no cgo, no
+// clipboard library, just the tool every desktop ships.
+func clipboardCmd() (string, []string) {
+	switch runtime.GOOS {
+	case "darwin":
+		return "pbpaste", nil
+	case "windows":
+		return "powershell.exe", []string{"-NoProfile", "-Command", "Get-Clipboard"}
+	}
+	if os.Getenv("WAYLAND_DISPLAY") != "" {
+		return "wl-paste", nil
+	}
+	return "xclip", []string{"-selection", "clipboard", "-o"}
+}
+
+func readClipboard() ([]byte, error) {
+	name, args := clipboardCmd()
+	out, err := exec.Command(name, args...).Output()
+	if err != nil {
+		return nil, fmt.Errorf("reading clipboard with %s: %w", name, err)
+	}
+	if len(bytes.TrimSpace(out)) == 0 {
+		return nil, fmt.Errorf("clipboard is empty")
+	}
+	return out, nil
+}
+
+// stageClipboard parks the clipboard text in the config dir: outbox
+// retries re-read the source path, so it must outlive this process.
+// ponytail: --async and errored watches leave the file behind; sweep
+// <configdir>/staging if that ever matters.
+func stageClipboard(content []byte) (string, error) {
+	dir := filepath.Join(configDir(), "staging")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, "clipboard-"+time.Now().Format("20060102-150405")+".txt")
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 // watchSend follows a queued transfer until it leaves the outbox:

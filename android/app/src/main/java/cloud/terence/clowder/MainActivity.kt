@@ -451,6 +451,7 @@ private fun HomeScreen(
 @Composable
 private fun CatScreen(cat: Cat, onClose: () -> Unit) {
     val ctx = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     var status by remember { mutableStateOf<Status?>(null) }
     var sendResult by remember { mutableStateOf<String?>(null) }
     var pingResult by remember { mutableStateOf<String?>(null) }
@@ -609,6 +610,23 @@ private fun CatScreen(cat: Cat, onClose: () -> Unit) {
                     enabled = selected.isNotEmpty(),
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("send ${selected.size} file(s) to ${cat.name}") }
+                OutlinedButton(
+                    onClick = {
+                        val text = clipboard.getText()?.text
+                        if (text.isNullOrBlank()) {
+                            sendResult = "clipboard is empty"
+                        } else {
+                            scope.launch {
+                                sendResult = withContext(Dispatchers.IO) {
+                                    sendClipboardText(ctx, text, cat.name)
+                                }
+                            }
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp),
+                ) { Text("send clipboard to ${cat.name}") }
             } else {
                 Text(
                     "storers and dropboxes hold files — send to a regular cat",
@@ -773,6 +791,17 @@ private fun sendUri(ctx: android.content.Context, uri: Uri, target: String): Str
     ctx.contentResolver.openInputStream(uri)!!.use { input ->
         staging.outputStream().use { input.copyTo(it) }
     }
+    val r = ipcWait(ClowdService.socketFile(ctx), op = "send", target = target, path = staging.absolutePath)
+    if (r.optBoolean("ok", false)) r.optString("message") else r.optString("error")
+} catch (e: Exception) {
+    "send failed: ${e.message}"
+}
+
+/** Stages the clipboard text as a file and queues the send — the
+ *  daemon needs a real path, not in-memory content. */
+private fun sendClipboardText(ctx: android.content.Context, text: String, target: String): String = try {
+    val staging = File(ctx.cacheDir, "clipboard-" + System.currentTimeMillis() / 1000 + ".txt")
+    staging.writeText(text)
     val r = ipcWait(ClowdService.socketFile(ctx), op = "send", target = target, path = staging.absolutePath)
     if (r.optBoolean("ok", false)) r.optString("message") else r.optString("error")
 } catch (e: Exception) {

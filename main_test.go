@@ -173,6 +173,34 @@ func TestStorerFlagParses(t *testing.T) {
 	}
 }
 
+// TestSendClipboardFlagParses proves --clipboard gets past flag
+// parsing and the usage check: without a daemon the failure must
+// come from the clipboard read or the IPC dial, never the flag set.
+func TestSendClipboardFlagParses(t *testing.T) {
+	t.Setenv("CLOWDER_DIR", t.TempDir())
+	err := run([]string{"send", "--clipboard", "milo"})
+	if err == nil {
+		t.Fatal("send --clipboard succeeded without a daemon, want error")
+	}
+	if strings.Contains(err.Error(), "flag provided but not defined") || strings.Contains(err.Error(), "usage:") {
+		t.Fatalf("--clipboard no longer parses: %v", err)
+	}
+}
+
+// TestSendClipboardNeedsTarget pins --clipboard's arity: it takes the
+// target cat and nothing else.
+func TestSendClipboardNeedsTarget(t *testing.T) {
+	t.Setenv("CLOWDER_DIR", t.TempDir())
+	err := run([]string{"send", "--clipboard"})
+	if err == nil || !strings.Contains(err.Error(), "usage:") {
+		t.Fatalf("send --clipboard without target: err = %v, want usage error", err)
+	}
+	err = run([]string{"send", "--clipboard", "milo", "somefile"})
+	if err == nil || !strings.Contains(err.Error(), "usage:") {
+		t.Fatalf("send --clipboard with a file: err = %v, want usage error", err)
+	}
+}
+
 // TestStatusAddressesFlagParses proves --addresses gets past flag
 // parsing: without a daemon the command must fail on the IPC dial,
 // not on the flag set.

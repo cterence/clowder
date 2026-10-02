@@ -71,7 +71,9 @@ path if lost — except the identity.
                                                         run the mesh daemon
     clow invite                                         8-word pairing code (5 min, one join)
     clow join <CODE>                                    pair with the inviter
-    clow send [--async] <CAT> <FILE>                    send; watches progress unless --async
+    clow send [--async] [--clipboard] <CAT> [<FILE>]     send a file, or the
+                                                        clipboard with --clipboard;
+                                                        watches progress unless --async
     clow inbox [--set DIR]                              list received files / change inbox
     clow storer [--max SIZE] on|off|dropbox                           volunteer to hold files for others
                                                         (dropbox: third parties only)
