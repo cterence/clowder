@@ -5,6 +5,8 @@ import (
 	"crypto/ed25519"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -153,10 +155,23 @@ func TestMarkSeenBounded(t *testing.T) {
 
 // TestInviteCodeStaysOutOfLogs pins the log-redaction fix: the pairing
 // code is a 5-minute credential and must never appear whole in a log.
+// The DERP map comes from a loopback httptest server: no test may
+// reach the network (CI runners cannot verify tailcat.dev's cert).
 func TestInviteCodeStaysOutOfLogs(t *testing.T) {
+	const regionJSON = `{"Regions": {"99": {
+		"RegionID": 99, "RegionCode": "tst", "RegionName": "test relay",
+		"Nodes": [{"Name": "t1", "RegionID": 99, "RegionCode": "tst", "HostName": "127.0.0.1:1"}]
+	}}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(regionJSON))
+	}))
+	defer srv.Close()
+
 	var mu sync.Mutex
 	var logs strings.Builder
 	d := startDaemon(t, "milo", func(c *Config) {
+		c.DERPMapURL = srv.URL
 		c.Logf = func(format string, args ...any) {
 			mu.Lock()
 			defer mu.Unlock()
