@@ -203,7 +203,7 @@ One line each; the pinning tests carry the details.
   an offline replay — nix/android.nix), Dockerfile with
   auto-init and CLOWDER_NAME/CLOWDER_STORER, HTTP health endpoint,
   opt-in pprof, self-hosted DERP map; CI nix job builds the flake
-  package for x86_64-linux and pushes it to the
+  package for x86_64-linux and aarch64-darwin and pushes both to the
   niks3 binary cache (GitHub OIDC, no secrets — the server's subject
   allowlist lives in the homelab niks3 chart).
 - **Service packaging**: NixOS module (`nixosModules.default`,
