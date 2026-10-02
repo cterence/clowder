@@ -43,14 +43,15 @@ func newOutbox(dir string) *outbox {
 // Put records a pending send, atomically. An ID deleted in the
 // meantime stays deleted — a delivery attempt caching its digest
 // concurrently with a cancel or forget must not resurrect the entry.
+// The whole write runs under the lock: a check-then-write Put could
+// otherwise straddle a concurrent Delete and re-create the file.
 func (o *outbox) Put(e Entry) error {
 	if e.ID == "" {
 		return fmt.Errorf("outbox: entry has no ID")
 	}
 	o.mu.Lock()
-	dead := o.cancelled[e.ID]
-	o.mu.Unlock()
-	if dead {
+	defer o.mu.Unlock()
+	if o.cancelled[e.ID] {
 		return nil
 	}
 	if err := os.MkdirAll(o.dir, 0o700); err != nil {
