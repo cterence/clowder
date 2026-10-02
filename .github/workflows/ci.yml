@@ -6,7 +6,7 @@ on:
   pull_request:
 
 # One run per ref: a burst of pushes cancels the superseded runs
-# instead of billing all of them (macOS runners are pricey).
+# instead of billing all of them.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -72,17 +72,12 @@ jobs:
       - run: CLOWDER_INTEGRATION=1 go test ./daemon/ -run Integration -count=1 -timeout 10m -v
       - run: CLOWDER_INTEGRATION=1 go test . -run TestIntegrationEndToEnd -count=1 -timeout 10m -v
 
-  # Build the flake's package and push the results to the niks3 binary
-  # cache (S3-backed, GitHub-OIDC auth, no secrets). One leg per system:
-  # ubuntu builds x86_64-linux, the arm64 mac runner builds
-  # aarch64-darwin. Fork PRs build but do not push: GitHub withholds
-  # id-token from them.
+  # Build the flake's package and push it to the niks3 binary cache
+  # (S3-backed, GitHub-OIDC auth, no secrets). darwin builds were cut:
+  # macOS runners are ~10x the price of Linux ones. Fork PRs build but
+  # do not push: GitHub withholds id-token from them.
   nix:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       id-token: write
