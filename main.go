@@ -604,9 +604,13 @@ func readClipboard() ([]byte, error) {
 
 // stageClipboard parks the clipboard text in the config dir: outbox
 // retries re-read the source path, so it must outlive this process.
-// ponytail: --async and errored watches leave the file behind; sweep
-// <configdir>/staging if that ever matters.
+// A trailing newline is added when missing, so the file reads cleanly
+// in terminals and editors. ponytail: --async and errored watches
+// leave the file behind; sweep <configdir>/staging if that matters.
 func stageClipboard(content []byte) (string, error) {
+	if !bytes.HasSuffix(content, []byte("\n")) {
+		content = append(content, '\n')
+	}
 	dir := filepath.Join(configDir(), "staging")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err

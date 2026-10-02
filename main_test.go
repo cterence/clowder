@@ -202,6 +202,27 @@ func TestSendClipboardNeedsTarget(t *testing.T) {
 	}
 }
 
+// TestStageClipboard pins the staged file's shape: it lands in the
+// staging dir and always ends in a newline, added when the clipboard
+// lacked one (terminals and editors read a newlineless file badly).
+func TestStageClipboard(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLOWDER_DIR", dir)
+	for name, in := range map[string]string{"no newline": "hi", "own newline": "hi\n"} {
+		path, err := stageClipboard([]byte(in))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if string(b) != "hi\n" {
+			t.Errorf("%s: staged %q, want %q", name, b, "hi\n")
+		}
+	}
+}
+
 // TestStatusAddressesFlagParses proves --addresses gets past flag
 // parsing: without a daemon the command must fail on the IPC dial,
 // not on the flag set.

@@ -801,7 +801,7 @@ private fun sendUri(ctx: android.content.Context, uri: Uri, target: String): Str
  *  daemon needs a real path, not in-memory content. */
 private fun sendClipboardText(ctx: android.content.Context, text: String, target: String): String = try {
     val staging = File(ctx.cacheDir, "clipboard-" + System.currentTimeMillis() / 1000 + ".txt")
-    staging.writeText(text)
+    staging.writeText(if (text.endsWith("\n")) text else text + "\n")
     val r = ipcWait(ClowdService.socketFile(ctx), op = "send", target = target, path = staging.absolutePath)
     if (r.optBoolean("ok", false)) r.optString("message") else r.optString("error")
 } catch (e: Exception) {
