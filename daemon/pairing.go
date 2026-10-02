@@ -253,6 +253,23 @@ func (d *Daemon) stopInvite() {
 	d.pairDone = nil
 }
 
+// consumeInvite retires the invite's listener the moment a pairing
+// commits: already-accepted connections keep draining (the roster push
+// and its close grace), but no new joiner can complete an exchange —
+// tailcat's Client.DialTCPPort times out against a closed listener —
+// so a code consumed by one join cannot pair a second one racing in
+// during the post-commit grace. The server stays up until the last
+// pairing conn drains, then stopInvite tears it down.
+func (d *Daemon) consumeInvite() {
+	d.pairMu.Lock()
+	ln := d.pairLn
+	d.pairLn = nil
+	if ln != nil {
+		_ = ln.Close()
+	}
+	d.pairMu.Unlock()
+}
+
 func (d *Daemon) servePairConn(conn net.Conn) {
 	started := time.Now()
 	pc := protocol.NewConn(conn)
@@ -292,6 +309,10 @@ func (d *Daemon) servePairConn(conn net.Conn) {
 		d.cfg.logf("clowder: adding paired cat: %v", err)
 		return
 	}
+	// The code died with this join: retire the listener at the commit,
+	// not after the roster-push grace — a second joiner completing its
+	// exchange inside that grace window used to pair on a consumed code.
+	d.consumeInvite()
 	// Fan out now: pairing is rare, and online cats should have the
 	// full roster without waiting a poll tick.
 	d.goBg(func() { d.syncPeers(context.Background()) })
