@@ -56,11 +56,15 @@ let
     NIX_SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
   };
 
-  # One networked build that populates the gradle/maven caches; the
-  # APK derivation replays them offline. The hash churns only when
-  # the dependency set changes.
+  # One networked build that populates the maven/gradle caches; the
+  # APK derivation replays them offline. Only the fetched artifacts
+  # (modules-2) are kept: gradle rebuilds transforms and script
+  # caches offline, and those embed project-source state, which
+  # would churn the hash with every commit. The name must stay
+  # constant too: nix keys a fixed-output path by name+hash, so a
+  # version-stamped name forces a refetch (and a rehash) per commit.
   gradleDeps = pkgs.stdenv.mkDerivation {
-    name = "clowder-gradle-deps-${version}";
+    name = "clowder-gradle-deps";
     inherit src;
     nativeBuildInputs = [ pkgs.jdk17 pkgs.gradle ];
     inherit (gradleEnv) ANDROID_HOME ANDROID_SDK_ROOT JAVA_HOME GRADLE_OPTS NIX_SSL_CERT_FILE;
@@ -79,12 +83,12 @@ let
       runHook postBuild
     '';
     installPhase = ''
-      mkdir -p $out
-      cp -r "$GRADLE_USER_HOME/caches" $out/
+      mkdir -p $out/caches
+      cp -r "$GRADLE_USER_HOME/caches/modules-2" $out/caches/
     '';
     outputHashAlgo = "sha256";
     outputHashMode = "recursive";
-    outputHash = "sha256-ZwxdR2l0pYhm0OCaXNVPP2c1gAuB5Y6abHivXeP+D/0=";
+    outputHash = "sha256-ezGwrN+5lhlpKJVyB5sxWvKaX0RjZMYqhqjY/gXDpH4=";
   };
 in
 {

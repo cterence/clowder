@@ -34,7 +34,12 @@ Updating pinned dependencies (both change together):
 - regenerate `gradle/verification-metadata.xml` with a fresh cache:
   `GRADLE_USER_HOME=$(mktemp -d) gradle --write-verification-metadata sha256 assembleDebug`
 - update the `gradleDeps` `outputHash` in nix/android.nix — a build
-  with a stale hash prints the got-hash.
+  with a stale hash prints the got-hash. The derivation name must
+  stay constant (`clowder-gradle-deps`): nix keys a fixed-output
+  store path by name+hash, so a version-stamped name forces a
+  refetch on every commit. The cache keeps `modules-2` only —
+  gradle rebuilds transforms and script caches offline — so the
+  hash stays independent of the app sources.
 
 The SDK matches app/build.gradle.kts (compileSdk 34, build-tools
 34.0.0, AGP 8.5.2, JDK 17) — bump them together in flake.nix. The
