@@ -123,6 +123,48 @@ func TestResetRefusesWhileDaemonRuns(t *testing.T) {
 	}
 }
 
+// TestWatchSendReturnsWhenStorerHolds pins the CLI watch contract:
+// the watch ends when the daemon settles the send as held by a
+// storer, even though the outbox entry survives until the target's
+// signed receipt — an offline target must not wedge `clow send`.
+func TestWatchSendReturnsWhenStorerHolds(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLOWDER_DIR", dir)
+
+	ln, err := net.Listen("unix", daemon.IPCPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			var req daemon.Request
+			_ = json.NewDecoder(conn).Decode(&req)
+			_ = json.NewEncoder(conn).Encode(daemon.Response{
+				OK:      true,
+				Outbox:  []daemon.Entry{{ID: "t1", FileName: "nap.txt", TargetName: "puma"}},
+				Settled: map[string]string{"t1": "stored via box"},
+			})
+			_ = conn.Close()
+		}
+	}()
+
+	done := make(chan error, 1)
+	go func() { done <- watchSend("t1", "nap.txt", "puma") }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("watchSend: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("watchSend never returned after the storer held the send")
+	}
+}
+
 func TestInboxSetWithoutDaemon(t *testing.T) {
 	// `clow inbox --set` must not need the daemon: persist locally for
 	// the next start, instead of failing on the IPC socket.

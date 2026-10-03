@@ -289,10 +289,11 @@ func TestIntegrationEndToEnd(t *testing.T) {
 	}
 	waitForFile(t, puma, "nap2.txt", src2)
 
-	// The sender's outbox drained: status reports nothing pending.
-	if out := milo.clow("status"); !strings.Contains(out, "outbox: 0 pending") {
-		t.Fatalf("sends still pending after delivery:\n%s", out)
-	}
+	// The sender's outbox drained: the receipt puma pushes on its
+	// sync round clears the held entry, so it trails the delivery.
+	waitFor(t, func() bool {
+		return strings.Contains(milo.clow("status"), "outbox: 0 pending")
+	}, "the sender's outbox to drain after the signed receipt")
 }
 
 // ---- helpers ----

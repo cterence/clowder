@@ -620,8 +620,9 @@ func stageClipboard(content []byte) (string, error) {
 	return path, nil
 }
 
-// watchSend follows a queued transfer until it leaves the outbox:
-// delivered directly, or accepted by a storer for an offline target.
+// watchSend follows a queued transfer until it settles: delivered
+// directly, or held by a storer for an offline target (the outbox
+// entry itself leaves only on the target's signed receipt).
 // Ctrl-C cancels the send — the entry is dropped and any in-flight
 // attempt is aborted.
 func watchSend(id, file, target string) error {
@@ -650,6 +651,15 @@ func watchSend(id, file, target string) error {
 		if !resp.OK {
 			return fmt.Errorf("%s", resp.Error)
 		}
+		// A held send settles at the deposit but stays in the outbox
+		// until the target's signed receipt: settle ends the watch.
+		if outcome := resp.Settled[id]; outcome == "delivered" {
+			fmt.Printf("\r%-72s\n", fmt.Sprintf("sent %s to %s (delivered)", file, target))
+			return nil
+		} else if storer, held := strings.CutPrefix(outcome, "stored via "); held {
+			fmt.Printf("\r%-72s\n", fmt.Sprintf("sent %s to %s (held by storer %s until %s is online)", file, target, storer, target))
+			return nil
+		}
 		queued := false
 		for _, e := range resp.Outbox {
 			if e.ID == id {
@@ -658,18 +668,8 @@ func watchSend(id, file, target string) error {
 			}
 		}
 		if !queued {
-			var done string
-			switch {
-			case resp.Settled[id] == "delivered":
-				done = fmt.Sprintf("sent %s to %s (delivered)", file, target)
-			case strings.HasPrefix(resp.Settled[id], "stored via "):
-				storer := strings.TrimPrefix(resp.Settled[id], "stored via ")
-				done = fmt.Sprintf("sent %s to %s (held by storer %s until %s is online)", file, target, storer, target)
-			default:
-				// Daemon restart pruned the outcome history.
-				done = fmt.Sprintf("sent %s to %s (delivered, or held by a storer until it is online)", file, target)
-			}
-			fmt.Printf("\r%-72s\n", done)
+			// Daemon restart pruned the outcome history.
+			fmt.Printf("\r%-72s\n", fmt.Sprintf("sent %s to %s (delivered, or held by a storer until it is online)", file, target))
 			return nil
 		}
 		line := fmt.Sprintf("waiting: %s queued for %s", file, target)
