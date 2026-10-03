@@ -2,8 +2,10 @@ package daemon
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/tailscale/tailcat"
+	"golang.org/x/crypto/hkdf"
 	"tailscale.com/types/key"
 
 	"github.com/cterence/clowder/persist"
@@ -104,8 +107,9 @@ type Env struct {
 	// Outbound-dial keypair. Must differ from Identity: two engines sharing one
 	// static key cross-deliver handshakes and wedge. Peers allowlist it.
 	DialIdentity key.NodePrivate
-	// Ed25519 keypair derived from the node key seed (not stored; the identity
-	// regenerates it). Signs the cat's roster entries and its leave.
+	// Ed25519 keypair domain-separated from the node key seed via HKDF
+	// (not stored; the identity regenerates it). Signs the cat's roster
+	// entries and its leave.
 	SignPriv ed25519.PrivateKey
 	Me       Me
 }
@@ -147,6 +151,18 @@ func Init(dir, name string) error {
 	return nil
 }
 
+// deriveSignKey domain-separates the Ed25519 signing key from the node
+// key seed: HKDF rather than reusing the same seed across WireGuard and
+// Ed25519 (cross-domain key reuse).
+func deriveSignKey(nodeSeed []byte) ed25519.PrivateKey {
+	seed := make([]byte, ed25519.SeedSize)
+	r := hkdf.New(sha256.New, nodeSeed, nil, []byte("github.com/cterence/clowder/sign/v1"))
+	if _, err := io.ReadFull(r, seed); err != nil {
+		panic(err) // hkdf from a 32-byte seed cannot fail
+	}
+	return ed25519.NewKeyFromSeed(seed)
+}
+
 func Open(dir string) (*Env, error) {
 	var k *tailcat.PrivateKey
 	if _, err := persist.LoadJSON(filepath.Join(dir, "identity.json"), &k); err != nil {
@@ -164,7 +180,7 @@ func Open(dir string) (*Env, error) {
 		return nil, err
 	}
 	raw := k.Private.Raw32()
-	signPriv := ed25519.NewKeyFromSeed(raw[:])
+	signPriv := deriveSignKey(raw[:])
 	return &Env{Dir: dir, Identity: k, DialIdentity: ck, SignPriv: signPriv, Me: me}, nil
 }
 
