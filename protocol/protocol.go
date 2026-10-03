@@ -153,6 +153,45 @@ type LeaveMsg struct {
 	Sig     []byte `cbor:"s"`
 }
 
+// Receipt is the recipient's signed proof that a transfer landed (#8):
+// the sender forgets a storer-held send only once this verifies against
+// the recipient's pinned sign key. Rides a sync connection.
+type Receipt struct {
+	ID        string `cbor:"i"` // the transfer, as the sender named it
+	TargetKey string `cbor:"k"` // the recipient's node key (the signer)
+	SignKey   string `cbor:"g"` // recipient's Ed25519 public key (hex)
+	SHA256    string `cbor:"h"` // the offered plaintext digest
+	Time      int64  `cbor:"t"`
+	Sig       []byte `cbor:"s"`
+}
+
+// receiptBytes is the canonical form a receipt's signature covers:
+// receipt JSON with Sig cleared (encoding/json field order is stable).
+func receiptBytes(r *Receipt) []byte {
+	c := *r
+	c.Sig = nil
+	b, err := json.Marshal(&c)
+	if err != nil {
+		return nil // Receipt holds only strings, ints and bytes
+	}
+	return b
+}
+
+// SignReceipt stamps r with the recipient's Ed25519 key.
+func SignReceipt(priv ed25519.PrivateKey, r *Receipt) {
+	r.Sig = ed25519.Sign(priv, receiptBytes(r))
+}
+
+// VerifyReceipt checks r's signature against its own SignKey field;
+// the daemon must still pin that key to the recipient's roster entry.
+func VerifyReceipt(r *Receipt) bool {
+	k, err := hex.DecodeString(r.SignKey)
+	if err != nil || len(k) != ed25519.PublicKeySize || len(r.Sig) == 0 {
+		return false
+	}
+	return ed25519.Verify(k, receiptBytes(r), r.Sig)
+}
+
 // Message is the union of all protocol messages; exactly one field is
 // non-nil on the wire.
 type Message struct {
@@ -164,6 +203,7 @@ type Message struct {
 	Pair    *PairIntro  `cbor:"j,omitempty"`
 	PairAck *PairAck    `cbor:"g,omitempty"`
 	Leave   *LeaveMsg   `cbor:"l,omitempty"`
+	Receipt *Receipt    `cbor:"e,omitempty"`
 }
 
 func (m *Message) Kind() string {
@@ -184,6 +224,8 @@ func (m *Message) Kind() string {
 		return "pairack"
 	case m.Leave != nil:
 		return "leave"
+	case m.Receipt != nil:
+		return "receipt"
 	}
 	return "empty"
 }
@@ -240,6 +282,7 @@ func (m *Message) fieldsSet() int {
 	for _, set := range []bool{
 		m.Hello != nil, m.Roster != nil, m.Offer != nil, m.Answer != nil,
 		m.Ack != nil, m.Pair != nil, m.PairAck != nil, m.Leave != nil,
+		m.Receipt != nil,
 	} {
 		if set {
 			n++

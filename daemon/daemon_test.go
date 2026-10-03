@@ -288,9 +288,13 @@ func TestStorerRelayForOfflineCat(t *testing.T) {
 		t.Fatalf("Send: %v", err)
 	}
 
-	// The storer ends up holding the sealed stream.
+	// The storer ends up holding the sealed stream. The outbox entry
+	// stays (#8): a held file is the sender's responsibility until
+	// niko's signed receipt, not the storer's ack.
 	waitFor(t, func() bool { return storer.Spool().Count() == 1 }, "storer to hold the file")
-	waitFor(t, func() bool { return len(milo.ob.All()) == 0 }, "milo's outbox to drain")
+	if es := milo.ob.All(); len(es) != 1 || es[0].HeldBy == "" {
+		t.Fatalf("outbox after deposit = %+v, want one held entry", es)
+	}
 
 	// The spooled stream must not contain the plaintext.
 	b, err := os.ReadFile(filepath.Join(storer.cfg.Dir, "spool", storer.Spool().List(niko.Key)[0].ID+".blob"))
@@ -313,6 +317,11 @@ func TestStorerRelayForOfflineCat(t *testing.T) {
 		return ok && got == "nap for a sleeping cat"
 	}, "niko to receive the held file via the storer's push sweep")
 	waitFor(t, func() bool { return storer.Spool().Count() == 0 }, "storer to drop the delivered file")
+	// niko knows milo only through the storer's relayed offer, but the
+	// roster merge already taught it milo — the receipt rides niko's
+	// sync round and drains milo's outbox.
+	addCat(t, nikoD, milo.Me())
+	waitFor(t, func() bool { return len(milo.ob.All()) == 0 }, "niko's receipt to drain milo's outbox")
 }
 
 func TestRosterPropagation(t *testing.T) {

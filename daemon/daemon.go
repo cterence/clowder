@@ -170,6 +170,10 @@ type Daemon struct {
 	sweeping       atomic.Bool // one spool sweep at a time
 	holdProbing    atomic.Bool // one hold-probe pass at a time
 	receiveClaims  *claimSet
+	// Pending delivery receipts (#8), keyed by transfer ID, pushed to
+	// the sender on each sync round until it confirms.
+	receiptsMu sync.Mutex
+	receipts   map[string]receiptOut
 	// Guards reserved: the capacity check and claim are one atomic operation.
 	resMu    sync.Mutex
 	reserved int64
@@ -782,6 +786,11 @@ func (d *Daemon) serveConn(pc *protocol.Conn, authKey key.NodePublic, authed boo
 		case m.Leave != nil:
 			// Signed forget-me: apply and re-broadcast; the connection continues.
 			d.handleLeave(m.Leave)
+		case m.Receipt != nil:
+			// Signed delivery proof (#8): clears the storer-held entry.
+			if !d.handleReceipt(pc, m.Receipt) {
+				return
+			}
 		default:
 			d.cfg.logf("clowder: unexpected %s message from %s", m.Kind(), peer.Name)
 			return
@@ -857,6 +866,9 @@ func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *proto
 		return false
 	}
 	d.stats.add(func(s *Stats) { s.Received++; s.ReceivedBytes += plainSize })
+	// The sender keeps a storer-held send until this receipt verifies
+	// (#8): delivery is proven by the recipient, never by an ack.
+	d.rememberReceipt(o)
 	_ = pc.SetDeadline(time.Now().Add(msgTimeout))
 	if err := pc.Ack(o.ID, protocol.AckDelivered); err != nil {
 		return false
@@ -1246,6 +1258,7 @@ func (d *Daemon) syncPeers(ctx context.Context) {
 			if err != nil {
 				return
 			}
+			d.pushReceipts(pc, c.Key)
 			_ = pc.Close()
 		}(c)
 	}

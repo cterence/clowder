@@ -54,10 +54,10 @@ func (d *Daemon) probeHeldEntry(ctx context.Context, e Entry) {
 		return
 	}
 	if m.Answer.OK {
+		// A confirmed hold settles but does not delete (#8): only the
+		// recipient's signed receipt clears the entry — a lying storer
+		// answers "holding" without keeping the file.
 		d.settle(e.ID, "stored via "+cat.Name)
-		if err := d.ob.Delete(e.ID); err != nil {
-			d.cfg.logf("clowder: deleting probed entry %s: %v", e.ID, err)
-		}
 		d.cfg.logf("clowder: %s confirmed holding %s", cat.Name, e.FileName)
 		return
 	}
