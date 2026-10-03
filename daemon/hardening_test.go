@@ -419,7 +419,7 @@ func TestOfferSignatureRequired(t *testing.T) {
 	try := func(o *protocol.Offer) *protocol.Answer {
 		client, server := net.Pipe()
 		go func() {
-			_ = fluff.handleOffer(protocol.NewConn(server), &protocol.Hello{Name: "milo", Key: milo.Me().Key}, o)
+			_ = fluff.handleOffer(protocol.NewConn(server), &protocol.Hello{Name: "milo", Key: milo.Me().Key}, "", o)
 			_ = server.Close()
 		}()
 		cpc := protocol.NewConn(client)
@@ -462,7 +462,7 @@ func TestOfferSignatureRequired(t *testing.T) {
 	unsigned.TargetName = "niko"
 	client, server := net.Pipe()
 	go func() {
-		_ = box.handleOffer(protocol.NewConn(server), &protocol.Hello{Name: "milo", Key: milo.Me().Key}, unsigned)
+		_ = box.handleOffer(protocol.NewConn(server), &protocol.Hello{Name: "milo", Key: milo.Me().Key}, "", unsigned)
 		_ = server.Close()
 	}()
 	cpc := protocol.NewConn(client)
@@ -514,5 +514,90 @@ func TestSyncPinIsProvisional(t *testing.T) {
 	c, _ := milo.ros.GetByKey(niko.Key)
 	if c.SignKey != nikoD.Me().SignKey {
 		t.Fatal("a forged sync push overwrote the re-pinned sign key")
+	}
+}
+
+// TestStorerQuotaCountsAuthenticatedDialer pins the #26 fix: the
+// per-sender quota counts the transport-authenticated dialer, not the
+// offer's self-declared FromKey — the storer checks the signature for
+// presence only, so rotating FromKeys must not buy extra share.
+func TestStorerQuotaCountsAuthenticatedDialer(t *testing.T) {
+	dialPub := key.NewNode().Public()
+	boxDir := t.TempDir()
+	if err := Init(boxDir, "box"); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	box := runDaemon(t, boxDir, &authedLocalTransport{LocalTransport: &LocalTransport{}, peer: dialPub})
+	const size = 100
+	if err := box.SetStorer(true, 4*size); err != nil { // share: one deposit
+		t.Fatal(err)
+	}
+
+	conn, err := net.Dial("tcp", box.Me().Addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	pc := protocol.NewConn(conn)
+	dial := dialPub.String()
+	if err := pc.WriteMsg(&protocol.Message{Hello: &protocol.Hello{
+		Name: "churner", Key: dial, DialKey: dial,
+		Addr: "127.0.0.1:1", Version: protocol.HelloVersion,
+	}}); err != nil {
+		t.Fatalf("hello: %v", err)
+	}
+	if _, err := pc.ReadMsg(); err != nil {
+		t.Fatalf("hello reply: %v", err)
+	}
+	if err := pc.WriteMsg(&protocol.Message{Roster: &protocol.RosterSync{}}); err != nil {
+		t.Fatalf("roster: %v", err)
+	}
+	if _, err := pc.ReadMsg(); err != nil {
+		t.Fatalf("roster reply: %v", err)
+	}
+
+	deposit := func(i int, fromKey string) *protocol.Answer {
+		o := &protocol.Offer{
+			ID:         fmt.Sprintf("%032d", i),
+			FileName:   "nap.txt",
+			Size:       size,
+			From:       "churner",
+			FromKey:    fromKey,
+			SHA256:     strings.Repeat("0", 64),
+			TargetKey:  "nodekey:" + strings.Repeat("ff", 32),
+			TargetName: "niko",
+			Sig:        make([]byte, 64), // present, never verified here
+		}
+		if err := pc.WriteMsg(&protocol.Message{Offer: o}); err != nil {
+			t.Fatalf("offer: %v", err)
+		}
+		m, err := pc.ReadMsg()
+		if err != nil {
+			t.Fatalf("answer: %v", err)
+		}
+		if m.Answer == nil {
+			t.Fatal("storer sent no answer")
+		}
+		if m.Answer.OK {
+			if _, err := pc.Writer().Write(make([]byte, size)); err != nil {
+				t.Fatalf("stream: %v", err)
+			}
+			ack, err := pc.ReadMsg()
+			if err != nil {
+				t.Fatalf("ack: %v", err)
+			}
+			if ack.Ack == nil || ack.Ack.Kind != protocol.AckStored {
+				t.Fatalf("want stored ack, got %v", ack.Ack)
+			}
+		}
+		return m.Answer
+	}
+
+	if a := deposit(1, "nodekey:"+strings.Repeat("aa", 32)); !a.OK {
+		t.Fatalf("first deposit refused: %s", a.Reason)
+	}
+	rotated := deposit(2, "nodekey:"+strings.Repeat("bb", 32))
+	if rotated.OK || !strings.Contains(rotated.Reason, "per-sender quota") {
+		t.Fatalf("a rotated FromKey bought extra share: ok=%v reason=%q", rotated.OK, rotated.Reason)
 	}
 }

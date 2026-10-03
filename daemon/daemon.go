@@ -778,6 +778,13 @@ func (d *Daemon) serveConn(pc *protocol.Conn, authKey key.NodePublic, authed boo
 		return
 	}
 
+	// Deposits are quota'd by the transport-authenticated dialer: the
+	// offer's self-declared FromKey is never verified at the storer (#26).
+	sender := ""
+	if authed {
+		sender = authKey.String()
+	}
+
 	merges := 0
 	for {
 		_ = pc.SetDeadline(time.Now().Add(msgTimeout))
@@ -787,7 +794,7 @@ func (d *Daemon) serveConn(pc *protocol.Conn, authKey key.NodePublic, authed boo
 		}
 		switch {
 		case m.Offer != nil:
-			if !d.handleOffer(pc, peer, m.Offer) {
+			if !d.handleOffer(pc, peer, sender, m.Offer) {
 				return
 			}
 		case m.Roster != nil:
@@ -821,8 +828,10 @@ func (d *Daemon) serveConn(pc *protocol.Conn, authKey key.NodePublic, authed boo
 }
 
 // handleOffer receives a direct delivery or a storer deposit; the return
-// value says whether the connection may continue.
-func (d *Daemon) handleOffer(pc *protocol.Conn, from *protocol.Hello, o *protocol.Offer) bool {
+// value says whether the connection may continue. sender is the
+// transport-authenticated dialer (string form, empty when the transport
+// cannot attest) — the identity the storer quota counts.
+func (d *Daemon) handleOffer(pc *protocol.Conn, from *protocol.Hello, sender string, o *protocol.Offer) bool {
 	if !validID(o.ID) {
 		// IDs name spool files; anything but our own 32-hex format —
 		// traversal sequences included — is refused.
@@ -831,7 +840,7 @@ func (d *Daemon) handleOffer(pc *protocol.Conn, from *protocol.Hello, o *protoco
 	if o.TargetKey == d.Me().Key {
 		return d.receiveDirect(pc, from, o)
 	}
-	return d.receiveAsStorer(pc, o)
+	return d.receiveAsStorer(pc, sender, o)
 }
 
 func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *protocol.Offer) bool {
@@ -901,7 +910,7 @@ func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *proto
 
 // receiveAsStorer spools a sealed stream for an offline target; it stays
 // opaque to us.
-func (d *Daemon) receiveAsStorer(pc *protocol.Conn, o *protocol.Offer) bool {
+func (d *Daemon) receiveAsStorer(pc *protocol.Conn, sender string, o *protocol.Offer) bool {
 	me := d.Me()
 	if !me.Storer {
 		return pc.Answer(o.ID, false, "not a storer") == nil
@@ -920,12 +929,17 @@ func (d *Daemon) receiveAsStorer(pc *protocol.Conn, o *protocol.Offer) bool {
 	}
 	defer d.releaseReserve(o.Size)
 	// A single cat must not be able to churn the whole spool for a full
-	// TTL: each sender holds at most a quarter of the capacity. Derived
-	// from the spool on every offer, so a restart cannot reset it.
-	// Unsigned (pre-key) offers attribute to nothing and bypass this.
-	if share := me.Capacity / 4; o.FromKey != "" && d.spool.UsageBy(o.FromKey)+o.Size > share {
+	// TTL: each sender holds at most a quarter of the capacity. The
+	// quota counts the transport-authenticated dialer — the offer's
+	// FromKey is self-declared and rotates freely (#26). Derived from
+	// the spool on every offer, so a restart cannot reset it.
+	quotaKey := sender
+	if quotaKey == "" {
+		quotaKey = o.FromKey // unauthenticated transport: tests, pre-auth paths
+	}
+	if share := me.Capacity / 4; quotaKey != "" && d.spool.UsageBy(quotaKey)+o.Size > share {
 		reason := fmt.Sprintf("storer per-sender quota (%s of %s held for you)",
-			HumanBytes(d.spool.UsageBy(o.FromKey)), HumanBytes(share))
+			HumanBytes(d.spool.UsageBy(quotaKey)), HumanBytes(share))
 		return pc.Answer(o.ID, false, reason) == nil
 	}
 	_ = pc.SetDeadline(time.Now().Add(streamIdle))
@@ -936,6 +950,7 @@ func (d *Daemon) receiveAsStorer(pc *protocol.Conn, o *protocol.Offer) bool {
 		SHA256:     o.SHA256,
 		From:       o.From,
 		FromKey:    o.FromKey,
+		QuotaKey:   quotaKey,
 		TargetKey:  o.TargetKey,
 		TargetName: o.TargetName,
 		Sig:        o.Sig,

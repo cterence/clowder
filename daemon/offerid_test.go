@@ -27,7 +27,7 @@ func TestOfferWithBadIDRefused(t *testing.T) {
 		client, server := net.Pipe()
 		pc := protocol.NewConn(server)
 		go func() {
-			_ = fluff.handleOffer(pc, &protocol.Hello{Name: "milo"}, &protocol.Offer{
+			_ = fluff.handleOffer(pc, &protocol.Hello{Name: "milo"}, "", &protocol.Offer{
 				ID: id, FileName: "nap.txt", Size: 10,
 				TargetKey: fluff.Me().Key, TargetName: "fluff",
 			})
