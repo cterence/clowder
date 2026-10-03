@@ -1,9 +1,9 @@
 package daemon
 
 import (
+	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/cterence/clowder/protocol"
 )
@@ -30,9 +30,10 @@ func TestForgottenCatStaysOutDespiteSync(t *testing.T) {
 	waitFor(t, func() bool { _, ok := a.Roster().GetByKey(cKey); return !ok },
 		"a to drop the forgotten cat")
 
-	// b keeps syncing its roster (which still has c) to a on every
-	// poll tick — the cat must not come back.
-	time.Sleep(600 * time.Millisecond)
+	// b still has c and pushes its roster on every sync round; drive one
+	// directly — syncPeers returning means a merged the push — so the
+	// blocklist refusal is observed, not slept past.
+	b.syncPeers(context.Background())
 	if _, ok := a.Roster().GetByKey(cKey); ok {
 		t.Fatal("forgotten cat was re-merged by a peer's roster sync")
 	}

@@ -137,7 +137,8 @@ func TestServeConnMarksOnlyKnownIdentities(t *testing.T) {
 		Name: "cedar", Key: ghost.Key, DialKey: cedar.Me().DialKey,
 		Addr: cedar.Me().Addr, Version: protocol.HelloVersion,
 	})
-	time.Sleep(200 * time.Millisecond)
+	// The hello reply sayHello consumed is written only after the
+	// identity check, so the forged claim's outcome is already decided.
 	if _, ok := milo.livenessSnapshot()[ghost.Key]; ok {
 		t.Fatal("forged identity claim was marked seen")
 	}

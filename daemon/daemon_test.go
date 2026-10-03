@@ -123,6 +123,11 @@ func startDaemonAt(t *testing.T, dir string, overrides ...func(*Config)) *Daemon
 // event-driven sync from tick convergence raise it for their daemons.
 var testPollEvery = 150 * time.Millisecond
 
+// testSweepEvery is the harness spool-sweep tick: without it the first
+// sweep waits out the 5s production default. Tests that need no sweep
+// raise it to time.Hour.
+var testSweepEvery = 50 * time.Millisecond
+
 // runDaemon starts a daemon on a prepared config dir with a custom
 // transport.
 func runDaemon(t *testing.T, dir string, tr Transport, overrides ...func(*Config)) *Daemon {
@@ -131,10 +136,11 @@ func runDaemon(t *testing.T, dir string, tr Transport, overrides ...func(*Config
 	// test sandbox.
 	t.Setenv("HOME", t.TempDir())
 	cfg := Config{
-		Dir:        dir,
-		RetryEvery: 150 * time.Millisecond,
-		PollEvery:  testPollEvery,
-		Logf:       t.Logf,
+		Dir:             dir,
+		RetryEvery:      150 * time.Millisecond,
+		PollEvery:       testPollEvery,
+		SpoolSweepEvery: testSweepEvery,
+		Logf:            t.Logf,
 	}
 	for _, o := range overrides {
 		o(&cfg)
@@ -557,7 +563,14 @@ func TestForgetClearsOutbox(t *testing.T) {
 }
 
 func TestStorerRefusesWhenNotStorer(t *testing.T) {
-	milo := startDaemon(t, "milo")
+	var mu sync.Mutex
+	var logs []string
+	logf := func(f string, a ...any) {
+		mu.Lock()
+		logs = append(logs, fmt.Sprintf(f, a...))
+		mu.Unlock()
+	}
+	milo := startDaemon(t, "milo", func(c *Config) { c.Logf = logf })
 	picky := startDaemon(t, "picky") // not a storer
 	trust(t, milo, picky)
 	trust(t, picky, milo)
@@ -571,9 +584,13 @@ func TestStorerRefusesWhenNotStorer(t *testing.T) {
 		t.Fatalf("Send: %v", err)
 	}
 
-	// Give delivery attempts a moment, then verify nothing was stored
-	// and the file is still pending.
-	time.Sleep(500 * time.Millisecond)
+	// "still pending" ends the attempt cycle: the direct dial failed and
+	// every storer (picky among them) has refused — no grace-period sleep.
+	waitFor(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return strings.Contains(strings.Join(logs, "\n"), "still pending")
+	}, "the delivery cycle to finish without a storer taking the file")
 	if picky.Spool().Count() != 0 {
 		t.Fatal("non-storer spooled a file")
 	}

@@ -182,23 +182,33 @@ func (d *Daemon) StartInvite(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("daemon: fetching DERP map: %w", err)
 	}
-	region, err := tailcat.PickBestRegion(ctx, dm)
-	if err != nil {
-		return "", fmt.Errorf("daemon: picking pairing region: %w", err)
-	}
-	if region == 0 {
-		// Netcheck found no latencies; meet on the lowest region ID.
-		ids := slices.Sorted(maps.Keys(dm.Regions))
-		if len(ids) == 0 {
-			return "", errors.New("daemon: DERP map has no regions")
+	region := 0
+	if len(dm.Regions) == 1 {
+		// One region: no latency probe can change the answer, and the
+		// netcheck costs seconds on a self-hosted map.
+		for id := range dm.Regions {
+			region = int(id)
 		}
-		region = ids[0]
+	} else {
+		picked, err := tailcat.PickBestRegion(ctx, dm)
+		if err != nil {
+			return "", fmt.Errorf("daemon: picking pairing region: %w", err)
+		}
+		region = int(picked)
+		if picked == 0 {
+			// Netcheck found no latencies; meet on the lowest region ID.
+			ids := slices.Sorted(maps.Keys(dm.Regions))
+			if len(ids) == 0 {
+				return "", errors.New("daemon: DERP map has no regions")
+			}
+			region = int(ids[0])
+		}
 	}
 
 	srv := &tailcat.Server{
 		Key:            keys.inviterPriv,
 		PresharedKey:   keys.psk,
-		Region:         dm.Regions[region],
+		Region:         dm.Regions[tailcfg.DERPRegionID(region)],
 		AllowedClients: []key.NodePublic{keys.joinerPub},
 		Logf:           d.cfg.Logf,
 	}
