@@ -327,6 +327,7 @@ private fun HomeScreen(
     onClowder: (String) -> Unit,
 ) {
     val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
     var status by remember { mutableStateOf<Status?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
     var noticeIsError by remember { mutableStateOf(false) }
@@ -471,6 +472,16 @@ private fun HomeScreen(
                 ListItem(
                     headlineContent = { Text(e.fileName) },
                     supportingContent = { Text("queued for ${e.targetName}") },
+                    trailingContent = {
+                        TextButton(onClick = {
+                            scope.launch {
+                                // The 3s status poll refreshes the row away.
+                                withContextOrNull {
+                                    ipcWait(ClowdService.socketFile(ctx), "cancel", target = e.id)
+                                }
+                            }
+                        }) { Text("cancel") }
+                    },
                 )
             }
         }
@@ -674,16 +685,18 @@ private fun CatScreen(cat: Cat, onClose: () -> Unit) {
                     onClick = {
                         val toSend = selected
                         scope.launch {
-                            var sent = 0
                             var failure: String? = null
                             for (uri in toSend) {
                                 val r = withContext(Dispatchers.IO) { sendUri(ctx, uri, cat.name) }
-                                if (r.startsWith("queued")) sent++ else failure = r
+                                if (!r.startsWith("queued")) failure = r
                             }
                             selected = emptyList()
-                            sendResult = when (val f = failure) {
-                                null -> "queued ${sent} file(s) for ${cat.name}"
-                                else -> "queued ${sent}, failed: $f"
+                            // No success message: the queued list below
+                            // shows the files. Refresh it now instead
+                            // of waiting for the 3s poll.
+                            sendResult = failure
+                            status = withContextOrNull {
+                                parseStatus(ipc(ClowdService.socketFile(ctx), "status"))
                             }
                         }
                     },
@@ -697,8 +710,16 @@ private fun CatScreen(cat: Cat, onClose: () -> Unit) {
                             sendResult = "clipboard is empty"
                         } else {
                             scope.launch {
-                                sendResult = withContext(Dispatchers.IO) {
+                                val r = withContext(Dispatchers.IO) {
                                     sendClipboardText(ctx, text, cat.name)
+                                }
+                                if (r.startsWith("queued")) {
+                                    sendResult = null
+                                    status = withContextOrNull {
+                                        parseStatus(ipc(ClowdService.socketFile(ctx), "status"))
+                                    }
+                                } else {
+                                    sendResult = r
                                 }
                             }
                         }
@@ -716,7 +737,13 @@ private fun CatScreen(cat: Cat, onClose: () -> Unit) {
                 )
             }
             sendResult?.let {
-                Text(it, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 8.dp))
+                // Failures only: queued files show up in the list below.
+                Text(
+                    it,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
             }
             forgetError?.let {
                 Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
@@ -926,7 +953,7 @@ fun InboxScreen(onClose: () -> Unit) {
                     MediaStore.MediaColumns.DISPLAY_NAME,
                 ),
                 "${MediaStore.MediaColumns.RELATIVE_PATH}=?",
-                arrayOf("Download/clowder/"),
+                arrayOf(ClowdService.downloadRel(ClowdService.activeClowder(ctx))),
                 null,
             )?.use { c ->
                 while (c.moveToNext()) {
@@ -1028,7 +1055,8 @@ private fun openInboxItem(ctx: android.content.Context, item: InboxEntry) {
 
 /** Opens the phone's file manager. DocumentsUI is the platform's
  *  (AOSP and Pixel package names); received files live in the real
- *  Download/clowder directory, so any file manager shows them.
+ *  Download/clowder/<clowder> directory, so any file manager shows
+ *  them.
  *  Without a Files app at all, fall back to the downloads UI. */
 private fun openInFilesApp(ctx: android.content.Context) {
     for (pkg in listOf("com.android.documentsui", "com.google.android.documentsui")) {

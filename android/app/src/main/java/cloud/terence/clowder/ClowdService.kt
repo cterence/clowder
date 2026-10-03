@@ -3,6 +3,7 @@ package cloud.terence.clowder
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
@@ -65,6 +66,11 @@ class ClowdService : Service() {
         fun clearLog() = synchronized(logLines) { logLines.clear() }
 
         fun configBase(ctx: Context): File = File(ctx.filesDir, "clowder")
+
+        /** Where a clowder's files land in the system Downloads:
+         *  per-clowder, mirroring the desktop inbox
+         *  ~/Downloads/clowder/<name>/. */
+        fun downloadRel(name: String): String = "Download/clowder/$name/"
         fun socketFile(ctx: Context): File = File(configDir(ctx), "clow.sock")
         fun inboxDir(ctx: Context): File =
             File(File(File(ctx.filesDir, "Downloads"), "clowder"), activeClowder(ctx))
@@ -116,6 +122,12 @@ class ClowdService : Service() {
                 defInbox.mkdirs()
                 loose.forEach { it.renameTo(File(defInbox, it.name)) }
             }
+            // The receipt log predates per-clowder nesting: it was
+            // one global file, so it belongs to default/.
+            val oldLog = File(ctx.filesDir, "inbox-log.json")
+            if (oldLog.isFile) {
+                oldLog.renameTo(File(ctx.filesDir, "inbox-log-default.json"))
+            }
         }
 
         fun configDir(ctx: Context): File {
@@ -124,9 +136,11 @@ class ClowdService : Service() {
         }
 
         // The inbox is a receipt log, not a directory view: files can be
-        // deleted from Downloads without losing the record.
+        // deleted from Downloads without losing the record. Per-clowder,
+        // like the published dir it resolves against.
         private val inboxLogLock = Any()
-        fun inboxLogFile(ctx: Context): File = File(ctx.filesDir, "inbox-log.json")
+        fun inboxLogFile(ctx: Context): File =
+            File(ctx.filesDir, "inbox-log-${activeClowder(ctx)}.json")
 
         fun appendInboxLog(ctx: Context, name: String, bytes: Long) {
             synchronized(inboxLogLock) {
@@ -258,16 +272,42 @@ class ClowdService : Service() {
     private var publisher: Thread? = null
 
     /** Moves delivered files from the sandbox inbox into the system's
-     *  Downloads (Download/clowder), mirroring the desktop inbox: the
-     *  file manager and every other app see them natively. IS_PENDING
-     *  keeps each move invisible until the copy completes. */
+     *  Downloads (Download/clowder/<name>), mirroring the desktop
+     *  inbox: the file manager and every other app see them natively.
+     *  IS_PENDING keeps each move invisible until the copy completes. */
     private fun runPublisher() {
+        runCatching { migrateDownloads() }
         while (!stopping.get()) {
             runCatching { publishInbox() }
             var slept = 0L
             while (!stopping.get() && slept < 4000) {
                 Thread.sleep(250)
                 slept += 250
+            }
+        }
+    }
+
+    /** One-time: files published before per-clowder nesting live flat
+     *  in Download/clowder — move the ones we own into default/.
+     *  Idempotent: nothing matches the old path once moved. */
+    private fun migrateDownloads() {
+        contentResolver.query(
+            MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+            arrayOf(MediaStore.MediaColumns._ID),
+            "${MediaStore.MediaColumns.RELATIVE_PATH}=? AND ${MediaStore.MediaColumns.OWNER_PACKAGE_NAME}=?",
+            arrayOf("Download/clowder/", packageName),
+            null,
+        )?.use { c ->
+            val ids = ArrayList<Long>()
+            while (c.moveToNext()) ids.add(c.getLong(0))
+            for (id in ids) {
+                val values = ContentValues().apply {
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, downloadRel("default"))
+                }
+                contentResolver.update(
+                    ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, id),
+                    values, null, null,
+                )
             }
         }
     }
@@ -282,10 +322,11 @@ class ClowdService : Service() {
             val size = f.length()
             val mime = MimeTypeMap.getSingleton()
                 .getMimeTypeFromExtension(f.extension) ?: "application/octet-stream"
+            val rel = downloadRel(activeClowder(this))
             val values = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, f.name)
                 put(MediaStore.MediaColumns.MIME_TYPE, mime)
-                put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/clowder")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, rel)
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
             val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
@@ -307,7 +348,7 @@ class ClowdService : Service() {
                 )?.use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: f.name
                 f.delete()
                 appendInboxLog(this, savedName, size)
-                appendLog("inbox: ${savedName} moved to Downloads/clowder")
+                appendLog("inbox: ${savedName} moved to ${downloadRel(activeClowder(this))}")
                 // Delivery only happens while the app is open (or held
                 // open by a transfer), so a toast is visible exactly
                 // when it lands.
