@@ -3,7 +3,7 @@ package daemon
 import (
 	"net"
 
-	"clowder/protocol"
+	"github.com/cterence/clowder/protocol"
 )
 
 // serveAccepted authenticates when the transport can, then serves. One

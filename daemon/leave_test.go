@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"clowder/store"
+	"github.com/cterence/clowder/store"
 )
 
 // leaveTopology builds a-b-c, with b in the middle: a knows only b,

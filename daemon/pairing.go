@@ -31,8 +31,8 @@ import (
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
 
-	"clowder/protocol"
-	"clowder/roster"
+	"github.com/cterence/clowder/protocol"
+	"github.com/cterence/clowder/roster"
 )
 
 const (
@@ -58,9 +58,9 @@ func derivePairing(words []string) (*pairingKeys, error) {
 		return nil, err
 	}
 
-	seed := sha512.Sum512([]byte("clowder/pair/v1\x00" + strings.Join(words, " ")))
+	seed := sha512.Sum512([]byte("github.com/cterence/clowder/pair/v1\x00" + strings.Join(words, " ")))
 	expand := func(label string) []byte {
-		r := hkdf.New(sha256.New, seed[:], nil, []byte("clowder/pair/v1/"+label))
+		r := hkdf.New(sha256.New, seed[:], nil, []byte("github.com/cterence/clowder/pair/v1/"+label))
 		b := make([]byte, 32)
 		if _, err := io.ReadFull(r, b); err != nil {
 			panic(err) // hkdf from a 64-byte seed cannot fail

@@ -18,8 +18,8 @@ import (
 	"github.com/tailscale/tailcat"
 	"tailscale.com/types/key"
 
-	"clowder/protocol"
-	"clowder/roster"
+	"github.com/cterence/clowder/protocol"
+	"github.com/cterence/clowder/roster"
 )
 
 // signedCat builds a roster entry signed by a throwaway sign key.

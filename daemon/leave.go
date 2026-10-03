@@ -12,8 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"clowder/protocol"
-	"clowder/roster"
+	"github.com/cterence/clowder/protocol"
+	"github.com/cterence/clowder/roster"
 )
 
 // Bounds each leave announce (dial, handshake and write). Matches the

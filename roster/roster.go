@@ -13,7 +13,7 @@ import (
 
 	"github.com/tailscale/tailcat"
 
-	"clowder/persist"
+	"github.com/cterence/clowder/persist"
 )
 
 // Cat is one clowder member. Key is the node public key in string form,

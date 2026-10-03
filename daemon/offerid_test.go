@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"clowder/protocol"
+	"github.com/cterence/clowder/protocol"
 )
 
 // TestOfferWithBadIDRefused pins the transfer-ID guard: IDs name spool

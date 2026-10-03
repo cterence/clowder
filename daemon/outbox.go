@@ -9,7 +9,7 @@ import (
 	"slices"
 	"sync"
 
-	"clowder/persist"
+	"github.com/cterence/clowder/persist"
 )
 
 // Entry is one pending outbound send: a source file retried until the

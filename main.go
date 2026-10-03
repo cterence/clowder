@@ -19,8 +19,8 @@ import (
 	"syscall"
 	"time"
 
-	"clowder/daemon"
-	"clowder/roster"
+	"github.com/cterence/clowder/daemon"
+	"github.com/cterence/clowder/roster"
 )
 
 // version is the build revision, wired through the flake's ldflags;

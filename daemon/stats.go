@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"clowder/persist"
+	"github.com/cterence/clowder/persist"
 )
 
 // Stats are lifetime counters, persisted in stats.json. Byte counts are

@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"clowder/roster"
+	"github.com/cterence/clowder/roster"
 )
 
 // Request is one command from the clow CLI to the daemon. Ops: send,

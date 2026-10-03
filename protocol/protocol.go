@@ -14,7 +14,7 @@ import (
 	"net"
 	"time"
 
-	"clowder/roster"
+	"github.com/cterence/clowder/roster"
 	"github.com/fxamacker/cbor/v2"
 )
 

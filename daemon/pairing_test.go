@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"clowder/protocol"
-	"clowder/roster"
+	"github.com/cterence/clowder/protocol"
+	"github.com/cterence/clowder/roster"
 	"github.com/tailscale/tailcat"
 )
 

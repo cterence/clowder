@@ -10,9 +10,9 @@ import (
 	"io"
 	"time"
 
-	"clowder/protocol"
-	"clowder/roster"
-	"clowder/store"
+	"github.com/cterence/clowder/protocol"
+	"github.com/cterence/clowder/roster"
+	"github.com/cterence/clowder/store"
 )
 
 func (d *Daemon) sweepSpool(ctx context.Context) {

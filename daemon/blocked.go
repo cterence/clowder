@@ -6,9 +6,9 @@ package daemon
 import (
 	"path/filepath"
 
-	"clowder/persist"
-	"clowder/protocol"
-	"clowder/roster"
+	"github.com/cterence/clowder/persist"
+	"github.com/cterence/clowder/protocol"
+	"github.com/cterence/clowder/roster"
 )
 
 func blockedPath(dir string) string { return filepath.Join(dir, "blocked.json") }

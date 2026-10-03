@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"clowder/protocol"
+	"github.com/cterence/clowder/protocol"
 )
 
 // Forget is a local kick-out: the entry must stay out even while

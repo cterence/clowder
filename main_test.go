@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"clowder/daemon"
-	"clowder/roster"
+	"github.com/cterence/clowder/daemon"
+	"github.com/cterence/clowder/roster"
 )
 
 func TestInitCreatesIdentity(t *testing.T) {

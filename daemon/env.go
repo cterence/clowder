@@ -13,7 +13,7 @@ import (
 	"github.com/tailscale/tailcat"
 	"tailscale.com/types/key"
 
-	"clowder/persist"
+	"github.com/cterence/clowder/persist"
 )
 
 // Me is the local cat's declared state, persisted in me.json.

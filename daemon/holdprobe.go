@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"clowder/protocol"
+	"github.com/cterence/clowder/protocol"
 )
 
 func (d *Daemon) probeHeld(ctx context.Context) {

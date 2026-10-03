@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"clowder/envelope"
-	"clowder/protocol"
-	"clowder/roster"
+	"github.com/cterence/clowder/envelope"
+	"github.com/cterence/clowder/protocol"
+	"github.com/cterence/clowder/roster"
 )
 
 // TestSendRefusesDuplicateName pins the ambiguous-name refusal: a name

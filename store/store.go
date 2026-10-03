@@ -13,7 +13,7 @@ import (
 	"slices"
 	"time"
 
-	"clowder/persist"
+	"github.com/cterence/clowder/persist"
 )
 
 // DefaultTTL is how long a spooled file survives undelivered.

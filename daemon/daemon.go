@@ -23,11 +23,11 @@ import (
 	"github.com/tailscale/tailcat"
 	"tailscale.com/types/key"
 
-	"clowder/envelope"
-	"clowder/persist"
-	"clowder/protocol"
-	"clowder/roster"
-	"clowder/store"
+	"github.com/cterence/clowder/envelope"
+	"github.com/cterence/clowder/persist"
+	"github.com/cterence/clowder/protocol"
+	"github.com/cterence/clowder/roster"
+	"github.com/cterence/clowder/store"
 )
 
 const DefaultPort = 2569

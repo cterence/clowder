@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"clowder/roster"
+	"github.com/cterence/clowder/roster"
 )
 
 func TestMessageRoundTrip(t *testing.T) {

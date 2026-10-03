@@ -7,7 +7,7 @@ import (
 
 	"github.com/tailscale/tailcat"
 
-	"clowder/roster"
+	"github.com/cterence/clowder/roster"
 )
 
 // blockedCat builds a roster entry with a fresh identity for the merge

@@ -17,7 +17,7 @@ import (
 	"slices"
 	"strconv"
 
-	"clowder/persist"
+	"github.com/cterence/clowder/persist"
 )
 
 // SignCat stamps c with the sign key derived from priv and signs it. The

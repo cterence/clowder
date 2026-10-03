@@ -16,8 +16,8 @@ import (
 
 	"tailscale.com/types/key"
 
-	"clowder/protocol"
-	"clowder/roster"
+	"github.com/cterence/clowder/protocol"
+	"github.com/cterence/clowder/roster"
 )
 
 // TestMain points t.TempDir() at a short-path root. Every daemon test

@@ -1,4 +1,4 @@
-module clowder
+module github.com/cterence/clowder
 
 go 1.27.1
 
