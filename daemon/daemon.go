@@ -742,7 +742,6 @@ func (d *Daemon) serveConn(pc *protocol.Conn, authKey key.NodePublic, authed boo
 	}
 	if !authed || d.helloIdentityKnown(peer) {
 		d.markSeen(peer.Key)
-		d.pinSignKey(peer)
 	}
 	if err := pc.WriteMsg(&protocol.Message{Hello: d.helloMsg()}); err != nil {
 		return
@@ -752,6 +751,10 @@ func (d *Daemon) serveConn(pc *protocol.Conn, authKey key.NodePublic, authed boo
 		return
 	}
 	d.mergeRemote(m.Roster)
+	// The authenticated peer's own Hello pins its sign key and takes
+	// its live entry verbatim (#12): a sync-carried pin for a cat we
+	// never talked to is provisional.
+	d.acceptSelfEntry(peer, m.Roster)
 	if err := pc.WriteMsg(&protocol.Message{Roster: d.rosterMsg()}); err != nil {
 		return
 	}
@@ -1313,6 +1316,7 @@ func (d *Daemon) handshakeClient(pc *protocol.Conn, timeout time.Duration) error
 	if m.Hello == nil {
 		return errors.New("peer sent no hello")
 	}
+	peer := m.Hello
 	// The hello round-trip proves liveness both ways, even if the roster
 	// exchange never completes.
 	d.markSeen(m.Hello.Key)
@@ -1327,6 +1331,9 @@ func (d *Daemon) handshakeClient(pc *protocol.Conn, timeout time.Duration) error
 		return errors.New("peer sent no roster")
 	}
 	d.mergeRemote(m.Roster)
+	// Symmetric to the serve side: the server's own Hello pins its
+	// sign key and heals a provisional pin (#12).
+	d.acceptSelfEntry(peer, m.Roster)
 	return nil
 }
 
@@ -1399,22 +1406,40 @@ func (d *Daemon) helloIdentityKnown(peer *protocol.Hello) bool {
 	return ok && (c.DialKey == "" || c.DialKey == peer.DialKey)
 }
 
-func (d *Daemon) pinSignKey(peer *protocol.Hello) {
+// acceptSelfEntry takes the authenticated peer's own roster entry
+// verbatim and pins its sign key (#12): a sign-key pin may only be
+// established by its owner over an authenticated channel, so a
+// sync-carried pin for a cat we never talked to is provisional — the
+// cat's own Hello replaces it, stale LWW timestamps included. The
+// peer's signed entry rides its roster push.
+func (d *Daemon) acceptSelfEntry(peer *protocol.Hello, sync *protocol.RosterSync) {
 	if peer.SignKey == "" {
 		return
 	}
 	c, ok := d.ros.GetByKey(peer.Key)
 	if !ok {
+		return // never seen: pairing is the only path that introduces cats
+	}
+	if c.SignKey == peer.SignKey {
+		return // pinned and matching
+	}
+	if !d.helloIdentityKnown(peer) {
+		// The claimed dial key does not resolve to this identity: the
+		// pin stays whatever it was (a forget or a forged entry), and
+		// re-pairing is the way back.
 		return
 	}
-	if c.SignKey == "" {
-		c.SignKey = peer.SignKey
-		if err := d.ros.Add(c); err != nil {
-			d.cfg.logf("clowder: pinning %s's sign key: %v", peer.Name, err)
+	for _, own := range sync.Cats {
+		if own.Key != peer.Key {
+			continue
 		}
-	} else if c.SignKey != peer.SignKey {
-		// The sign key derives from the node key: it cannot legitimately change.
-		d.cfg.logf("clowder: %s announced sign key %s, but we pinned %s; ignoring its roster updates", peer.Name, peer.SignKey, c.SignKey)
+		if err := d.ros.Add(own); err != nil {
+			d.cfg.logf("clowder: re-pinning %s's sign key: %v", peer.Name, err)
+		} else {
+			d.cfg.logf("clowder: %s re-pinned from its live entry", peer.Name)
+			d.allowCat(own)
+		}
+		return
 	}
 }
 

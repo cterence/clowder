@@ -475,3 +475,44 @@ func TestOfferSignatureRequired(t *testing.T) {
 		t.Fatalf("unsigned deposit: %+v, want refused", m.Answer)
 	}
 }
+
+// TestSyncPinIsProvisional pins the #12 binding: a sync-carried
+// sign-key pin for a cat we have never talked to is provisional. A
+// paired cat cannot pre-register a victim's key under its own sign
+// key: the victim's authenticated Hello re-pins and takes its live
+// entry, stale LWW timestamps included.
+func TestSyncPinIsProvisional(t *testing.T) {
+	milo := startDaemon(t, "milo")
+	evil := startDaemon(t, "evil")
+	niko, nikoDir := offlineCat(t)
+
+	// evil pre-registers niko's key under its own sign key, with a
+	// newer timestamp — the forged entry rides a plain sync.
+	forged := roster.SignCat(evil.env.SignPriv, roster.Cat{
+		Name: "niko", Addr: "127.0.0.1:1", Key: niko.Key,
+		DialKey: niko.DialKey, Updated: time.Now().Unix() + 1,
+	})
+	milo.mergeRemote(&protocol.RosterSync{Cats: []roster.Cat{forged}})
+	got, ok := milo.ros.GetByKey(niko.Key)
+	if !ok || got.SignKey != forged.SignKey {
+		t.Fatalf("forged entry did not land (ok=%v sign=%v)", ok, got.SignKey)
+	}
+
+	// niko wakes and syncs: its authenticated Hello re-pins.
+	nikoD := startDaemonAt(t, nikoDir)
+	addCat(t, nikoD, milo.Me())
+	waitFor(t, func() bool {
+		c, ok := milo.ros.GetByKey(niko.Key)
+		return ok && c.SignKey == nikoD.Me().SignKey && c.Addr == nikoD.Me().Addr
+	}, "niko's authenticated Hello to re-pin its sign key")
+
+	// The re-pin sticks: a newer forged push can no longer shadow niko.
+	milo.mergeRemote(&protocol.RosterSync{Cats: []roster.Cat{roster.SignCat(evil.env.SignPriv, roster.Cat{
+		Name: "niko", Addr: "127.0.0.1:1", Key: niko.Key,
+		DialKey: niko.DialKey, Updated: time.Now().Unix() + 100,
+	})}})
+	c, _ := milo.ros.GetByKey(niko.Key)
+	if c.SignKey != nikoD.Me().SignKey {
+		t.Fatal("a forged sync push overwrote the re-pinned sign key")
+	}
+}
