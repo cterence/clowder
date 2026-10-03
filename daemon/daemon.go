@@ -814,6 +814,15 @@ func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *proto
 		// The relaying storer is fine; the sender is blocked.
 		return refuse("sender is blocked")
 	}
+	// End-to-end sender authentication (#7): the offer must be signed
+	// by the sender's pinned sign key — From is display, not proof.
+	sender, ok := d.ros.GetByKey(o.FromKey)
+	if !ok {
+		return refuse("unknown sender")
+	}
+	if !protocol.VerifyOffer(o, sender.SignKey) {
+		return refuse("offer signature does not verify")
+	}
 	// Refuse when the announced stream plus a reserve would not fit.
 	if free, ok := freeSpace(d.InboxDir()); ok && free < uint64(o.Size)+recvReserve {
 		return refuse(fmt.Sprintf("receiver is low on disk (%s free)", HumanBytes(int64(free))))
@@ -863,6 +872,11 @@ func (d *Daemon) receiveAsStorer(pc *protocol.Conn, o *protocol.Offer) bool {
 	if !me.Storer {
 		return pc.Answer(o.ID, false, "not a storer") == nil
 	}
+	// Storers refuse unsigned deposits (#7): the per-sender quota needs
+	// the sender key, and the final recipient verifies the signature.
+	if o.FromKey == "" || len(o.Sig) == 0 {
+		return pc.Answer(o.ID, false, "storer refuses unsigned offers") == nil
+	}
 	if me.Capacity <= 0 {
 		return pc.Answer(o.ID, false, "storer has no capacity set") == nil
 	}
@@ -890,6 +904,7 @@ func (d *Daemon) receiveAsStorer(pc *protocol.Conn, o *protocol.Offer) bool {
 		FromKey:    o.FromKey,
 		TargetKey:  o.TargetKey,
 		TargetName: o.TargetName,
+		Sig:        o.Sig,
 	}
 	if err := pc.Answer(o.ID, true, ""); err != nil {
 		return false
@@ -1130,6 +1145,9 @@ func (d *Daemon) deliverStream(ctx context.Context, peer roster.Cat, e Entry, ta
 		TargetKey:  targetKey,
 		TargetName: targetName,
 	}
+	// The recipient verifies this against the roster-pinned sign key:
+	// no cat can send in another's name (#7).
+	protocol.SignOffer(d.env.SignPriv, o)
 	if err := d.sendSealed(ctx, peer, o, src, wantAck, true); err != nil {
 		return err
 	}

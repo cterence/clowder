@@ -271,9 +271,11 @@ func TestReceiveIdleStreamIsCleanedUp(t *testing.T) {
 		FileName:   "nap.txt",
 		Size:       int64(sealed.Len()),
 		From:       "milo",
+		FromKey:    milo.Me().Key,
 		TargetKey:  receiver.Me().Key,
 		TargetName: "fluff",
 	}
+	protocol.SignOffer(milo.env.SignPriv, o)
 	if err := pc.WriteMsg(&protocol.Message{Offer: o}); err != nil {
 		t.Fatal(err)
 	}

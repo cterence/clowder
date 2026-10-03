@@ -7,7 +7,10 @@ package protocol
 
 import (
 	"bufio"
+	"crypto/ed25519"
 	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -73,6 +76,37 @@ type Offer struct {
 	SHA256     string `cbor:"h"` // hex SHA-256 of the plaintext
 	TargetKey  string `cbor:"t"`
 	TargetName string `cbor:"m"`
+	// Sig is the sender's Ed25519 signature over every other field
+	// (SignOffer): end-to-end sender authentication the final
+	// recipient verifies — the relaying storer cannot forge it.
+	Sig []byte `cbor:"e,omitempty"`
+}
+
+// offerBytes is the canonical form an offer's signature covers: offer
+// JSON with Sig cleared (encoding/json field order is stable).
+func offerBytes(o *Offer) []byte {
+	c := *o
+	c.Sig = nil
+	b, err := json.Marshal(&c)
+	if err != nil {
+		return nil // Offer holds only strings, ints and bytes
+	}
+	return b
+}
+
+// SignOffer stamps o with the sender's Ed25519 key over every field
+// except Sig.
+func SignOffer(priv ed25519.PrivateKey, o *Offer) {
+	o.Sig = ed25519.Sign(priv, offerBytes(o))
+}
+
+// VerifyOffer checks o's signature against a hex Ed25519 public key.
+func VerifyOffer(o *Offer, signKeyHex string) bool {
+	k, err := hex.DecodeString(signKeyHex)
+	if err != nil || len(k) != ed25519.PublicKeySize || len(o.Sig) == 0 {
+		return false
+	}
+	return ed25519.Verify(k, offerBytes(o), o.Sig)
 }
 
 // Answer accepts or rejects an Offer.

@@ -61,6 +61,7 @@ func (d *Daemon) deliverHeld(ctx context.Context, cat roster.Cat, m store.Meta) 
 		SHA256:     m.SHA256,
 		TargetKey:  m.TargetKey,
 		TargetName: cat.Name,
+		Sig:        m.Sig,
 	}
 	if err := pc.WriteMsg(&protocol.Message{Offer: offer}); err != nil {
 		return err

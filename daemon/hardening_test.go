@@ -399,3 +399,79 @@ func TestStorerPerSenderQuota(t *testing.T) {
 		t.Fatalf("storer holds %d files, want 1 (over-quota deposit must be refused)", storer.Spool().Count())
 	}
 }
+
+// TestOfferSignatureRequired pins #7: an offer must be signed by its
+// sender's pinned sign key — a spoofed From or a forged offer is
+// refused, and storers refuse unsigned deposits (the relayed offer
+// keeps its signature for the final recipient to verify).
+func TestOfferSignatureRequired(t *testing.T) {
+	milo := startDaemon(t, "milo")
+	fluff := startDaemon(t, "fluff")
+	trust(t, fluff, milo)
+
+	newOffer := func() *protocol.Offer {
+		return &protocol.Offer{
+			ID: strings.Repeat("a", 32), FileName: "nap.txt", Size: 10,
+			From: "milo", FromKey: milo.Me().Key,
+			TargetKey: fluff.Me().Key, TargetName: "fluff",
+		}
+	}
+	try := func(o *protocol.Offer) *protocol.Answer {
+		client, server := net.Pipe()
+		go func() {
+			_ = fluff.handleOffer(protocol.NewConn(server), &protocol.Hello{Name: "milo", Key: milo.Me().Key}, o)
+			_ = server.Close()
+		}()
+		cpc := protocol.NewConn(client)
+		m, err := cpc.ReadMsg()
+		if err != nil {
+			t.Fatalf("reading answer: %v", err)
+		}
+		_ = client.Close()
+		if m.Answer == nil {
+			t.Fatal("receiver sent no answer")
+		}
+		return m.Answer
+	}
+
+	if a := try(newOffer()); a.OK || a.Reason != "offer signature does not verify" {
+		t.Fatalf("unsigned offer: ok=%v reason=%q, want refused", a.OK, a.Reason)
+	}
+	spoofed := newOffer()
+	_, wrong, _ := ed25519.GenerateKey(nil)
+	protocol.SignOffer(wrong, spoofed)
+	if a := try(spoofed); a.OK || a.Reason != "offer signature does not verify" {
+		t.Fatalf("spoofed offer: ok=%v reason=%q, want refused", a.OK, a.Reason)
+	}
+	stranger := newOffer()
+	stranger.FromKey = tailcat.NewPrivateKey().Public.ServerPublic.String()
+	if a := try(stranger); a.OK || a.Reason != "unknown sender" {
+		t.Fatalf("unknown sender: ok=%v reason=%q, want refused", a.OK, a.Reason)
+	}
+
+	// Storers refuse unsigned deposits: the per-sender quota needs the
+	// key, and the final recipient verifies the signature.
+	box := startDaemon(t, "box")
+	if err := box.SetStorer(true, 1<<30); err != nil {
+		t.Fatal(err)
+	}
+	niko, _ := offlineCat(t)
+	addCat(t, box, niko)
+	unsigned := newOffer()
+	unsigned.TargetKey = niko.Key
+	unsigned.TargetName = "niko"
+	client, server := net.Pipe()
+	go func() {
+		_ = box.handleOffer(protocol.NewConn(server), &protocol.Hello{Name: "milo", Key: milo.Me().Key}, unsigned)
+		_ = server.Close()
+	}()
+	cpc := protocol.NewConn(client)
+	m, err := cpc.ReadMsg()
+	if err != nil {
+		t.Fatalf("reading storer answer: %v", err)
+	}
+	_ = client.Close()
+	if m.Answer == nil || m.Answer.OK || m.Answer.Reason != "storer refuses unsigned offers" {
+		t.Fatalf("unsigned deposit: %+v, want refused", m.Answer)
+	}
+}

@@ -34,7 +34,10 @@ type Meta struct {
 	FromKey    string `json:"from_key,omitempty"`
 	TargetKey  string `json:"target_key"`  // recipient node public key, string form
 	TargetName string `json:"target_name"` // recipient's declared name
-	StoredAt   int64  `json:"stored_at"`   // unix seconds
+	// Sig is the sender's offer signature, replayed on the relayed
+	// offer so the final recipient can verify the true sender (#7).
+	Sig      []byte `json:"sig,omitempty"`
+	StoredAt int64  `json:"stored_at"` // unix seconds
 }
 
 // ExpiresAt returns when the entry expires given the spool's TTL.
