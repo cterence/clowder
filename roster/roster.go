@@ -215,16 +215,21 @@ func (r *Roster) GetByPrefix(p string) (Cat, bool) {
 
 // SyncHash is the digest of everything a roster push would carry —
 // the sender's own entry, every roster entry and every tombstone —
-// in a canonical (key-sorted) form. Equal hashes let sync peers skip
-// the roster payload (#16); any change rewrites it. Sig is excluded:
-// it is derived from the other fields.
+// in one canonical (key-sorted) form, so two converged peers hash
+// identical state identically whatever side computes it (#16, #28).
+// Sig is excluded: it is derived from the other fields.
 func (r *Roster) SyncHash(me Cat) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	h := sha256.New()
-	hashCat(h, me)
-	for _, k := range slices.Sorted(maps.Keys(r.cats)) {
-		hashCat(h, r.cats[k])
+	all := make([]Cat, 0, len(r.cats)+1)
+	for _, c := range r.cats {
+		all = append(all, c)
+	}
+	all = append(all, me)
+	slices.SortFunc(all, func(a, b Cat) int { return cmp.Compare(a.Key, b.Key) })
+	for _, c := range all {
+		hashCat(h, c)
 	}
 	for _, k := range slices.Sorted(maps.Keys(r.tombstones)) {
 		t := r.tombstones[k]
