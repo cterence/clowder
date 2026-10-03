@@ -119,20 +119,6 @@ func saveIdentity(dir string, k *tailcat.PrivateKey) error {
 	return persist.SaveJSON(filepath.Join(dir, "identity.json"), k)
 }
 
-// UpdatePresharedKey persists a new PSK, changing the address from the next
-// daemon start; the running daemon keeps serving under the old one.
-func UpdatePresharedKey(dir string, psk tailcat.PresharedKey) error {
-	var k *tailcat.PrivateKey
-	if _, err := persist.LoadJSON(filepath.Join(dir, "identity.json"), &k); err != nil {
-		return fmt.Errorf("daemon: reading identity: %w", err)
-	}
-	if k == nil {
-		return errors.New("daemon: no identity to rotate")
-	}
-	k.Public.PresharedKey = psk
-	return saveIdentity(dir, k)
-}
-
 // Init creates a new identity in dir (RegionID -1 auto-picks the DERP
 // region at startup) with the given name. Refuses if dir has an identity.
 func Init(dir, name string) error {

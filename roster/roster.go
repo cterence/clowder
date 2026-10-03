@@ -3,6 +3,7 @@
 package roster
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"slices"
@@ -103,13 +104,6 @@ func (r *Roster) Load() error {
 	}
 	r.cats = m
 	return nil
-}
-
-// Save persists the roster to its path, if one is set.
-func (r *Roster) Save() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.saveLocked()
 }
 
 func (r *Roster) saveLocked() error {
@@ -314,23 +308,6 @@ func newerWins(c, old Cat) bool {
 	return c.Name > old.Name
 }
 
-// RemoveName drops a cat by name (local, manual operation; entries are
-// never removed by propagation in v1).
-func (r *Roster) RemoveName(name string) (Cat, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for k, c := range r.cats {
-		if c.Name == name {
-			delete(r.cats, k)
-			if err := r.saveLocked(); err != nil {
-				return Cat{}, false
-			}
-			return c, true
-		}
-	}
-	return Cat{}, false
-}
-
 // RemoveKey removes exactly the cat with that node key, so duplicate
 // names can be disambiguated by key.
 func (r *Roster) RemoveKey(key string) (Cat, bool) {
@@ -351,19 +328,7 @@ func (r *Roster) RemoveKey(key string) (Cat, bool) {
 // land in one deterministic order, or listings shuffle between runs.
 func sortCats(cats []Cat) {
 	slices.SortFunc(cats, func(a, b Cat) int {
-		if a.Name != b.Name {
-			if a.Name < b.Name {
-				return -1
-			}
-			return 1
-		}
-		if a.Key != b.Key {
-			if a.Key < b.Key {
-				return -1
-			}
-			return 1
-		}
-		return 0
+		return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.Key, b.Key))
 	})
 }
 

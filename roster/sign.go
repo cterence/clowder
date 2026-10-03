@@ -8,6 +8,7 @@ package roster
 // (newer entry signed by the leaver) resurrects.
 
 import (
+	"cmp"
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
@@ -39,8 +40,6 @@ func entryBytes(c Cat) []byte {
 	return b
 }
 
-// verifyEntry reports whether c carries a valid signature from its
-// own announced sign key.
 // VerifyEntry reports whether the entry's signature is valid, so the
 // inviter can store a joiner's signed intro verbatim.
 func VerifyEntry(c Cat) bool { return verifyEntry(c) }
@@ -148,13 +147,7 @@ func (r *Roster) Tombstones() []Tombstone {
 
 func sortTombstones(ts []Tombstone) {
 	slices.SortFunc(ts, func(a, b Tombstone) int {
-		if a.Key != b.Key {
-			if a.Key < b.Key {
-				return -1
-			}
-			return 1
-		}
-		return 0
+		return cmp.Compare(a.Key, b.Key)
 	})
 }
 

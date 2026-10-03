@@ -8,7 +8,7 @@ import (
 )
 
 // Transport abstracts how the daemon reaches other cats (tailcat in
-// production, loopback TCP in tests — transport_test.go).
+// production, loopback TCP in tests).
 type Transport interface {
 	// Listen starts accepting connections from allowed peers. MyAddr
 	// becomes valid after Listen returns.

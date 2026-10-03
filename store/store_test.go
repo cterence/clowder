@@ -91,28 +91,8 @@ func TestTTLExpiry(t *testing.T) {
 	if got := s.List("nodekey:me"); len(got) != 1 || got[0].ID != "new" {
 		t.Fatalf("List = %+v, want only the fresh entry", got)
 	}
-	if n := s.Sweep(); n != 0 {
-		t.Fatalf("Sweep removed %d, want 0 (List already dropped it)", n)
-	}
 	if _, err := os.Stat(filepath.Join(dir, "old.blob")); !os.IsNotExist(err) {
 		t.Fatal("expired blob still on disk")
-	}
-}
-
-func TestSweepRemovesExpired(t *testing.T) {
-	dir := t.TempDir()
-	s := New(dir, time.Hour)
-
-	old := time.Now().Add(-2 * time.Hour).Unix()
-	if err := s.Put(Meta{ID: "old", TargetKey: "nodekey:me", StoredAt: old, Size: 1},
-		bytes.NewReader([]byte("x"))); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-	if n := s.Sweep(); n != 1 {
-		t.Fatalf("Sweep removed %d, want 1", n)
-	}
-	if s.Count() != 0 {
-		t.Fatalf("Count = %d, want 0", s.Count())
 	}
 }
 

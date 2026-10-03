@@ -4,6 +4,7 @@ package daemon
 // sealed stream, one update per 64 KiB chunk, keyed by transfer ID.
 
 import (
+	"cmp"
 	"io"
 	"slices"
 	"sync"
@@ -122,13 +123,7 @@ func (k *progressKeeper) snapshot() []Progress {
 	}
 	k.mu.Unlock()
 	slices.SortFunc(out, func(a, b Progress) int {
-		if a.Started != b.Started {
-			return int(a.Started - b.Started)
-		}
-		if a.ID < b.ID {
-			return -1
-		}
-		return 1
+		return cmp.Or(cmp.Compare(a.Started, b.Started), cmp.Compare(a.ID, b.ID))
 	})
 	return out
 }
