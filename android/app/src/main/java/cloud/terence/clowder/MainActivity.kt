@@ -216,6 +216,16 @@ private fun runInit(ctx: android.content.Context, name: String): String = try {
     "init failed: ${e.message}"
 }
 
+/** `clow version` runs the binary directly: a pure local op, no daemon. */
+private fun runVersion(ctx: android.content.Context): String? = try {
+    val proc = ProcessBuilder(ClowdService.binaryFile(ctx).absolutePath, "version")
+        .redirectErrorStream(true)
+        .start()
+    proc.inputStream.bufferedReader().readText().trim().ifEmpty { null }
+} catch (e: Exception) {
+    null
+}
+
 @Composable
 fun InitScreen(onDone: () -> Unit) {
     val ctx = LocalContext.current
@@ -1119,7 +1129,14 @@ fun SettingsScreen(onClose: () -> Unit, onShowLog: () -> Unit, onReset: () -> Un
     var resetResult by remember { mutableStateOf<String?>(null) }
     var showLeave by remember { mutableStateOf(false) }
     var leaveResult by remember { mutableStateOf<String?>(null) }
+    var version by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+
+    // The build revision under the settings' daemon row: `clow version`
+    // against the shipped binary — the same build as the daemon.
+    LaunchedEffect(Unit) {
+        version = withContextOrNull { runVersion(ctx) }
+    }
 
     if (showReset) {
         AlertDialog(
@@ -1235,6 +1252,13 @@ fun SettingsScreen(onClose: () -> Unit, onShowLog: () -> Unit, onReset: () -> Un
                         Text("Start")
                     }
                 }
+            }
+            version?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
             MenuRow("View daemon log") { onShowLog() }
