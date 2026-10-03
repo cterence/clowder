@@ -135,14 +135,17 @@ func (d *Daemon) handleLeave(l *protocol.LeaveMsg) {
 	}, true)
 }
 
-// handleTombstone applies one tombstone and re-broadcasts it; claim guards
+// handleTombstone applies one tombstone and re-broadcasts it. claim guards
 // the re-broadcast (each leave is forwarded once per cat — ApplyTombstones
-// is idempotent, the re-broadcast is not).
+// is idempotent, the re-broadcast is not) and is recorded only after the
+// tombstone applied: an unverified wire leave must not write to leaveSeen,
+// or a churner could grow the map — and pre-claim a future timestamp to
+// swallow a genuine leave — without end (#27).
 func (d *Daemon) handleTombstone(t roster.Tombstone, claim bool) {
-	if claim && !d.claimLeave(t.Key, t.Time) {
+	if !d.applyTombstone(t) {
 		return
 	}
-	if !d.applyTombstone(t) {
+	if claim && !d.claimLeave(t.Key, t.Time) {
 		return
 	}
 	d.rebroadcastLeave(t)

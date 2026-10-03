@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cterence/clowder/protocol"
 	"github.com/cterence/clowder/store"
 )
 
@@ -214,4 +215,45 @@ func TestLeaveStepLogs(t *testing.T) {
 			t.Errorf("step logs = %q, want %q", joined, want)
 		}
 	}
+}
+
+// TestUnverifiedLeaveClaimsNothing pins #27: a wire leave that does not
+// verify must not touch leaveSeen — the claim is recorded only after the
+// tombstone applies, so a churner can neither grow the map without end
+// nor pre-claim a future timestamp to swallow a genuine leave.
+func TestUnverifiedLeaveClaimsNothing(t *testing.T) {
+	milo := startDaemon(t, "milo")
+	niko, nikoDir := offlineCat(t)
+	addCat(t, milo, niko)
+
+	// A forged leave for niko's key: junk signature, far-future time.
+	milo.handleLeave(&protocol.LeaveMsg{
+		Key:     niko.Key,
+		SignKey: strings.Repeat("ab", 32),
+		Time:    time.Now().Add(time.Hour).Unix(),
+		Sig:     make([]byte, 64),
+	})
+	if len(milo.leaveSeen) != 0 {
+		t.Fatalf("unverified leave recorded %d claims, want 0", len(milo.leaveSeen))
+	}
+	if _, ok := milo.Roster().GetByKey(niko.Key); !ok {
+		t.Fatal("an unverified leave dropped the cat")
+	}
+
+	// The genuine leave applies despite the earlier forgery. The claim
+	// is written after applyTombstone's disk work, so wait for it, not
+	// for the roster drop alone.
+	nikoD := startDaemonAt(t, nikoDir)
+	addCat(t, nikoD, milo.Me())
+	if _, err := nikoD.Leave(); err != nil {
+		t.Fatalf("Leave: %v", err)
+	}
+	waitFor(t, func() bool {
+		if _, ok := milo.Roster().GetByKey(niko.Key); ok {
+			return false
+		}
+		milo.mu.Lock()
+		defer milo.mu.Unlock()
+		return len(milo.leaveSeen) == 1
+	}, "the genuine leave to drop niko and be the one recorded claim")
 }
