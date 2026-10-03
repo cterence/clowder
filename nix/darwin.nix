@@ -11,42 +11,38 @@
 # instance under services.clowder.instances; the key is the local
 # clowder name.
 #
-# The per-instance agent lives inside the submodule: a top-level
-# config iterating the instances attrset recurses, because
-# discharging that config forces the very option merge it contributes
-# to. The outer `config` stays reachable by closure where the instance
-# needs a parent option (the log path's primaryUser).
+# mapAttrs', never mapAttrsToList: the module system walks each
+# module's config structure to collect definitions, and attrValues
+# would force the instances' values into that walk — infinite
+# recursion.
 { self, config, lib, pkgs, ... }:
 let
   shared = import ./options.nix { inherit lib pkgs self; };
-
-  instance = { name, ... }@args: {
-    config = lib.mkIf args.config.enable {
-      launchd.user.agents."clowder-${name}" = {
-        command = "${args.config.package}/bin/clow daemon";
-        environment = shared.env args.config // { CLOWDER = name; };
-        serviceConfig =
-          {
-            RunAtLoad = true;
-            KeepAlive = true;
-            ProcessType = "Background";
-          }
-          // lib.optionalAttrs (config.system.primaryUser != null) {
-            # launchd does not expand ~; without a path it discards logs.
-            StandardOutPath = "/Users/${config.system.primaryUser}/Library/Logs/clowder-${name}.log";
-            StandardErrorPath = "/Users/${config.system.primaryUser}/Library/Logs/clowder-${name}.log";
-          };
-      };
-    };
-  };
+  instances = config.services.clowder.instances;
+  enabled = lib.filterAttrs (n: c: c.enable) instances;
 in
 {
   options.services.clowder.instances = lib.mkOption {
-    type = lib.types.attrsOf (lib.types.submodule [
-      shared.options
-      instance
-    ]);
+    type = lib.types.attrsOf (lib.types.submodule { options = shared.options; });
     default = { };
     description = "Clowder instances: one daemon and config dir per local clowder name.";
+  };
+
+  config = {
+    launchd.user.agents = lib.mapAttrs' (name: cfg: lib.nameValuePair "clowder-${name}" {
+      command = "${cfg.package}/bin/clow daemon";
+      environment = shared.env cfg // { CLOWDER = name; };
+      serviceConfig =
+        {
+          RunAtLoad = true;
+          KeepAlive = true;
+          ProcessType = "Background";
+        }
+        // lib.optionalAttrs (config.system.primaryUser != null) {
+          # launchd does not expand ~; without a path it discards logs.
+          StandardOutPath = "/Users/${config.system.primaryUser}/Library/Logs/clowder-${name}.log";
+          StandardErrorPath = "/Users/${config.system.primaryUser}/Library/Logs/clowder-${name}.log";
+        };
+    }) enabled;
   };
 }
