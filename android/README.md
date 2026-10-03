@@ -88,9 +88,14 @@ open; the mesh's storer role is the answer for offline delivery.
 
 ## Notes and limits
 
-- The config dir is `<filesDir>/clowder`; the inbox is
-  `<filesDir>/Downloads/clowder`. Nothing is shared with Termux or
-  other installs; a cat initialized in the app is a new cat.
+- The config base is `<filesDir>/clowder`; each clowder is a directory
+  under it (`<filesDir>/clowder/<name>`, default `default`), and the
+  per-clowder inbox is `<filesDir>/Downloads/clowder/<name>`. The home
+  header is the clowder switcher: picking (or creating) a clowder
+  restarts the daemon on its config dir — one clowder at a time, and
+  an uninitialized one lands on the init screen. Nothing is shared
+  with Termux or other installs; a cat initialized in the app is a new
+  cat.
 - Sending picks files first, sends after: the system picker allows
   multiple documents, the selection is removable, and one send button
   queues them all. Each picked document is copied

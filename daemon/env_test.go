@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"crypto/ed25519"
+	"path/filepath"
 	"testing"
 )
 
@@ -28,5 +29,19 @@ func TestSignKeyDomainSeparated(t *testing.T) {
 	}
 	if !env.SignPriv.Equal(again.SignPriv) {
 		t.Fatal("sign key is not stable across opens")
+	}
+}
+
+// TestInboxDirPerClowder pins the nested inbox default (#19): without
+// an explicit --inbox, each clowder receives into its own folder under
+// Downloads/clowder/<clowder-name>/ — the config dir's last segment.
+func TestInboxDirPerClowder(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	base := t.TempDir()
+	if got := InboxDir(filepath.Join(base, "work")); got != filepath.Join(DefaultInbox(), "work") {
+		t.Fatalf("work inbox = %q, want %q", got, filepath.Join(DefaultInbox(), "work"))
+	}
+	if got := InboxDir(filepath.Join(base, "default")); got != filepath.Join(DefaultInbox(), "default") {
+		t.Fatalf("default inbox = %q, want %q", got, filepath.Join(DefaultInbox(), "default"))
 	}
 }

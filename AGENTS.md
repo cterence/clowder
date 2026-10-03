@@ -20,7 +20,11 @@ reviewing code in this repo.
 
     nix develop                    # devshell: go, gopls, golangci-lint, prek; installs git hooks
     nix develop .#android          # android app: SDK + JDK 17 + gradle (android/README.md)
-    go build ./... && go test -race -count=1 ./...
+    go build ./... && go test -race -count=1 ./... 2>&1 | grep -E '^(ok|FAIL|---)'
+                                                 # the grep is deliberate: tests
+                                                 # print init noise to stdout, and a
+                                                 # filter that lets noise through can
+                                                 # push the FAIL line out of view
     prek run --all-files           # gofmt, go vet, golangci-lint (hooks also run on commit)
     GOOS=windows go build ./daemon/   # cross-compile check
 
@@ -118,10 +122,8 @@ Tracked in GitHub issues:
   old/new mesh is broken until the stragglers upgrade). Still open:
   #16 (sync scaling); #11 closed as documented accepted risks
   (rotation runbook in the README).
-- Android app dogfooding (pair, send/receive, boot-receive,
-  notifications, storer UI): #18
-- Multiple clowders (named clowders, per-clowder rosters; sync
-  scaling lands here too, tracked in #16): #19
+- Sync scaling (single large clowder; the roster-hash design is filed
+  on the issue): #16
 
 ## Shipped
 
@@ -254,11 +256,28 @@ One line each; the pinning tests carry the details.
   package for x86_64-linux and aarch64-darwin and pushes both to the
   niks3 binary cache (GitHub OIDC, no secrets — the server's subject
   allowlist lives in the homelab niks3 chart).
+- **Multiple clowders (#19)**: a clowder IS a config dir —
+  `base/<name>/` under $CLOWDER_DIR (now the base), default clowder at
+  `base/default/` with no-flag commands meaning it; a flat pre-nesting
+  base auto-migrates on first run. Names are local only
+  (--clowder flag > $CLOWDER env > default, slug-validated), never on
+  the wire; per-clowder default inbox `~/Downloads/clowder/<name>/`.
+  Zero wire change: one daemon per clowder, disjoint identities,
+  cross-clowder sameness a non-goal. The tailcat listener is virtual,
+  so clowders sharing a host coexist on the same overlay port
+  (2569 is a mesh-wide convention only; --health differs per instance
+  when enabled). nix modules expose
+  `services.clowder.instances.<name>` (one unit/agent per name); the
+  Android app's header is the local switcher (one daemon at a time,
+  restarted on the chosen dir). Pins: TestClowderNesting,
+  TestFlatBaseMigration, TestInboxDirPerClowder,
+  TestIntegrationTwoClowders.
 - **Service packaging**: NixOS module (`nixosModules.default`,
-  `services.clowder`: dedicated clowder user, StateDirectory
-  /var/lib/clowder, HOME pointed there too (system users get
-  /var/empty, which would break the default inbox) — auto-init rides
-  the daemon's own first-start init, Restart=on-failure; deliberately
+  `services.clowder.instances.<name>`: dedicated clowder user,
+  StateDirectory /var/lib/clowder/<name>, HOME pointed at the base
+  (system users get /var/empty, which would break the default inbox) —
+  auto-init rides the daemon's own first-start init,
+  Restart=on-failure; deliberately
   NO WatchdogSec, since the watchdog clock counts suspend time and
   would kill a healthy daemon on wake — hang detection stays with
   external probes of healthAddr) and, sharing one options.nix, a

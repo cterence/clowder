@@ -230,6 +230,46 @@ func (c *cat) waitHealthy() error {
 	return fmt.Errorf("cat %s: daemon never became healthy on %s", c.name, c.health)
 }
 
+// TestIntegrationTwoClowders pins the local-clowder separation (#19):
+// two clowders run on one host, both daemons concurrently on the same
+// overlay port; a pair-and-send inside the first clowder works through
+// the name routing, and the second clowder's cat stays invisible to
+// it — a clowder is a config dir, the name picks the dir and nothing
+// else.
+func TestIntegrationTwoClowders(t *testing.T) {
+	if os.Getenv("CLOWDER_INTEGRATION") != "1" {
+		t.Skip("set CLOWDER_INTEGRATION=1 (needs outbound DERP network)")
+	}
+
+	milo := newCat(t, "milo", map[string]string{"CLOWDER": "alpha"})
+	puma := newCat(t, "puma", map[string]string{"CLOWDER": "alpha"})
+	boris := newCat(t, "boris", map[string]string{"CLOWDER": "beta"})
+	startAll(t, milo, puma, boris)
+
+	// Pair and send inside alpha, through the name-routed CLI.
+	code := milo.invite()
+	puma.clow("join", code)
+	waitFor(t, func() bool {
+		return strings.Contains(puma.clow("status"), "milo") &&
+			strings.Contains(milo.clow("status"), "puma")
+	}, "alpha pairing to show up in `clow status` on both sides")
+
+	src := writeFile(t, "nap.txt", 64*1024)
+	out := milo.clow("send", "puma", src)
+	if !strings.Contains(out, "sent nap.txt to puma") {
+		t.Fatalf("alpha send output: %q", out)
+	}
+	waitForFile(t, puma, "nap.txt", src)
+
+	// beta is a different clowder on the same host: nobody crosses.
+	if st := boris.clow("status"); strings.Contains(st, "milo") || strings.Contains(st, "puma") {
+		t.Fatalf("beta status sees alpha cats: %q", st)
+	}
+	if st := milo.clow("status"); strings.Contains(st, "boris") {
+		t.Fatalf("alpha status sees beta cats: %q", st)
+	}
+}
+
 // TestIntegrationEndToEnd is the full user story against real daemon
 // processes and the real DERP network: three cats pair with real
 // pairing codes, a file is sent directly, then a second file rides a
@@ -278,7 +318,7 @@ func TestIntegrationEndToEnd(t *testing.T) {
 	src2 := writeFile(t, "nap2.txt", 128*1024)
 	milo.clow("send", "puma", src2)
 	waitFor(t, func() bool {
-		des, err := os.ReadDir(filepath.Join(box.dir, "spool"))
+		des, err := os.ReadDir(filepath.Join(box.dir, "default", "spool"))
 		return err == nil && len(des) > 0
 	}, "the storer to hold the offline cat's file")
 

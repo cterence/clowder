@@ -4,15 +4,18 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -34,14 +37,35 @@ func main() {
 	}
 }
 
+// clowderName is the active local clowder, resolved in run():
+// --clowder > $CLOWDER > "default". A clowder is a config dir
+// under the base; the name is purely local — it never rides the wire.
+var clowderName = "default"
+
+// clowderNameRe bounds clowder names: they become directory names,
+// systemd unit suffixes and nix attrset keys.
+var clowderNameRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+
 func run(args []string) error {
-	if len(args) == 0 {
+	fs := flag.NewFlagSet("clow", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	name := fs.String("clowder", "", "local clowder name (default: $CLOWDER, else \"default\")")
+	fs.StringVar(name, "c", "", "shorthand for --clowder")
+	help := fs.Bool("help", false, "print usage")
+	fs.BoolVar(help, "h", false, "shorthand for --help")
+	if err := fs.Parse(args); err != nil {
+		return printUsage()
+	}
+	args = fs.Args()
+	*name = cmp.Or(*name, os.Getenv("CLOWDER"), "default")
+	if !clowderNameRe.MatchString(*name) {
+		return fmt.Errorf("invalid clowder name %q: lowercase letters, digits and dashes, at most 32 chars", *name)
+	}
+	clowderName = *name
+	if len(args) == 0 || *help {
 		return printUsage()
 	}
 	cmd, rest := args[0], args[1:]
-	if cmd == "-h" || cmd == "--help" {
-		return printUsage()
-	}
 	if slices.Contains(rest, "-h") || slices.Contains(rest, "--help") {
 		fmt.Print(helpText(cmd))
 		return nil
@@ -208,7 +232,9 @@ func helpText(cmd string) string {
 	return usageText()
 }
 
-func configDir() string {
+// configBase is the clowder root: $CLOWDER_DIR if set, else the OS
+// config home's clowder directory. Each clowder is a dir under it.
+func configBase() string {
 	if d := os.Getenv("CLOWDER_DIR"); d != "" {
 		return d
 	}
@@ -217,6 +243,46 @@ func configDir() string {
 		log.Fatalf("clow: no config home: %v", err)
 	}
 	return filepath.Join(base, "clowder")
+}
+
+// configDir resolves the active clowder's config dir: base/<name>. A
+// pre-nesting flat base (identity.json directly in it) migrates to
+// base/default/ on first use.
+func configDir() string {
+	base := configBase()
+	migrateFlatBase(base)
+	return filepath.Join(base, clowderName)
+}
+
+// migrateFlatBase moves a flat, pre-nesting config dir into
+// base/default/: per-entry renames, identity.json last, so an
+// interrupted migration stays detectable and resumes.
+func migrateFlatBase(base string) {
+	identity := filepath.Join(base, "identity.json")
+	if _, err := os.Stat(identity); err != nil {
+		return // nested (or empty/absent) already
+	}
+	def := filepath.Join(base, "default")
+	if err := os.MkdirAll(def, 0o700); err != nil {
+		log.Fatalf("clow: migrating %s: %v", base, err)
+	}
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		log.Fatalf("clow: migrating %s: %v", base, err)
+	}
+	for _, e := range entries {
+		n := e.Name()
+		if n == "default" || n == "identity.json" {
+			continue
+		}
+		if err := os.Rename(filepath.Join(base, n), filepath.Join(def, n)); err != nil {
+			log.Fatalf("clow: migrating %s: %v", base, err)
+		}
+	}
+	if err := os.Rename(identity, filepath.Join(def, "identity.json")); err != nil {
+		log.Fatalf("clow: migrating %s: %v", base, err)
+	}
+	fmt.Fprintf(os.Stderr, "clow: migrated %s to the named-clowder layout: %s\n", base, def)
 }
 
 var initFS = flag.NewFlagSet("init", flag.ContinueOnError)
