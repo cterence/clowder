@@ -110,8 +110,9 @@ not already captured there.
 
 Tracked in GitHub issues:
 
-- Security and DoS findings from the 2026-09 security review: #7-#12,
-  #15, #16 (fixed by the hardening pass: #6, #9, #13, #14)
+- Security and DoS findings from the 2026-09 security review: #7
+  (sender-auth half open), #8 (receipt-relay half open), #11, #12, #15,
+  #16 (fixed by the hardening pass: #6, #9, #10, #13, #14)
 - Android app dogfooding (pair, send/receive, boot-receive,
   notifications, storer UI): #18
 - Multiple clowders (named clowders, per-clowder rosters; sync
@@ -120,6 +121,19 @@ Tracked in GitHub issues:
 ## Shipped
 
 One line each; the pinning tests carry the details.
+
+- **DoS and availability hardening** (#10, parts of #7 and #8): one
+  authenticated peer may hold at most 8 concurrent serves
+  (TestPeerConnCapDropsExcess) and at most 10 post-handshake roster
+  pushes per connection (TestRosterMergeCapCutsConn); offers carry the
+  sender's node key, so a forgotten cat's relayed files are refused by
+  key, not by the name the roster no longer resolves
+  (TestRelayedOfferBlockedByKey); an AckStored no longer deletes the
+  outbox entry — a poll-tick hold probe confirms the storer still has
+  the file and re-queues the send when it does not
+  (TestAcceptAndDropStorerCaughtByProbe). A lying storer still defeats
+  the probe; the propagated receipt (#8) and signed offers (#7) are the
+  full fixes.
 
 - **Security hardening pass** (#6, #9, #13, #14): a sync is not a
   trust root — unsigned entries for unknown keys no longer propagate

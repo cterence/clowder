@@ -42,6 +42,12 @@ const (
 	msgTimeout             = 2 * time.Minute
 	streamTimeout          = 30 * time.Minute
 	maxConcurrentTransfers = 4
+	// Concurrent serves one authenticated peer may hold. Legit peak: all
+	// four transfer slots plus a sync, a leave and headroom.
+	maxPeerConns = 8
+	// Post-handshake roster pushes one connection may run; the honest
+	// rate is one or two (leave re-broadcast, pairing fan-out).
+	maxRosterMerges = 10
 	// A ping is a cold dial away from netcheck + relay attach (~3s on
 	// the real mesh); bound it so the CLI answer comes in seconds.
 	pingTimeout = 15 * time.Second
@@ -121,6 +127,11 @@ type Daemon struct {
 	// instead of waiting out a peer's msg deadline.
 	liveConns map[*protocol.Conn]struct{}
 
+	// Concurrent serves per authenticated peer key, capped at
+	// maxPeerConns so one cat cannot pile unbounded work onto us.
+	peerConnsMu sync.Mutex
+	peerConns   map[string]int
+
 	pairMu   sync.Mutex
 	pairSrv  *tailcat.Server
 	pairLn   net.Listener
@@ -158,6 +169,7 @@ type Daemon struct {
 	// (retry/sweep races).
 	deliveryClaims *claimSet
 	sweeping       atomic.Bool // one spool sweep at a time
+	holdProbing    atomic.Bool // one hold-probe pass at a time
 	receiveClaims  *claimSet
 	// Guards reserved: the capacity check and claim are one atomic operation.
 	resMu    sync.Mutex
@@ -201,6 +213,7 @@ func New(cfg Config, tr Transport) (*Daemon, error) {
 		liveness:       map[string]int64{},
 		leaveSeen:      map[string]int64{},
 		blocked:        loadBlocked(cfg.Dir),
+		peerConns:      map[string]int{},
 		slots:          make(chan struct{}, maxConcurrentTransfers),
 		deliveryClaims: newClaimSet(),
 		receiveClaims:  newClaimSet(),
@@ -583,6 +596,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 			d.goBg(d.retryOutbox)
 		case <-poll.C:
 			d.goBg(func() { d.syncPeers(context.WithoutCancel(ctx)) })
+			d.goBg(func() { d.probeHeld(context.WithoutCancel(ctx)) })
 		case <-spool.C:
 			// One sweep at a time: a target's dialing timeout must
 			// not stack attempts.
@@ -728,6 +742,7 @@ func (d *Daemon) serveConn(pc *protocol.Conn, authKey key.NodePublic, authed boo
 		return
 	}
 
+	merges := 0
 	for {
 		_ = pc.SetDeadline(time.Now().Add(msgTimeout))
 		m, err := pc.ReadMsg()
@@ -741,8 +756,19 @@ func (d *Daemon) serveConn(pc *protocol.Conn, authKey key.NodePublic, authed boo
 			}
 		case m.Roster != nil:
 			// Post-handshake roster push (e.g. a rotation). No reply: avoid
-			// sync ping-pong.
+			// sync ping-pong. A churner may not run unbounded merges —
+			// each is a full signature verify pass plus a roster write.
+			if merges >= maxRosterMerges {
+				d.cfg.logf("clowder: cutting %s: more than %d roster pushes on one connection", peer.Name, maxRosterMerges)
+				return
+			}
+			merges++
 			d.mergeRemote(m.Roster)
+		case m.Ack != nil && m.Ack.Kind == protocol.AckHolding:
+			// Hold probe: prove the spool still has the transfer.
+			if err := pc.Answer(m.Ack.ID, d.spool.Has(m.Ack.ID), "not held"); err != nil {
+				return
+			}
 		case m.Leave != nil:
 			// Signed forget-me: apply and re-broadcast; the connection continues.
 			d.handleLeave(m.Leave)
@@ -774,8 +800,8 @@ func (d *Daemon) receiveDirect(pc *protocol.Conn, from *protocol.Hello, o *proto
 	if d.Me().Dropbox {
 		return refuse("dropbox cat: no personal deliveries")
 	}
-	if d.isBlockedName(o.From) {
-		// The relaying storer is fine; the named sender is blocked.
+	if d.isBlockedSender(o) {
+		// The relaying storer is fine; the sender is blocked.
 		return refuse("sender is blocked")
 	}
 	// Refuse when the announced stream plus a reserve would not fit.
@@ -842,6 +868,7 @@ func (d *Daemon) receiveAsStorer(pc *protocol.Conn, o *protocol.Offer) bool {
 		Size:       o.Size,
 		SHA256:     o.SHA256,
 		From:       o.From,
+		FromKey:    o.FromKey,
 		TargetKey:  o.TargetKey,
 		TargetName: o.TargetName,
 	}
@@ -974,6 +1001,9 @@ func inboxPath(dir, name string) string {
 
 func (d *Daemon) retryOutbox() {
 	for _, e := range d.ob.All() {
+		if e.HeldBy != "" {
+			continue // waiting on a hold probe, not a retry
+		}
 		d.goBg(func() { d.deliver(e) })
 	}
 }
@@ -1014,7 +1044,12 @@ func (d *Daemon) deliver(e Entry) {
 		}
 		if err := d.deliverStream(ctx, s, e, e.TargetKey, e.TargetName, protocol.AckStored); err == nil {
 			d.settle(e.ID, "stored via "+s.Name)
-			_ = d.ob.Delete(e.ID)
+			// AckStored is not proof the storer kept the file: the entry
+			// stays until a probe confirms the storer still holds it.
+			e.HeldBy = s.Key
+			if err := d.ob.Put(e); err != nil {
+				d.cfg.logf("clowder: recording holding storer for %s: %v", e.ID, err)
+			}
 			return
 		} else {
 			d.cfg.logf("clowder: via storer %s failed: %v", s.Name, err)
@@ -1069,6 +1104,7 @@ func (d *Daemon) deliverStream(ctx context.Context, peer roster.Cat, e Entry, ta
 		FileName:   e.FileName,
 		Size:       envelope.SealedSize(size),
 		From:       d.Me().Name,
+		FromKey:    d.Me().Key,
 		SHA256:     digest,
 		TargetKey:  targetKey,
 		TargetName: targetName,

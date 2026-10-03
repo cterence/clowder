@@ -57,6 +57,7 @@ func (d *Daemon) deliverHeld(ctx context.Context, cat roster.Cat, m store.Meta) 
 		FileName:   m.FileName,
 		Size:       m.Size,
 		From:       m.From,
+		FromKey:    m.FromKey,
 		SHA256:     m.SHA256,
 		TargetKey:  m.TargetKey,
 		TargetName: cat.Name,
