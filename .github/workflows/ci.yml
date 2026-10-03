@@ -96,6 +96,14 @@ jobs:
             extra-substituters = https://niks3.terence.cloud
             extra-trusted-public-keys = niks3.terence.cloud-1:YBjuY7HeSjKk5wmvw8N+vq/us2GxQPCHRn871lL7XL4=
       - run: nix build . --print-out-paths
+      # Consumer-render gate: import the NixOS module into a real NixOS
+      # eval and force the rendered unit — catches modules that
+      # evaluate green but render nothing (options declared under
+      # config, config that forces its own option merge).
+      - run: |
+          nix eval --raw --impure --expr \
+            "(let f = builtins.getFlake \"path:$(pwd)\"; in
+              import ./nix/render-test.nix { pkgs = import f.inputs.nixpkgs {}; self = f; })"
       - name: Push to niks3
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         run: |

@@ -4,8 +4,12 @@ package roster
 
 import (
 	"cmp"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -207,6 +211,32 @@ func (r *Roster) GetByPrefix(p string) (Cat, bool) {
 		}
 	}
 	return found, found.Key != ""
+}
+
+// SyncHash is the digest of everything a roster push would carry —
+// the sender's own entry, every roster entry and every tombstone —
+// in a canonical (key-sorted) form. Equal hashes let sync peers skip
+// the roster payload (#16); any change rewrites it. Sig is excluded:
+// it is derived from the other fields.
+func (r *Roster) SyncHash(me Cat) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	h := sha256.New()
+	hashCat(h, me)
+	for _, k := range slices.Sorted(maps.Keys(r.cats)) {
+		hashCat(h, r.cats[k])
+	}
+	for _, k := range slices.Sorted(maps.Keys(r.tombstones)) {
+		t := r.tombstones[k]
+		_, _ = fmt.Fprintf(h, "T%s\x00%s\x00%d\n", t.Key, t.SignKey, t.Time)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func hashCat(h io.Writer, c Cat) {
+	// The sha256 writer never fails.
+	_, _ = fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s\x00%s\x00%d\x00%t\x00%t\x00%d\n",
+		c.Key, c.Name, c.Addr, c.DialKey, c.SignKey, c.Updated, c.Storer, c.Dropbox, c.Capacity)
 }
 
 // All returns all cats sorted by name.

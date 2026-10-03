@@ -50,6 +50,11 @@ type Hello struct {
 	Storer  bool   `cbor:"s,omitempty"`
 	Dropbox bool   `cbor:"d,omitempty"`
 	Version uint16 `cbor:"v,omitempty"`
+	// RosterHash is the sender's roster digest (#16): when it matches
+	// the receiver's, the roster exchange is skipped — an empty
+	// RosterSync instead of the full payload. Pre-#16 peers send none
+	// and always get the full roster.
+	RosterHash string `cbor:"x,omitempty"`
 }
 
 type RosterSync struct {

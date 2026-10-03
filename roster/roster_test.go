@@ -235,3 +235,56 @@ func TestAllDeterministicWithDuplicateNames(t *testing.T) {
 		}
 	}
 }
+
+// TestSyncHash pins the roster digest sync peers compare (#16): stable
+// while nothing changes, rewritten by any entry or tombstone change,
+// covering the sender's own entry, and equal only for equal state.
+func TestSyncHash(t *testing.T) {
+	me := cat(t, "milo")
+	fluff := cat(t, "fluff")
+	r := New()
+	if err := r.Add(fluff); err != nil {
+		t.Fatal(err)
+	}
+	h1 := r.SyncHash(me)
+	if h1 == "" {
+		t.Fatal("SyncHash returned empty")
+	}
+	if h2 := r.SyncHash(me); h2 != h1 {
+		t.Fatal("SyncHash is not stable across calls")
+	}
+
+	// Equal state hashes equal, in any instance order.
+	r2 := New()
+	if err := r2.Add(fluff); err != nil {
+		t.Fatal(err)
+	}
+	if got := r2.SyncHash(me); got != h1 {
+		t.Fatal("equal rosters hash differently")
+	}
+
+	// Any entry change rewrites it.
+	fluff2 := fluff
+	fluff2.Updated = fluff.Updated + 1
+	if err := r.Add(fluff2); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.SyncHash(me); got == h1 {
+		t.Fatal("an entry change did not rewrite the hash")
+	}
+
+	// The sender's own entry is covered.
+	me2 := me
+	me2.Updated = me.Updated + 1
+	if got := r.SyncHash(me2); got == r.SyncHash(me) {
+		t.Fatal("the sender's own entry is not covered")
+	}
+
+	// A tombstone rewrites it.
+	r3 := New()
+	h3 := r3.SyncHash(me)
+	r3.tombstones[fluff.Key] = Tombstone{Key: fluff.Key, SignKey: fluff.SignKey, Time: 200}
+	if got := r3.SyncHash(me); got == h3 {
+		t.Fatal("a tombstone did not rewrite the hash")
+	}
+}

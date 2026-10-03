@@ -33,8 +33,12 @@ in
     description = "Clowder instances: one daemon and config dir per local clowder name.";
   };
 
+  # Keys only in the condition: forcing values here (filterAttrs,
+  # != {}) feeds the instances merge back into the config walk that
+  # discharges this condition — infinite recursion. The value-level
+  # filterAttrs below is fine: it runs only when the units merge.
   config = lib.mkMerge [
-    (lib.mkIf (enabled != { }) {
+    (lib.mkIf (lib.attrNames instances != [ ]) {
       users.groups.clowder = { };
       users.users.clowder = {
         isSystemUser = true;

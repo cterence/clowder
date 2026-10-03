@@ -679,3 +679,24 @@ func TestStatusReportsBlockedAndTombstoned(t *testing.T) {
 		t.Errorf("blocked keys = %v, want the forgotten cat's key", resp.Blocked)
 	}
 }
+
+// TestSyncRosterHashSkipsUnchanged pins the #16 wire saving: a sync
+// round against a peer whose RosterHash matches sends an empty roster;
+// a mismatch or a hash-less (pre-#16) peer still gets the full one.
+func TestSyncRosterHashSkipsUnchanged(t *testing.T) {
+	milo := startDaemon(t, "milo")
+	fluff := startDaemon(t, "fluff")
+	trust(t, milo, fluff)
+
+	full := milo.rosterReplyFor(&protocol.Hello{})
+	if len(full.Cats) == 0 {
+		t.Fatal("a hash-less peer must get the full roster")
+	}
+	match := &protocol.Hello{RosterHash: milo.ros.SyncHash(milo.Me())}
+	if reply := milo.rosterReplyFor(match); len(reply.Cats) != 0 || len(reply.Tombstones) != 0 {
+		t.Fatalf("matching hash sent %d cats, want an empty roster", len(reply.Cats))
+	}
+	if reply := milo.rosterReplyFor(&protocol.Hello{RosterHash: "stale"}); len(reply.Cats) == 0 {
+		t.Fatal("a stale hash must get the full roster")
+	}
+}

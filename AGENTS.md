@@ -119,11 +119,9 @@ Tracked in GitHub issues:
   HKDF sign-key derivation and the provisional-pin binding #12, the
   storer per-sender quota #15). All cats must upgrade — sign pins
   rotate automatically on first contact (no re-pair; a mixed
-  old/new mesh is broken until the stragglers upgrade). Still open:
-  #16 (sync scaling); #11 closed as documented accepted risks
-  (rotation runbook in the README).
-- Sync scaling (single large clowder; the roster-hash design is filed
-  on the issue): #16
+  old/new mesh is broken until the stragglers upgrade). #11 closed
+  as documented accepted risks (rotation runbook in the README);
+  #16 landed (roster-hash sync skips unchanged payloads).
 
 ## Shipped
 
@@ -217,7 +215,11 @@ One line each; the pinning tests carry the details.
   start; symmetric liveness marking. The sync IS the keepalive —
   nothing else probes periodically; `clow ping <CAT-OR-KEY>` is the
   on-demand check (the same authenticated handshake, marks liveness
-  both ways, bounded 15s, and reports direct vs the DERP relay).
+  both ways, bounded 15s, and reports direct vs the DERP relay). The
+  Hello carries a roster digest (#16): matched hashes skip the roster
+  payload — an idle round is two Hellos, not O(N) bytes (a pre-#16
+  peer always gets the full roster; TestSyncRosterHashSkipsUnchanged
+  and roster.TestSyncHash pin it).
 - **Local trust commands**: `clow forget <CAT-OR-KEY>` (roster +
   outbox; refused by roster merge, so it sticks against re-adds;
   re-pairing clears the blocklist — the way back), and duplicate-name
@@ -290,7 +292,11 @@ One line each; the pinning tests carry the details.
 - **Test harness**: a black-box end-to-end integration test at the repo
   root (the test binary re-execs itself as the real clow binary; run
   with CLOWDER_INTEGRATION=1), and TestMain pointing TMPDIR at a short
-  /tmp path (macOS TMPDIR overflows the unix socket path limit).
+  /tmp path (macOS TMPDIR overflows the unix socket path limit). The
+  nix CI job runs a consumer-render gate (nix/render-test.nix): the
+  NixOS module imported into a real NixOS eval, the rendered unit
+  forced — drvPath-level checks cannot see a module that renders
+  nothing.
 
 ## Known caveats
 

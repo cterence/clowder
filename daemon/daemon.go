@@ -755,7 +755,7 @@ func (d *Daemon) serveConn(pc *protocol.Conn, authKey key.NodePublic, authed boo
 	// its live entry verbatim (#12): a sync-carried pin for a cat we
 	// never talked to is provisional.
 	d.acceptSelfEntry(peer, m.Roster)
-	if err := pc.WriteMsg(&protocol.Message{Roster: d.rosterMsg()}); err != nil {
+	if err := pc.WriteMsg(&protocol.Message{Roster: d.rosterReplyFor(peer)}); err != nil {
 		return
 	}
 
@@ -1281,7 +1281,21 @@ func (d *Daemon) helloMsg() *protocol.Hello {
 		Storer:  me.Storer,
 		Dropbox: me.Dropbox,
 		Version: protocol.HelloVersion,
+		// The digest of what we would push: matched hashes let the peer
+		// answer with an empty roster instead (#16).
+		RosterHash: d.ros.SyncHash(me),
 	}
+}
+
+// rosterReplyFor builds the roster half of the handshake reply: the
+// full push, or an empty one when the peer's RosterHash matches ours —
+// it has nothing to learn. A hash-less (pre-#16) peer always gets the
+// full roster.
+func (d *Daemon) rosterReplyFor(peer *protocol.Hello) *protocol.RosterSync {
+	if peer.RosterHash != "" && peer.RosterHash == d.ros.SyncHash(d.Me()) {
+		return &protocol.RosterSync{}
+	}
+	return d.rosterMsg()
 }
 
 func (d *Daemon) rosterMsg() *protocol.RosterSync {
@@ -1320,7 +1334,7 @@ func (d *Daemon) handshakeClient(pc *protocol.Conn, timeout time.Duration) error
 	// The hello round-trip proves liveness both ways, even if the roster
 	// exchange never completes.
 	d.markSeen(m.Hello.Key)
-	if err := pc.WriteMsg(&protocol.Message{Roster: d.rosterMsg()}); err != nil {
+	if err := pc.WriteMsg(&protocol.Message{Roster: d.rosterReplyFor(peer)}); err != nil {
 		return err
 	}
 	m, err = pc.ReadMsg()
