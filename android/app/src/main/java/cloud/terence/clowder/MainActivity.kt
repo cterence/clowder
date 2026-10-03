@@ -346,6 +346,8 @@ private fun HomeScreen(
                 notice = if (s.ok) null else s.error
                 noticeIsError = true
                 status = s
+                // Receipts accrue from whichever screen is polling.
+                withContextOrNull { ClowdService.trackSends(ctx, s) }
             }
             delay(3000)
         }
@@ -544,6 +546,7 @@ private fun CatScreen(cat: Cat, onClose: () -> Unit) {
     val ctx = LocalContext.current
     val clipboard = LocalClipboardManager.current
     var status by remember { mutableStateOf<Status?>(null) }
+    var sent by remember { mutableStateOf(listOf<SendReceipt>()) }
     var sendResult by remember { mutableStateOf<String?>(null) }
     var pingResult by remember { mutableStateOf<String?>(null) }
     var forgetConfirm by remember { mutableStateOf(false) }
@@ -551,9 +554,21 @@ private fun CatScreen(cat: Cat, onClose: () -> Unit) {
     val scope = rememberCoroutineScope()
     val canSend = !cat.storer && !cat.dropbox
 
+    // One status refresh feeds three things: the screen's live state,
+    // the settle tracker (which appends send receipts to the log), and
+    // this cat's receipts read back from that log.
+    suspend fun refresh() {
+        val s = withContextOrNull { parseStatus(ipc(ClowdService.socketFile(ctx), "status")) }
+        status = s
+        sent = withContextOrNull {
+            if (s != null) ClowdService.trackSends(ctx, s)
+            readSendReceipts(ctx, cat.name)
+        } ?: sent
+    }
+
     LaunchedEffect(Unit) {
         while (true) {
-            status = withContextOrNull { parseStatus(ipc(ClowdService.socketFile(ctx), "status")) }
+            refresh()
             delay(3000)
         }
     }
@@ -695,9 +710,7 @@ private fun CatScreen(cat: Cat, onClose: () -> Unit) {
                             // shows the files. Refresh it now instead
                             // of waiting for the 3s poll.
                             sendResult = failure
-                            status = withContextOrNull {
-                                parseStatus(ipc(ClowdService.socketFile(ctx), "status"))
-                            }
+                            refresh()
                         }
                     },
                     enabled = selected.isNotEmpty(),
@@ -715,9 +728,7 @@ private fun CatScreen(cat: Cat, onClose: () -> Unit) {
                                 }
                                 if (r.startsWith("queued")) {
                                     sendResult = null
-                                    status = withContextOrNull {
-                                        parseStatus(ipc(ClowdService.socketFile(ctx), "status"))
-                                    }
+                                    refresh()
                                 } else {
                                     sendResult = r
                                 }
@@ -770,7 +781,13 @@ private fun CatScreen(cat: Cat, onClose: () -> Unit) {
                 }
             }
 
-            val outbox = status?.outbox?.filter { it.targetName == cat.name } ?: emptyList()
+            // A storer-held send settles at the deposit but stays in the
+            // outbox until the target's signed receipt — it already has
+            // a receipt row below, so do not also queue it.
+            val st = status
+            val outbox = st?.outbox?.filter {
+                it.targetName == cat.name && st.settled[it.id] == null
+            } ?: emptyList()
             if (outbox.isNotEmpty()) {
                 SectionHeader("queued for ${cat.name} · ${outbox.size}")
                 outbox.forEach { e ->
@@ -786,6 +803,21 @@ private fun CatScreen(cat: Cat, onClose: () -> Unit) {
                                     }
                                 }
                             }) { Text("cancel") }
+                        },
+                    )
+                }
+            }
+
+            if (sent.isNotEmpty()) {
+                SectionHeader("sent")
+                sent.forEach { r ->
+                    ListItem(
+                        headlineContent = { Text(r.name) },
+                        supportingContent = {
+                            Text(
+                                sendOutcomeText(r.outcome) + " · " +
+                                    DateUtils.getRelativeTimeSpanString(r.at).toString(),
+                            )
                         },
                     )
                 }
@@ -889,6 +921,27 @@ private fun PairScreen(onClose: () -> Unit) {
         }
     }
 }
+
+/** One send receipt: what was sent to this cat, how it settled, when. */
+private data class SendReceipt(val name: String, val outcome: String, val at: Long)
+
+/** This cat's send receipts, newest first — the send log the settle
+ *  tracker appends to, read back for display. */
+private fun readSendReceipts(ctx: android.content.Context, target: String): List<SendReceipt> {
+    val arr = ClowdService.readSendLog(ctx)
+    val out = ArrayList<SendReceipt>()
+    for (i in 0 until arr.length()) {
+        val o = arr.getJSONObject(i)
+        if (o.optString("target") == target) {
+            out.add(SendReceipt(o.optString("name"), o.optString("outcome"), o.optLong("at")))
+        }
+    }
+    return out.asReversed()
+}
+
+/** The daemon's settle wording: "delivered" or "stored via <storer>". */
+private fun sendOutcomeText(outcome: String): String =
+    if (outcome == "delivered") "delivered" else "held by storer ${outcome.removePrefix("stored via ")}"
 
 /** Copies the picked SAF document into the sandbox (the daemon needs a
  *  real path, not a content URI) and queues the send. */

@@ -41,6 +41,7 @@ data class Status(
     val liveness: Map<String, Long>,
     val outbox: List<OutboxEntry>,
     val transfers: List<Transfer>,
+    val settled: Map<String, String>,
     val sentFiles: Long,
     val sentBytes: Long,
     val receivedFiles: Long,
@@ -133,6 +134,12 @@ fun parseStatus(r: JSONObject): Status {
             }
         }
     }
+    // A settled transfer id maps to how it ended: "delivered" or
+    // "stored via <storer>" — the daemon keeps the last 100 in memory.
+    val settled = HashMap<String, String>()
+    r.optJSONObject("settled")?.let { o ->
+        o.keys().forEach { k -> settled[k] = o.optString(k) }
+    }
     val stats = r.optJSONObject("stats")
     return Status(
         ok = r.optBoolean("ok", false),
@@ -147,6 +154,7 @@ fun parseStatus(r: JSONObject): Status {
         liveness = liveness,
         outbox = outbox,
         transfers = transfers,
+        settled = settled,
         sentFiles = stats?.optLong("sent", 0L) ?: 0L,
         sentBytes = stats?.optLong("sent_bytes", 0L) ?: 0L,
         receivedFiles = stats?.optLong("received", 0L) ?: 0L,
