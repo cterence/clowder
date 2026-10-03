@@ -1,5 +1,8 @@
 package cloud.terence.clowder
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
@@ -19,8 +22,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Runs the clowder daemon as a child process while the app is open:
  * MainActivity starts it in onStart and stops it in onStop, so the
- * daemon uses no battery in the background (no foreground service, no
- * wake lock). The daemon binary ships as libclowder.so in jniLibs
+ * daemon uses no battery in the background (no always-on foreground
+ * service, no wake lock). The one exception is stopWhenIdle(): a
+ * transfer already in flight when the app leaves the screen runs to
+ * completion, the service holding it as a dataSync foreground service
+ * until the daemon is idle — then it stops as onStop would have.
+ * The daemon binary ships as libclowder.so in jniLibs
  * (useLegacyPackaging extracts it to nativeLibraryDir, which is
  * executable) and is a plain GOOS=android build: tailcat's
  * android_linux.go patches DNS, CA certs and interface discovery at
@@ -34,8 +41,11 @@ class ClowdService : Service() {
     companion object {
         const val ACTION_START = "cloud.terence.clowder.START"
         const val ACTION_STOP = "cloud.terence.clowder.STOP"
+        const val ACTION_STOP_WHEN_IDLE = "cloud.terence.clowder.STOP_WHEN_IDLE"
         private const val BINARY = "libclowder.so"
         private const val TAG = "clowd"
+        private const val NOTIF_ID = 1
+        private const val NOTIF_CHANNEL = "transfers"
 
         @Volatile var running = false
             private set
@@ -97,7 +107,16 @@ class ClowdService : Service() {
         fun stop(ctx: Context) {
             ctx.startService(Intent(ctx, ClowdService::class.java).setAction(ACTION_STOP))
         }
+
+        /** stop() for the activity lifecycle: a transfer already in
+         *  flight runs to completion in the foreground first, then the
+         *  service stops itself. */
+        fun stopWhenIdle(ctx: Context) {
+            ctx.startService(Intent(ctx, ClowdService::class.java).setAction(ACTION_STOP_WHEN_IDLE))
+        }
     }
+
+    private val holding = AtomicBoolean(false)
 
     private var daemon: Process? = null
     private val stopping = AtomicBoolean(false)
@@ -106,13 +125,12 @@ class ClowdService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_STOP -> {
-                stopping.set(true)
-                killDaemon()
-                Log.i(TAG, "daemon stopped")
-                stopSelf()
+            ACTION_STOP -> stopNow()
+            ACTION_STOP_WHEN_IDLE -> {
+                if (holding.compareAndSet(false, true)) Thread { holdUntilIdle() }.start()
             }
             else -> {
+                holding.set(false)
                 stopping.set(false)
                 if (daemon?.isAlive != true) {
                     Thread { runDaemon() }.start()
@@ -121,6 +139,67 @@ class ClowdService : Service() {
             }
         }
         return START_NOT_STICKY
+    }
+
+    /** In-flight transfers (either direction) per the status op; a dead
+     *  socket counts as none — nothing to hold the service for. */
+    private fun transfers(): List<Transfer> = runCatching {
+        parseStatus(ipc(socketFile(this), "status")).transfers
+    }.getOrDefault(emptyList())
+
+    /** Foreground hold: promote to a dataSync service while a transfer
+     *  is in flight, mirror its progress into the notification, and
+     *  stop as soon as the daemon goes idle (or ACTION_START cancels
+     *  the hold — the app is back on screen). */
+    private fun holdUntilIdle() {
+        var shown = false
+        while (holding.get()) {
+            val active = transfers()
+            if (active.isEmpty()) break
+            val n = transferNotification(active)
+            if (shown) {
+                getSystemService(NotificationManager::class.java).notify(NOTIF_ID, n)
+            } else {
+                startForeground(NOTIF_ID, n)
+                shown = true
+            }
+            var slept = 0L
+            while (holding.get() && slept < 3000) {
+                Thread.sleep(250)
+                slept += 250
+            }
+        }
+        if (holding.compareAndSet(true, false)) stopNow()
+    }
+
+    private fun transferNotification(active: List<Transfer>): Notification {
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.createNotificationChannel(
+            NotificationChannel(NOTIF_CHANNEL, "Transfers", NotificationManager.IMPORTANCE_LOW),
+        )
+        val t = active.first()
+        val dir = if (t.receiving) "Receiving" else "Sending"
+        val text = if (active.size == 1) {
+            "$dir ${t.fileName} (${humanBytes(t.done)}/${humanBytes(t.total)})"
+        } else {
+            "$dir ${t.fileName} + ${active.size - 1} more"
+        }
+        return Notification.Builder(this, NOTIF_CHANNEL)
+            .setContentTitle("Clowder")
+            .setContentText(text)
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setProgress(t.total.coerceIn(0, Int.MAX_VALUE.toLong()).toInt(), t.done.coerceIn(0, Int.MAX_VALUE.toLong()).toInt(), false)
+            .setOngoing(true)
+            .build()
+    }
+
+    private fun stopNow() {
+        holding.set(false)
+        stopping.set(true)
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        killDaemon()
+        Log.i(TAG, "daemon stopped")
+        stopSelf()
     }
 
     private var publisher: Thread? = null
@@ -167,11 +246,18 @@ class ClowdService : Service() {
             values.put(MediaStore.MediaColumns.IS_PENDING, 0)
             runCatching { contentResolver.update(uri, values, null, null) }
             if (copied) {
+                // MediaStore dedupes names: a second "photo.jpg" saves
+                // as "photo (1).jpg". Log the saved name — the inbox
+                // shows the copy suffix and still resolves the file.
+                val savedName = contentResolver.query(
+                    uri, arrayOf(MediaStore.MediaColumns.DISPLAY_NAME), null, null, null,
+                )?.use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: f.name
                 f.delete()
-                appendInboxLog(this, f.name, size)
-                appendLog("inbox: ${f.name} moved to Downloads/clowder")
-                // Delivery only happens while the app is open, so a
-                // toast is visible exactly when it lands.
+                appendInboxLog(this, savedName, size)
+                appendLog("inbox: ${savedName} moved to Downloads/clowder")
+                // Delivery only happens while the app is open (or held
+                // open by a transfer), so a toast is visible exactly
+                // when it lands.
                 Handler(Looper.getMainLooper()).post {
                     Toast.makeText(this, "received ${f.name}", Toast.LENGTH_SHORT).show()
                 }

@@ -98,7 +98,11 @@ open; the mesh's storer role is the answer for offline delivery.
   URI) and queued through the normal outbox.
 - Battery: the daemon runs only while the app is on screen — it uses
   nothing in the background. The flip side: nothing is received while
-  the app is closed; expect the storer to matter on a phone.
+  the app is closed; expect the storer to matter on a phone. One
+  exception: a transfer still in flight when the app leaves the screen
+  runs to completion — the service promotes itself to a dataSync
+  foreground service (a notification with live progress) and stops
+  the daemon the moment it goes idle.
 - The inbox updates live: a FileObserver watches the daemon's
   inbox directory, so receipts appear without a refresh, and each
   delivery raises a toast. The daemon log — opened from the Settings

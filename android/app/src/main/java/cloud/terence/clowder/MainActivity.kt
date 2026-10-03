@@ -2,9 +2,11 @@ package cloud.terence.clowder
 
 import android.content.ContentUris
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.LocalSocketAddress
 import android.net.LocalSocket
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.FileObserver
 import android.provider.MediaStore
@@ -90,20 +92,30 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // The background transfer hold runs as a dataSync foreground
+        // service; on 13+ its notification needs this grant. Denial only
+        // hides the notification — the transfer still completes.
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1)
+        }
         setContent {
             ClowderTheme { ClowderApp() }
         }
     }
 
     // The daemon runs only while the app is on screen: started when
-    // the activity becomes visible, stopped when it does not.
+    // the activity becomes visible, stopped when it does not — except
+    // a transfer still in flight, which the service holds open in the
+    // foreground until it completes.
     override fun onStart() {
         super.onStart()
         if (ClowdService.isInitialized(this)) ClowdService.start(this)
     }
 
     override fun onStop() {
-        ClowdService.stop(this)
+        ClowdService.stopWhenIdle(this)
         super.onStop()
     }
 }
