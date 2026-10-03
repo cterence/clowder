@@ -150,20 +150,6 @@ func (s *Spool) Delete(id string) error {
 	return nil
 }
 
-// Sweep deletes expired entries. Call periodically.
-func (s *Spool) Sweep() int {
-	now := time.Now()
-	removed := 0
-	for _, m := range s.all() {
-		if m.ExpiresAt(s.ttl).Before(now) {
-			if err := s.Delete(m.ID); err == nil {
-				removed++
-			}
-		}
-	}
-	return removed
-}
-
 // Count returns the number of spooled entries (expired included).
 func (s *Spool) Count() int { return len(s.all()) }
 

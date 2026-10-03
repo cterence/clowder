@@ -73,8 +73,7 @@ func (i idleReader) Read(p []byte) (int, error) {
 
 // Dir is required; created by Init, or holding compatible state.
 type Config struct {
-	Dir  string
-	Port uint16 // clowder protocol port; used by the tailcat transport
+	Dir string
 	// HTTP probe endpoint ("/", "/healthz"); empty disables it.
 	HealthAddr string
 	// pprof under /debug/pprof/; requires HealthAddr. Off by default:

@@ -418,9 +418,6 @@ func cmdPing(args []string) error {
 	return printResp(call(daemon.Request{Op: "ping", Target: fs.Arg(0)}))
 }
 
-// cmdReset wipes the config dir (the inbox is kept). Refuses while the
-// daemon runs: a confirmed reset first tells it to announce a leave while
-// it can still reach anyone.
 // cmdReset wipes the config dir (the inbox is kept) — a purely local
 // operation. Departure is `clow leave`, the only thing that can still
 // sign a goodbye; reset refuses to run under a live daemon because it

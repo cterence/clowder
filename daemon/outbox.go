@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -81,13 +82,7 @@ func (o *outbox) All() []Entry {
 		}
 	}
 	slices.SortFunc(entries, func(a, b Entry) int {
-		if a.AddedAt != b.AddedAt {
-			return int(a.AddedAt - b.AddedAt)
-		}
-		if a.ID < b.ID {
-			return -1
-		}
-		return 1
+		return cmp.Or(cmp.Compare(a.AddedAt, b.AddedAt), cmp.Compare(a.ID, b.ID))
 	})
 	return entries
 }
