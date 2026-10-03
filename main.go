@@ -639,31 +639,37 @@ func queueAndWatch(target, path string, async, viaStorer bool) (bool, error) {
 	return false, watchSend(resp.ID, filepath.Base(path), target)
 }
 
-// clipboardCmd is the platform's own clipboard dumper: no cgo, no
-// clipboard library, just the tool every desktop ships.
-func clipboardCmd() (string, []string) {
+// clipboardCmds lists the platform's clipboard dumpers, preferred
+// first: no cgo, no clipboard library, whichever the machine has
+// wins (under Wayland the X11 tools read the clipboard via XWayland).
+func clipboardCmds() [][]string {
 	switch runtime.GOOS {
 	case "darwin":
-		return "pbpaste", nil
+		return [][]string{{"pbpaste"}}
 	case "windows":
-		return "powershell.exe", []string{"-NoProfile", "-Command", "Get-Clipboard"}
+		return [][]string{{"powershell.exe", "-NoProfile", "-Command", "Get-Clipboard"}}
 	}
 	if os.Getenv("WAYLAND_DISPLAY") != "" {
-		return "wl-paste", nil
+		return [][]string{{"wl-paste"}, {"xclip", "-selection", "clipboard", "-o"}, {"xsel", "-ob"}}
 	}
-	return "xclip", []string{"-selection", "clipboard", "-o"}
+	return [][]string{{"xclip", "-selection", "clipboard", "-o"}, {"xsel", "-ob"}}
 }
 
 func readClipboard() ([]byte, error) {
-	name, args := clipboardCmd()
-	out, err := exec.Command(name, args...).Output()
-	if err != nil {
-		return nil, fmt.Errorf("reading clipboard with %s: %w", name, err)
+	for _, cmd := range clipboardCmds() {
+		if _, err := exec.LookPath(cmd[0]); err != nil {
+			continue
+		}
+		out, err := exec.Command(cmd[0], cmd[1:]...).Output()
+		if err != nil {
+			return nil, fmt.Errorf("reading clipboard with %s: %w", cmd[0], err)
+		}
+		if len(bytes.TrimSpace(out)) == 0 {
+			return nil, fmt.Errorf("clipboard is empty")
+		}
+		return out, nil
 	}
-	if len(bytes.TrimSpace(out)) == 0 {
-		return nil, fmt.Errorf("clipboard is empty")
-	}
-	return out, nil
+	return nil, fmt.Errorf("no clipboard tool found (install wl-clipboard or xclip)")
 }
 
 // stageClipboard parks the clipboard text in the config dir: outbox

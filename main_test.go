@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -355,6 +356,43 @@ func TestStageClipboard(t *testing.T) {
 		if string(b) != "hi\n" {
 			t.Errorf("%s: staged %q, want %q", name, b, "hi\n")
 		}
+	}
+}
+
+// TestReadClipboardMissingTool pins the no-tool error: it must say
+// what to install, not just name an executable that is not in $PATH.
+func TestReadClipboardMissingTool(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	_, err := readClipboard()
+	if err == nil || !strings.Contains(err.Error(), "no clipboard tool found") {
+		t.Fatalf("readClipboard: err = %v, want no-clipboard-tool error", err)
+	}
+}
+
+// TestReadClipboardFallsBackToInstalledTool pins the candidate order:
+// under Wayland, wl-paste absent, xclip present must still read the
+// clipboard (XWayland syncs it) instead of failing on wl-paste.
+func TestReadClipboardFallsBackToInstalledTool(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no shell stubs on windows")
+	}
+	stub := "xclip"
+	if runtime.GOOS == "darwin" {
+		stub = "pbpaste"
+	}
+	dir := t.TempDir()
+	script := "#!/bin/sh\necho hello-from-the-clipboard\n"
+	if err := os.WriteFile(filepath.Join(dir, stub), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+	out, err := readClipboard()
+	if err != nil {
+		t.Fatalf("readClipboard: %v", err)
+	}
+	if string(out) != "hello-from-the-clipboard\n" {
+		t.Fatalf("readClipboard = %q, want the stub's output", out)
 	}
 }
 
