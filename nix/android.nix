@@ -26,6 +26,9 @@ let
     inherit version src vendorHash;
     doCheck = false;
     env.CGO_ENABLED = "0";
+    # Same build-revision ldflag as the desktop package, so the app's
+    # `clow version` line and a desktop `clow version` agree.
+    ldflags = [ "-X main.version=${version}" ];
     # module.nix pins GOOS/GOARCH to the host platform (darwin here);
     # exporting in preBuild — after the env is set, before go build —
     # is what actually crosses to android/arm64.
