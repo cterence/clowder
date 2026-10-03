@@ -871,6 +871,15 @@ func (d *Daemon) receiveAsStorer(pc *protocol.Conn, o *protocol.Offer) bool {
 		return pc.Answer(o.ID, false, reason) == nil
 	}
 	defer d.releaseReserve(o.Size)
+	// A single cat must not be able to churn the whole spool for a full
+	// TTL: each sender holds at most a quarter of the capacity. Derived
+	// from the spool on every offer, so a restart cannot reset it.
+	// Unsigned (pre-key) offers attribute to nothing and bypass this.
+	if share := me.Capacity / 4; o.FromKey != "" && d.spool.UsageBy(o.FromKey)+o.Size > share {
+		reason := fmt.Sprintf("storer per-sender quota (%s of %s held for you)",
+			HumanBytes(d.spool.UsageBy(o.FromKey)), HumanBytes(share))
+		return pc.Answer(o.ID, false, reason) == nil
+	}
 	_ = pc.SetDeadline(time.Now().Add(streamIdle))
 	meta := store.Meta{
 		ID:         o.ID,

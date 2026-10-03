@@ -110,18 +110,20 @@ func TestStorerCapacityRefusesAndRecovers(t *testing.T) {
 		t.Fatalf("oversized deposit spooled (%d entries)", storer.Spool().Count())
 	}
 
-	// A small deposit fits.
-	small := writeSource(t, string(make([]byte, 1024)))
+	// A small deposit fits within the sender's share of the spool
+	// (capacity/4).
+	small := writeSource(t, string(make([]byte, 700)))
 	if _, err := milo.Send("niko", small); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, func() bool { return storer.Spool().Usage() > 1024 }, "the small deposit to be held")
+	waitFor(t, func() bool { return storer.Spool().Count() == 1 }, "the small deposit to be held")
 	if got := storer.Spool().Usage(); got > cap {
 		t.Fatalf("spool usage %d exceeds capacity %d", got, cap)
 	}
 
-	// A second small deposit would overflow: refused too.
-	small2 := writeSource(t, string(make([]byte, 4096)))
+	// A second deposit from the same sender overflows its share:
+	// refused too.
+	small2 := writeSource(t, string(make([]byte, 700)))
 	if _, err := milo.Send("niko", small2); err != nil {
 		t.Fatal(err)
 	}

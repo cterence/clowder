@@ -18,6 +18,7 @@ import (
 	"github.com/tailscale/tailcat"
 	"tailscale.com/types/key"
 
+	"github.com/cterence/clowder/envelope"
 	"github.com/cterence/clowder/protocol"
 	"github.com/cterence/clowder/roster"
 )
@@ -348,5 +349,53 @@ func TestRelayedOfferBlockedByKey(t *testing.T) {
 	}
 	if storer.Spool().Count() != 1 {
 		t.Fatal("storer dropped the refused file")
+	}
+}
+
+// TestStorerPerSenderQuota pins the per-sender spool share: one cat
+// cannot churn a storer's whole capacity for a full TTL — a quarter of
+// it is all any single sender may hold.
+func TestStorerPerSenderQuota(t *testing.T) {
+	var mu sync.Mutex
+	var logs []string
+	logf := func(f string, a ...any) {
+		mu.Lock()
+		logs = append(logs, fmt.Sprintf(f, a...))
+		mu.Unlock()
+	}
+	milo := startDaemon(t, "milo", func(c *Config) {
+		c.PollEvery = time.Hour
+		c.Logf = logf
+	})
+	storer := startDaemon(t, "storer", func(c *Config) { c.SpoolSweepEvery = time.Hour })
+	plain := strings.Repeat("nap", 1000) // 3000 B
+	share := envelope.SealedSize(int64(len(plain)))
+	// Capacity four times one sealed file: the per-sender share is
+	// exactly one deposit.
+	if err := storer.SetStorer(true, 4*share); err != nil {
+		t.Fatal(err)
+	}
+	trust(t, milo, storer)
+	trust(t, storer, milo)
+	niko, _ := offlineCat(t)
+	addCat(t, milo, niko)
+	addCat(t, storer, niko)
+
+	if _, err := milo.Send("niko", writeSource(t, plain)); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	waitFor(t, func() bool { return storer.Spool().Count() == 1 }, "first deposit to fill the sender's share")
+
+	// The second deposit exceeds the share: refused, the spool stays at one.
+	if _, err := milo.Send("niko", writeSource(t, plain)); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	waitFor(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return strings.Contains(strings.Join(logs, "\n"), "still pending")
+	}, "over-quota deposit to be refused")
+	if storer.Spool().Count() != 1 {
+		t.Fatalf("storer holds %d files, want 1 (over-quota deposit must be refused)", storer.Spool().Count())
 	}
 }

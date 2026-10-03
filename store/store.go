@@ -117,6 +117,21 @@ func (s *Spool) Usage() int64 {
 	return total
 }
 
+// UsageBy returns the sealed bytes held from one sender (the storer's
+// per-sender quota check); an empty fromKey attributes nothing.
+func (s *Spool) UsageBy(fromKey string) int64 {
+	if fromKey == "" {
+		return 0
+	}
+	var total int64
+	for _, m := range s.all() {
+		if m.FromKey == fromKey {
+			total += m.Size
+		}
+	}
+	return total
+}
+
 // Has reports whether the spool holds the transfer (meta and blob).
 func (s *Spool) Has(id string) bool {
 	_, err1 := os.Stat(s.metaPath(id))
