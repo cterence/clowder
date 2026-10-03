@@ -11,28 +11,25 @@
 # clowder is one instance under services.clowder.instances; the key
 # is the local clowder name.
 #
+# The per-instance service lives inside the submodule: a top-level
+# config iterating the instances attrset recurses, because
+# discharging that config forces the very option merge it contributes
+# to.
+#
 # Do not enable an instance on a machine that also runs a system-level
 # instance of the same name: two daemons means two cats per clowder.
 { self, config, lib, pkgs, ... }:
 let
   shared = import ./options.nix { inherit lib pkgs self; };
-  instances = config.services.clowder.instances;
-in
-{
-  options.services.clowder.instances = lib.mkOption {
-    type = lib.types.attrsOf (lib.types.submodule shared.options);
-    default = { };
-    description = "Clowder instances: one daemon and config dir per local clowder name.";
-  };
 
-  config = lib.mkMerge (
-    lib.mapAttrsToList (name: cfg: lib.mkMerge [
-      (lib.mkIf (cfg.enable && pkgs.stdenv.hostPlatform.isDarwin) {
+  instance = { name, ... }@args: {
+    config = lib.mkMerge [
+      (lib.mkIf (args.config.enable && pkgs.stdenv.hostPlatform.isDarwin) {
         launchd.agents."clowder-${name}" = {
           enable = true;
           config = {
-            ProgramArguments = [ "${cfg.package}/bin/clow" "daemon" ];
-            EnvironmentVariables = shared.env cfg // { CLOWDER = name; };
+            ProgramArguments = [ "${args.config.package}/bin/clow" "daemon" ];
+            EnvironmentVariables = shared.env args.config // { CLOWDER = name; };
             RunAtLoad = true;
             KeepAlive = true;
             ProcessType = "Background";
@@ -42,18 +39,28 @@ in
           };
         };
       })
-      (lib.mkIf (cfg.enable && !pkgs.stdenv.hostPlatform.isDarwin) {
+      (lib.mkIf (args.config.enable && !pkgs.stdenv.hostPlatform.isDarwin) {
         systemd.user.services."clowder-${name}" = {
           Unit.Description = "Clowder e2e-encrypted file-transfer daemon (${name})";
           Install.WantedBy = [ "default.target" ];
           Service = {
-            ExecStart = "${cfg.package}/bin/clow daemon";
-            Environment = lib.mapAttrsToList (n: v: "${n}=${v}") (shared.env cfg // { CLOWDER = name; });
+            ExecStart = "${args.config.package}/bin/clow daemon";
+            Environment = lib.mapAttrsToList (n: v: "${n}=${v}") (shared.env args.config // { CLOWDER = name; });
             Restart = "on-failure";
             RestartSec = "5s";
           };
         };
       })
-    ]) instances
-  );
+    ];
+  };
+in
+{
+  options.services.clowder.instances = lib.mkOption {
+    type = lib.types.attrsOf (lib.types.submodule [
+      shared.options
+      instance
+    ]);
+    default = { };
+    description = "Clowder instances: one daemon and config dir per local clowder name.";
+  };
 }

@@ -7,36 +7,18 @@
 # hostname (or `name`). A clowder is one instance under
 # services.clowder.instances; the key is the local clowder name
 # (CLOWDER=<name>, dir /var/lib/clowder/<name>).
+#
+# The per-instance unit lives inside the submodule: a top-level config
+# iterating the instances attrset recurses, because discharging that
+# config forces the very option merge it contributes to.
 { self, config, lib, pkgs, ... }:
 let
   shared = import ./options.nix { inherit lib pkgs self; };
-  instances = config.services.clowder.instances;
-in
-{
-  options.services.clowder.instances = lib.mkOption {
-    type = lib.types.attrsOf (lib.types.submodule shared.options);
-    default = { };
-    example = {
-      work.enable = true;
-      family = {
-        enable = true;
-        storer = "on";
-        maxCapacity = "10G";
-      };
-    };
-    description = "Clowder instances: one daemon and config dir per local clowder name.";
-  };
 
-  config = lib.mkMerge (
-    [ (lib.mkIf (instances != { }) {
-      users.groups.clowder = { };
-      users.users.clowder = {
-        isSystemUser = true;
-        group = "clowder";
-        description = "Clowder daemon user";
-      };
-    }) ]
-    ++ lib.mapAttrsToList (name: cfg: lib.mkIf cfg.enable {
+  # One clowder instance: its options plus the unit it defines. `name`
+  # is the attrset key the module system passes to submodules.
+  instance = { name, ... }@args: {
+    config = lib.mkIf args.config.enable {
       systemd.services."clowder-${name}" = {
         description = "Clowder e2e-encrypted file-transfer daemon (${name})";
         wantedBy = [ "multi-user.target" ];
@@ -46,7 +28,7 @@ in
         # The CLI speaks to the daemon through this socket; run it as the
         # clowder user:
         #   sudo -u clowder env CLOWDER_DIR=/var/lib/clowder CLOWDER=${name} clow status
-        environment = shared.env cfg // {
+        environment = shared.env args.config // {
           CLOWDER_DIR = "/var/lib/clowder";
           CLOWDER = name;
           # System users get HOME=/var/empty from passwd; without this the
@@ -60,7 +42,7 @@ in
           User = "clowder";
           Group = "clowder";
           StateDirectory = "clowder/${name}";
-          ExecStart = "${cfg.package}/bin/clow daemon";
+          ExecStart = "${args.config.package}/bin/clow daemon";
           Restart = "on-failure";
           RestartSec = "5s";
           # No WatchdogSec: the watchdog clock counts suspend time, so a
@@ -68,6 +50,33 @@ in
           # Hang detection stays with external probes of /healthz.
         };
       };
-    }) instances
-  );
+    };
+  };
+in
+{
+  options.services.clowder.instances = lib.mkOption {
+    type = lib.types.attrsOf (lib.types.submodule [
+      shared.options
+      instance
+    ]);
+    default = { };
+    example = {
+      work.enable = true;
+      family = {
+        enable = true;
+        storer = "on";
+        maxCapacity = "10G";
+      };
+    };
+    description = "Clowder instances: one daemon and config dir per local clowder name.";
+  };
+
+  config = lib.mkIf (lib.any (i: i.enable) (lib.attrValues config.services.clowder.instances)) {
+    users.groups.clowder = { };
+    users.users.clowder = {
+      isSystemUser = true;
+      group = "clowder";
+      description = "Clowder daemon user";
+    };
+  };
 }
