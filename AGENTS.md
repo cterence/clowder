@@ -113,9 +113,11 @@ Tracked in GitHub issues:
 - Security and DoS findings from the 2026-09 security review — the
   wire-auth bundle landed (signed offers #7, signed receipts #8, the
   HKDF sign-key derivation and the provisional-pin binding #12, the
-  storer per-sender quota #15; one mesh-wide re-pair, since all are
-  wire-visible). Still open: #16 (sync scaling), #11 closed as
-  documented accepted risks (rotation runbook in the README).
+  storer per-sender quota #15). All cats must upgrade — sign pins
+  rotate automatically on first contact (no re-pair; a mixed
+  old/new mesh is broken until the stragglers upgrade). Still open:
+  #16 (sync scaling); #11 closed as documented accepted risks
+  (rotation runbook in the README).
 - Android app dogfooding (pair, send/receive, boot-receive,
   notifications, storer UI): #18
 - Multiple clowders (named clowders, per-clowder rosters; sync
@@ -125,7 +127,8 @@ Tracked in GitHub issues:
 
 One line each; the pinning tests carry the details.
 
-- **Wire-auth bundle** (#7, #8, #12, #15; one mesh-wide re-pair):
+- **Wire-auth bundle** (#7, #8, #12, #15; upgrade-in-place, no
+  re-pair — all cats upgrade, sign pins rotate on first contact):
   offers are signed by the sender's sign key and verified by the
   final recipient — relayed through storers too, the sig rides the
   spool (TestOfferSignatureRequired); storers refuse unsigned
@@ -276,8 +279,10 @@ One line each; the pinning tests carry the details.
   run is observed.
 - Storer spools have TTL but no size quota.
 - Rosters created before the two-keypair fix must be re-paired
-  (`clow forget` + invite/join); the wire-auth bundle (signed offers,
-  receipts, HKDF sign keys) forces the same one-time re-pair.
+  (`clow forget` + invite/join). The wire-auth bundle needs no
+  re-pair: identity and dial keys are unchanged, New() re-signs the
+  self entry with the new sign key at startup, and the provisional
+  pin heals from the peer's authenticated Hello on first contact.
 - The simplification pass removed resume, receipts, rotate,
   distrust/trust and /stats; all were wire-visible, so a pre-cut mesh
   re-pairs (`clow forget` + invite/join) to talk to a cut daemon.
