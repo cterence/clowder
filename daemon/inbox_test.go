@@ -42,9 +42,9 @@ func TestInboxPath(t *testing.T) {
 		t.Fatalf("dotfile collision = %q, want .bashrc-1", got)
 	}
 
-	// Traversal and odd names are sanitized to a plain base name.
-	if got := inboxPath(dir, "../../etc/passwd"); got != filepath.Join(dir, "passwd") {
-		t.Fatalf("traversal = %q, want passwd", got)
+	// Traversal components are dropped; honest components survive (#31).
+	if got := inboxPath(dir, "../../etc/passwd"); got != filepath.Join(dir, "etc", "passwd") {
+		t.Fatalf("traversal = %q, want etc/passwd under the inbox", got)
 	}
 	if got := inboxPath(dir, ".."); got != filepath.Join(dir, "file") {
 		t.Fatalf("'..' = %q, want file", got)
@@ -89,4 +89,45 @@ func FuzzInboxPath(f *testing.F) {
 			t.Fatalf("inboxPath(%q) escaped the inbox: %q", name, got)
 		}
 	})
+}
+
+// Nested names (#31) keep their directory structure: each component is
+// sanitized on its own, traversal components are dropped (the rest of
+// the path survives), backslashes are separators, and Windows-reserved
+// component names are munged. Collision numbering still applies to the
+// leaf only.
+func TestInboxPathNested(t *testing.T) {
+	dir := t.TempDir()
+	touchNested := func(rel string) {
+		p := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if got := inboxPath(dir, "photos/cats/nap.txt"); got != filepath.Join(dir, "photos", "cats", "nap.txt") {
+		t.Fatalf("nested name = %q", got)
+	}
+	if got := inboxPath(dir, `photos\cats\nap.txt`); got != filepath.Join(dir, "photos", "cats", "nap.txt") {
+		t.Fatalf("backslash-separated name = %q", got)
+	}
+	// Traversal components are dropped; the honest components survive.
+	if got := inboxPath(dir, "../../etc/nap.txt"); got != filepath.Join(dir, "etc", "nap.txt") {
+		t.Fatalf("traversal = %q, want etc/nap.txt under the inbox", got)
+	}
+	if got := inboxPath(dir, "a/./nap.txt//b"); got != filepath.Join(dir, "a", "nap.txt", "b") {
+		t.Fatalf("dot and empty components = %q", got)
+	}
+	// Windows-reserved components are munged, not delivered as-is.
+	if got := inboxPath(dir, "photos/CON.txt"); got != filepath.Join(dir, "photos", "_CON.txt") {
+		t.Fatalf("reserved component = %q, want _CON.txt", got)
+	}
+	// The leaf numbers on collision; the directories do not.
+	touchNested("photos/nap.txt")
+	if got := inboxPath(dir, "photos/nap.txt"); got != filepath.Join(dir, "photos", "nap-1.txt") {
+		t.Fatalf("nested collision = %q, want nap-1.txt", got)
+	}
 }

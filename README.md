@@ -98,10 +98,17 @@ Every command takes a global flag before the command word:
                                                         run the mesh daemon
     clow invite                                         8-word pairing code (5 min, one join)
     clow join <CODE>                                    pair with the inviter
-    clow send [--async] [--clipboard] [--storer] <CAT> [<FILE>]
-                                                        send a file, or the
-                                                        clipboard with --clipboard;
-                                                        watches progress unless --async;
+    clow send [--async] [--clipboard] [--storer] <CAT> <FILE-OR-DIR>...
+                                                        send files or a
+                                                        directory tree (one
+                                                        transfer per file, the
+                                                        tree's relative paths
+                                                        recreated in the
+                                                        target's inbox; symlinks
+                                                        are refused), or the
+                                                        clipboard with
+                                                        --clipboard; watches
+                                                        progress unless --async;
                                                         --storer skips the direct
                                                         attempt and its dial timeout
     clow inbox [--set DIR]                              list received files / change inbox

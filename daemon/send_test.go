@@ -2,9 +2,13 @@ package daemon
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -328,5 +332,141 @@ func TestSettledOutcome(t *testing.T) {
 	resp = milo.handleIPC(Request{Op: "status"})
 	if got := resp.Settled[id2]; got != "stored via box" {
 		t.Fatalf("storer send settled as %q, want %q", got, "stored via box")
+	}
+}
+
+// SendNamed validates the wire name at queue time (#31): traversal,
+// empty and dot components, absolute paths and control characters are
+// refused with a clear error, before anything is queued.
+func TestSendNameValidation(t *testing.T) {
+	milo := startDaemon(t, "milo")
+	fluff := startDaemon(t, "fluff")
+	trust(t, milo, fluff)
+	trust(t, fluff, milo)
+	src := writeSource(t, "named nap")
+	for _, bad := range []string{
+		"../nap.txt", "a/../nap.txt", "a//b.txt", "/nap.txt",
+		"photos/\x00nap.txt", ".", "..",
+	} {
+		if _, err := milo.SendNamed("fluff", src, bad, false); err == nil {
+			t.Errorf("SendNamed(%q) accepted an invalid wire name", bad)
+		}
+	}
+	if _, err := milo.SendNamed("fluff", src, "photos/cats/nap.txt", false); err != nil {
+		t.Fatalf("valid nested name refused: %v", err)
+	}
+}
+
+// A named send lands with its directory structure intact (#31): the
+// rel path rides the offer, the receiver mkdirs the parents.
+func TestSendNamedDeliversNested(t *testing.T) {
+	milo := startDaemon(t, "milo")
+	fluff := startDaemon(t, "fluff")
+	trust(t, milo, fluff)
+	trust(t, fluff, milo)
+	src := writeSource(t, "nested nap data")
+	if _, err := milo.SendNamed("fluff", src, "photos/cats/nap.txt", false); err != nil {
+		t.Fatalf("SendNamed: %v", err)
+	}
+	waitFor(t, func() bool {
+		b, err := os.ReadFile(filepath.Join(fluff.InboxDir(), "photos", "cats", "nap.txt"))
+		return err == nil && string(b) == "nested nap data"
+	}, "the nested file to land with its structure")
+}
+
+// A named send to an offline cat rides a storer: the rel path survives
+// the spool and the relayed offer (#31).
+func TestSendNamedViaStorer(t *testing.T) {
+	milo := startDaemon(t, "milo", func(c *Config) { c.PollEvery = time.Hour })
+	storer := startDaemon(t, "box", func(c *Config) { c.SpoolSweepEvery = time.Hour })
+	if err := storer.SetStorer(true, 1<<30); err != nil {
+		t.Fatal(err)
+	}
+	trust(t, milo, storer)
+	trust(t, storer, milo)
+	niko, nikoDir := offlineCat(t)
+	addCat(t, milo, niko)
+	addCat(t, storer, niko)
+
+	src := writeSource(t, "held nested nap")
+	if _, err := milo.SendNamed("niko", src, "photos/cats/nap.txt", false); err != nil {
+		t.Fatalf("SendNamed: %v", err)
+	}
+	waitFor(t, func() bool { return storer.Spool().Count() == 1 }, "the storer to hold the file")
+
+	nikoD := startDaemonAt(t, nikoDir)
+	addCat(t, nikoD, storer.Me())
+	trust(t, storer, nikoD)
+	storer.sweepSpoolFor(context.Background(), niko.Key)
+	waitFor(t, func() bool {
+		b, err := os.ReadFile(filepath.Join(nikoD.InboxDir(), "photos", "cats", "nap.txt"))
+		return err == nil && string(b) == "held nested nap"
+	}, "the nested file to arrive via the storer")
+}
+
+func digestBytes(s string) []byte {
+	sum := sha256.Sum256([]byte(s))
+	return sum[:]
+}
+
+// A hostile offer name cannot escape the inbox: the receiver sanitizes
+// every component itself (#31) — sender-side validation is UX, this is
+// the boundary.
+func TestNestedOfferNameSanitized(t *testing.T) {
+	milo := startDaemon(t, "milo")
+	fluff := startDaemon(t, "fluff")
+	trust(t, fluff, milo)
+
+	data := "evil nap"
+	var sealed bytes.Buffer
+	targetPub, err := parseKey(fluff.Me().Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := envelope.SealStream(milo.env.Identity.Private, targetPub, &sealed, strings.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	o := &protocol.Offer{
+		ID:         strings.Repeat("c", 32),
+		FileName:   "../../../../../tmp/evil.txt",
+		Size:       int64(sealed.Len()),
+		From:       "milo",
+		FromKey:    milo.Me().Key,
+		SHA256:     hex.EncodeToString(digestBytes(data)),
+		TargetKey:  fluff.Me().Key,
+		TargetName: "fluff",
+	}
+	protocol.SignOffer(milo.env.SignPriv, o)
+
+	client, server := net.Pipe()
+	go func() {
+		_ = fluff.handleOffer(protocol.NewConn(server), &protocol.Hello{Name: "milo"}, "", o)
+		_ = server.Close()
+	}()
+	cpc := protocol.NewConn(client)
+	m, err := cpc.ReadMsg()
+	if err != nil || m.Answer == nil || !m.Answer.OK {
+		t.Fatalf("receiver refused the nested offer: %v %+v", err, m.Answer)
+	}
+	if _, err := client.Write(sealed.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	_ = client.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := cpc.ReadMsg(); err != nil {
+		t.Fatalf("no delivery ack: %v", err)
+	}
+	_ = client.Close()
+
+	// The traversal components are dropped; the file lands inside.
+	p := filepath.Join(fluff.InboxDir(), "tmp", "evil.txt")
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("sanitized file missing: %v", err)
+	}
+	if string(b) != data {
+		t.Fatalf("content = %q", string(b))
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(fluff.InboxDir()), "tmp")); !os.IsNotExist(err) {
+		t.Fatal("the offer escaped the inbox")
 	}
 }

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,9 +16,12 @@ import (
 // Request is one command from the clow CLI to the daemon. Ops: send,
 // cancel, cats, storer, status, setinbox, invite, join, ping.
 type Request struct {
-	Op        string `json:"op"`
-	Target    string `json:"target,omitempty"`
-	Path      string `json:"path,omitempty"`
+	Op     string `json:"op"`
+	Target string `json:"target,omitempty"`
+	Path   string `json:"path,omitempty"`
+	// Name is the wire name for the queued file (#31): a directory
+	// send's slash-separated relative path; empty derives from the base.
+	Name      string `json:"name,omitempty"`
 	On        bool   `json:"on,omitempty"`
 	Dropbox   bool   `json:"dropbox,omitempty"`
 	Max       string `json:"max,omitempty"`        // spool capacity for the storer role (e.g. "10G")
@@ -101,18 +105,12 @@ func (d *Daemon) handleIPC(req Request) Response {
 
 	switch req.Op {
 	case "send":
-		var id string
-		var err error
-		if req.ViaStorer {
-			id, err = d.SendVia(req.Target, req.Path)
-		} else {
-			id, err = d.Send(req.Target, req.Path)
-		}
+		id, err := d.queueSend(req.Target, req.Path, req.ViaStorer, req.Name)
 		if err != nil {
 			return fail(err)
 		}
 		return Response{OK: true, ID: id,
-			Message: fmt.Sprintf("queued %s for %s (id %s)", filepath.Base(req.Path), req.Target, id)}
+			Message: fmt.Sprintf("queued %s for %s (id %s)", cmp.Or(req.Name, filepath.Base(req.Path)), req.Target, id)}
 
 	case "cats":
 		me := d.Me()

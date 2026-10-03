@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net"
 	"os"
@@ -156,8 +157,8 @@ var commandDocs = []commandDoc{
 		"pair with the cat that invited",
 		"clow join <CODE>", nil, []string{hintPair, hintDaemon}},
 	{"send", "transferring files",
-		"send a file or the clipboard, watching progress until it is delivered or a storer holds it",
-		"clow send [--async] [--clipboard] [--storer] <CAT> [<FILE>]", sendFS, []string{hintDaemon}},
+		"send files, a directory or the clipboard, watching until delivered or a storer holds",
+		"clow send [--async] [--clipboard] [--storer] <CAT> <FILE-OR-DIR>...", sendFS, []string{hintDaemon}},
 	{"inbox", "transferring files",
 		"list received files, or move the inbox",
 		"clow inbox [--set DIR]", inboxFS, []string{hintInbox}},
@@ -578,46 +579,132 @@ var sendClipboard = sendFS.Bool("clipboard", false, "send the system clipboard a
 var sendStorer = sendFS.Bool("storer", false, "skip the direct attempt and its dial timeout; hand the file straight to a storer")
 
 func cmdSend(args []string) error {
+	// Package-level flags persist across in-process run() calls
+	// (tests); a fresh CLI process parses once. Reset to the defaults
+	// so each invocation starts from the same state.
+	*sendAsync, *sendClipboard, *sendStorer = false, false, false
 	if err := sendFS.Parse(args); err != nil {
 		return err
 	}
 	async, clip := *sendAsync, *sendClipboard
-	if (clip && sendFS.NArg() != 1) || (!clip && sendFS.NArg() != 2) {
+	if (clip && sendFS.NArg() != 1) || (!clip && sendFS.NArg() < 2) {
 		return fmt.Errorf("usage: %s", doc("send").usage)
 	}
 	target := sendFS.Arg(0)
-	var path string
-	var staged bool
 	if clip {
 		content, err := readClipboard()
 		if err != nil {
 			return err
 		}
-		path, err = stageClipboard(content)
+		path, err := stageClipboard(content)
 		if err != nil {
 			return err
 		}
-		staged = true
-	} else {
-		var err error
-		path, err = filepath.Abs(sendFS.Arg(1))
-		if err != nil {
+		if refused, err := queueAndWatch(target, path, async, *sendStorer); err != nil {
+			// A refusal queued nothing, so a staged copy is garbage. Any
+			// other error may be a live transfer: the daemon sweeps the
+			// copy when the entry dies (delivered, receipted, cancelled).
+			if refused {
+				_ = os.Remove(path)
+			}
 			return err
 		}
+		// A settled watch is not a dead entry: a storer-held send lives
+		// until the recipient's signed receipt, and retries re-read the
+		// staged source until then.
+		return nil
 	}
-	if refused, err := queueAndWatch(target, path, async, *sendStorer); err != nil {
-		// A refusal queued nothing, so a staged copy is garbage. Any
-		// other error may be a live transfer: the daemon sweeps the
-		// copy when the entry dies (delivered, receipted, cancelled).
-		if staged && refused {
-			_ = os.Remove(path)
-		}
+	files, err := expandSendPaths(sendFS.Args()[1:])
+	if err != nil {
 		return err
 	}
-	// A settled watch is not a dead entry: a storer-held send lives
-	// until the recipient's signed receipt, and retries re-read the
-	// staged source until then.
-	return nil
+	if len(files) == 0 {
+		return fmt.Errorf("nothing to send")
+	}
+	var refs []watchRef
+	for _, f := range files {
+		resp, err := call(daemon.Request{
+			Op: "send", Target: target, Path: f.path, Name: f.name, ViaStorer: *sendStorer,
+		})
+		if err != nil {
+			return err
+		}
+		if !resp.OK {
+			return fmt.Errorf("%s: %s", f.name, resp.Error)
+		}
+		fmt.Println(resp.Message)
+		if !async && resp.ID != "" {
+			refs = append(refs, watchRef{id: resp.ID, file: f.name})
+		}
+	}
+	if len(refs) == 0 {
+		return nil
+	}
+	return watchSends(refs, target)
+}
+
+// sendFile is one file to queue: its source path and its wire name —
+// a slash-separated relative path for directory sends (#31).
+type sendFile struct {
+	path string
+	name string
+}
+
+// expandSendPaths resolves send arguments: a file queues as itself, a
+// directory walks to one entry per regular file with the path relative
+// to the argument (the root's own name included, scp -r style). Symlinks
+// and special files are refused, never followed.
+func expandSendPaths(args []string) ([]sendFile, error) {
+	var out []sendFile
+	for _, arg := range args {
+		abs, err := filepath.Abs(arg)
+		if err != nil {
+			return nil, err
+		}
+		fi, err := os.Lstat(abs)
+		if err != nil {
+			return nil, fmt.Errorf("reading %s: %w", arg, err)
+		}
+		switch {
+		case fi.Mode()&fs.ModeSymlink != 0:
+			return nil, fmt.Errorf("refusing to send %s: it is a symlink", arg)
+		case fi.IsDir():
+			root := filepath.Dir(abs)
+			n := 0
+			err := filepath.WalkDir(abs, func(p string, de fs.DirEntry, err error) error {
+				if err != nil {
+					return err
+				}
+				switch {
+				case de.Type()&fs.ModeSymlink != 0:
+					return fmt.Errorf("refusing to send %s: it is a symlink", p)
+				case de.IsDir():
+					return nil
+				case de.Type().IsRegular():
+					rel, err := filepath.Rel(root, p)
+					if err != nil {
+						return err
+					}
+					out = append(out, sendFile{path: p, name: filepath.ToSlash(rel)})
+					n++
+					return nil
+				default:
+					return fmt.Errorf("refusing to send %s: not a regular file", p)
+				}
+			})
+			if err != nil {
+				return nil, err
+			}
+			if n == 0 {
+				return nil, fmt.Errorf("%s contains no files", arg)
+			}
+		case fi.Mode().IsRegular():
+			out = append(out, sendFile{path: abs, name: filepath.ToSlash(filepath.Base(abs))})
+		default:
+			return nil, fmt.Errorf("refusing to send %s: not a regular file or directory", arg)
+		}
+	}
+	return out, nil
 }
 
 // queueAndWatch queues the send and follows it unless async. refused
@@ -697,12 +784,23 @@ func stageClipboard(content []byte) (string, error) {
 	return path, nil
 }
 
-// watchSend follows a queued transfer until it settles: delivered
-// directly, or held by a storer for an offline target (the outbox
-// entry itself leaves only on the target's signed receipt).
-// Ctrl-C cancels the send — the entry is dropped and any in-flight
-// attempt is aborted.
+// watchRef is one queued transfer the CLI follows.
+type watchRef struct {
+	id   string
+	file string
+}
+
+// watchSend follows a single queued transfer (the clipboard send).
 func watchSend(id, file, target string) error {
+	return watchSends([]watchRef{{id: id, file: file}}, target)
+}
+
+// watchSends follows the queued transfers until each settles: delivered
+// directly, or held by a storer for an offline target (the outbox entry
+// itself leaves only on the target's signed receipt). Ctrl-C cancels
+// every send still pending — the entries are dropped and any in-flight
+// attempt is aborted.
+func watchSends(refs []watchRef, target string) error {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)
 	defer signal.Stop(sig)
@@ -710,14 +808,17 @@ func watchSend(id, file, target string) error {
 	// flickering at sub-second cadence.
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
+	done := make([]bool, len(refs))
 	var last string
 	for {
 		select {
 		case <-sig:
-			if _, err := call(daemon.Request{Op: "cancel", Target: id}); err != nil {
-				return err
+			for _, r := range refs {
+				if _, err := call(daemon.Request{Op: "cancel", Target: r.id}); err != nil {
+					return err
+				}
 			}
-			fmt.Printf("\r%-72s\n", fmt.Sprintf("cancelled %s", file))
+			fmt.Printf("\r%-72s\n", fmt.Sprintf("cancelled %d send(s)", len(refs)))
 			return nil
 		case <-tick.C:
 		}
@@ -730,35 +831,66 @@ func watchSend(id, file, target string) error {
 		}
 		// A held send settles at the deposit but stays in the outbox
 		// until the target's signed receipt: settle ends the watch.
-		if outcome := resp.Settled[id]; outcome == "delivered" {
-			fmt.Printf("\r%-72s\n", fmt.Sprintf("sent %s to %s (delivered)", file, target))
-			return nil
-		} else if storer, held := strings.CutPrefix(outcome, "stored via "); held {
-			fmt.Printf("\r%-72s\n", fmt.Sprintf("sent %s to %s (held by storer %s until %s is online)", file, target, storer, target))
-			return nil
-		}
-		queued := false
-		for _, e := range resp.Outbox {
-			if e.ID == id {
-				queued = true
-				break
+		remaining := 0
+		for i, r := range refs {
+			if done[i] {
+				continue
 			}
+			if outcome, settled := resp.Settled[r.id]; settled {
+				done[i] = true
+				fmt.Printf("\r%-72s\n", settleLine(outcome, r.file, target))
+				continue
+			}
+			queued := false
+			for _, e := range resp.Outbox {
+				if e.ID == r.id {
+					queued = true
+					break
+				}
+			}
+			if !queued {
+				// Daemon restart pruned the outcome history.
+				done[i] = true
+				fmt.Printf("\r%-72s\n", fmt.Sprintf("sent %s to %s (delivered, or held by a storer until it is online)", r.file, target))
+				continue
+			}
+			remaining++
 		}
-		if !queued {
-			// Daemon restart pruned the outcome history.
-			fmt.Printf("\r%-72s\n", fmt.Sprintf("sent %s to %s (delivered, or held by a storer until it is online)", file, target))
+		if remaining == 0 {
+			fmt.Println()
 			return nil
 		}
-		line := fmt.Sprintf("waiting: %s queued for %s", file, target)
-		if p, ok := sendingID(resp.Progress, id); ok {
-			line = fmt.Sprintf("sending %s to %s: %3.0f%% of %s%s",
-				file, target, p.Percent()*100, daemon.HumanBytes(p.Total), rateSuffix(p))
+		line := ""
+		for i, r := range refs {
+			if done[i] {
+				continue
+			}
+			line = fmt.Sprintf("waiting: %s queued for %s", r.file, target)
+			if p, ok := sendingID(resp.Progress, r.id); ok {
+				line = fmt.Sprintf("sending %s to %s: %3.0f%% of %s%s",
+					r.file, target, p.Percent()*100, daemon.HumanBytes(p.Total), rateSuffix(p))
+			}
+			break
+		}
+		if len(refs) > 1 {
+			line = fmt.Sprintf("%d left: %s", remaining, line)
 		}
 		if line != last {
 			fmt.Printf("\r%-72s", line)
 			last = line
 		}
 	}
+}
+
+// settleLine renders one transfer's outcome for the watch.
+func settleLine(outcome, file, target string) string {
+	if outcome == "delivered" {
+		return fmt.Sprintf("sent %s to %s (delivered)", file, target)
+	}
+	if storer, held := strings.CutPrefix(outcome, "stored via "); held {
+		return fmt.Sprintf("sent %s to %s (held by storer %s until %s is online)", file, target, storer, target)
+	}
+	return fmt.Sprintf("sent %s to %s (%s)", file, target, outcome)
 }
 
 var storerFS = flag.NewFlagSet("storer", flag.ContinueOnError)
