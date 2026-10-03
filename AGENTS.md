@@ -246,6 +246,17 @@ One line each; the pinning tests carry the details.
   TestSendNameValidation, TestSendNamedDeliversNested,
   TestSendNamedViaStorer, TestNestedOfferNameSanitized,
   TestExpandSendPaths, TestSendDirectoryQueuesEachFile.
+- **Send lifecycle gaps**: undelivered sends expire after 7 days
+  (outboxTTL mirrors the storer spool's DefaultTTL — a cat that never
+  comes online is not retried forever; TestOutboxExpires); every attempt
+  cycle records its newest refusal on the outbox entry and `clow status`
+  shows it ("last tried 30s ago: direct: ..."), instead of only daemon
+  logs (TestOutboxRecordsLastRefusal); `clow send --all` broadcasts to
+  every roster cat, targeted by key so duplicate names cannot misroute
+  (TestSendAllQueuesEachCat), and send resolves its target by name or
+  full key — a duplicate-named cat is targetable by key (TestSendByKey).
+  --all refuses --clipboard: one staged copy cannot outlive its first
+  outbox entry.
 - **Sync send and cancel**: `clow send` follows the transfer until it
   is delivered or a storer holds it; `--async` queues and returns
   immediately. Ctrl-C (or `clow cancel [<ID>]`, all sends when no

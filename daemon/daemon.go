@@ -302,6 +302,16 @@ func (d *Daemon) resolveCat(who string) (roster.Cat, bool) {
 	return c, ok
 }
 
+// resolveSendTarget resolves a send target by full node key first
+// (unambiguous even when names collide), else by name.
+func (d *Daemon) resolveSendTarget(who string) (roster.Cat, bool) {
+	if c, ok := d.ros.GetByKey(who); ok {
+		return c, false
+	}
+	c, ok := d.ros.Get(who)
+	return c, ok
+}
+
 // Ping proves a cat is reachable with the same authenticated handshake
 // a sync uses — a real round trip, so liveness is marked both ways —
 // and reports how long it took and whether the path is direct or via
@@ -660,18 +670,18 @@ func (d *Daemon) queueSend(targetName, path string, viaStorer bool, name string)
 			return "", err
 		}
 	}
-	cat, ok := d.ros.Get(targetName)
-	if !ok {
+	cat, byName := d.resolveSendTarget(targetName)
+	if cat.Key == "" {
 		return "", fmt.Errorf("unknown cat %q", targetName)
 	}
 	if d.isBlockedKey(cat.Key) {
-		return "", fmt.Errorf("cat %q is on the local blocklist (forgotten; re-pair to bring it back)", targetName)
+		return "", fmt.Errorf("cat %q is on the local blocklist (forgotten; re-pair to bring it back)", cat.Name)
 	}
-	if slices.Contains(d.ros.Duplicates(), targetName) {
+	if byName && slices.Contains(d.ros.Duplicates(), cat.Name) {
 		// A name claimed by two keys is not a safe send target:
-		// LWW picks the newest silently. Refuse; one of the two cats
-		// should re-init with a fresh name and re-pair.
-		return "", fmt.Errorf("cat name %q is claimed by more than one cat; one of them should re-init with a fresh name", targetName)
+		// LWW picks the newest silently. Refuse; target it by key, or
+		// one of the two cats should re-init with a fresh name.
+		return "", fmt.Errorf("cat name %q is claimed by more than one cat; target it by key, or one of them should re-init with a fresh name", cat.Name)
 	}
 	if _, err := os.Stat(path); err != nil {
 		return "", fmt.Errorf("reading file: %w", err)
@@ -1151,8 +1161,19 @@ func windowsReserved(name string) bool {
 
 // ---- outbound ----
 
+// outboxTTL bounds how long an undelivered send retries (mirrors the
+// storer spool's 7-day DefaultTTL): a cat that never comes online must
+// not be retried forever.
+const outboxTTL = 7 * 24 * time.Hour
+
 func (d *Daemon) retryOutbox() {
 	for _, e := range d.ob.All() {
+		if time.Since(time.Unix(e.AddedAt, 0)) > outboxTTL {
+			d.settle(e.ID, "expired")
+			_ = d.deleteEntry(e.ID)
+			d.cfg.logf("clowder: %s to %s expired after %s", e.FileName, e.TargetName, outboxTTL)
+			continue
+		}
 		if e.HeldBy != "" {
 			continue // waiting on a hold probe, not a retry
 		}
@@ -1181,6 +1202,9 @@ func (d *Daemon) deliver(e Entry) {
 		d.cfg.logf("clowder: %s to %s skipped: target is on the blocklist", e.FileName, e.TargetName)
 		return
 	}
+	// The newest refusal rides the entry, so `clow status` can say
+	// why the send is still queued.
+	var lastErr string
 	// --storer skips the direct attempt: no dial, no timeout — the file
 	// goes straight to a storer for the target to collect.
 	if cat, ok := d.ros.GetByKey(e.TargetKey); ok && !e.ViaStorer {
@@ -1189,6 +1213,7 @@ func (d *Daemon) deliver(e Entry) {
 			_ = d.deleteEntry(e.ID)
 			return
 		} else {
+			lastErr = fmt.Sprintf("direct: %v", err)
 			d.cfg.logf("clowder: direct to %s failed: %v", cat.Name, err)
 		}
 	}
@@ -1201,13 +1226,20 @@ func (d *Daemon) deliver(e Entry) {
 			// AckStored is not proof the storer kept the file: the entry
 			// stays until a probe confirms the storer still holds it.
 			e.HeldBy = s.Key
+			e.LastErr = ""
 			if err := d.ob.Put(e); err != nil {
 				d.cfg.logf("clowder: recording holding storer for %s: %v", e.ID, err)
 			}
 			return
 		} else {
+			lastErr = fmt.Sprintf("via %s: %v", s.Name, err)
 			d.cfg.logf("clowder: via storer %s failed: %v", s.Name, err)
 		}
+	}
+	e.LastTried = time.Now().Unix()
+	e.LastErr = lastErr
+	if err := d.ob.Put(e); err != nil {
+		d.cfg.logf("clowder: recording the last refusal for %s: %v", e.ID, err)
 	}
 	d.cfg.logf("clowder: %s to %s still pending", e.FileName, e.TargetName)
 }

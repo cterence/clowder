@@ -33,6 +33,10 @@ type Entry struct {
 	// ViaStorer skips the direct attempt on every retry (--storer):
 	// straight to a storer, no dial timeout.
 	ViaStorer bool `json:"via_storer,omitempty"`
+	// LastTried/LastErr record the newest attempt cycle's outcome, so
+	// `clow status` can say why the send is still queued.
+	LastTried int64  `json:"last_tried,omitempty"`
+	LastErr   string `json:"last_err,omitempty"`
 }
 
 // outbox persists entries as <dir>/<id>.json.
