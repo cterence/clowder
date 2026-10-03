@@ -24,6 +24,16 @@ data class OutboxEntry(
     val fileName: String,
 )
 
+/** One send receipt: what was sent, how it settled, when, and to
+ *  which local clowder — session state, cleared on app close. */
+data class SendReceipt(
+    val name: String,
+    val target: String,
+    val outcome: String,
+    val at: Long,
+    val clowder: String,
+)
+
 data class Transfer(
     val fileName: String,
     val peer: String,

@@ -555,15 +555,13 @@ private fun CatScreen(cat: Cat, onClose: () -> Unit) {
     val canSend = !cat.storer && !cat.dropbox
 
     // One status refresh feeds three things: the screen's live state,
-    // the settle tracker (which appends send receipts to the log), and
-    // this cat's receipts read back from that log.
+    // the settle tracker (which records send receipts), and this
+    // cat's receipts read back.
     suspend fun refresh() {
         val s = withContextOrNull { parseStatus(ipc(ClowdService.socketFile(ctx), "status")) }
         status = s
-        sent = withContextOrNull {
-            if (s != null) ClowdService.trackSends(ctx, s)
-            readSendReceipts(ctx, cat.name)
-        } ?: sent
+        if (s != null) ClowdService.trackSends(ctx, s)
+        sent = ClowdService.sendReceiptsFor(ctx, cat.name)
     }
 
     LaunchedEffect(Unit) {
@@ -815,8 +813,7 @@ private fun CatScreen(cat: Cat, onClose: () -> Unit) {
                         headlineContent = { Text(r.name) },
                         supportingContent = {
                             Text(
-                                sendOutcomeText(r.outcome) + " · " +
-                                    DateUtils.getRelativeTimeSpanString(r.at).toString(),
+                                sendOutcomeText(r.outcome) + " · " + relativeAt(r.at),
                             )
                         },
                     )
@@ -922,26 +919,15 @@ private fun PairScreen(onClose: () -> Unit) {
     }
 }
 
-/** One send receipt: what was sent to this cat, how it settled, when. */
-private data class SendReceipt(val name: String, val outcome: String, val at: Long)
-
-/** This cat's send receipts, newest first — the send log the settle
- *  tracker appends to, read back for display. */
-private fun readSendReceipts(ctx: android.content.Context, target: String): List<SendReceipt> {
-    val arr = ClowdService.readSendLog(ctx)
-    val out = ArrayList<SendReceipt>()
-    for (i in 0 until arr.length()) {
-        val o = arr.getJSONObject(i)
-        if (o.optString("target") == target) {
-            out.add(SendReceipt(o.optString("name"), o.optString("outcome"), o.optLong("at")))
-        }
-    }
-    return out.asReversed()
-}
-
-/** The daemon's settle wording: "delivered" or "stored via <storer>". */
+/** One send receipt's settle wording: "delivered" or "stored via <storer>". */
 private fun sendOutcomeText(outcome: String): String =
     if (outcome == "delivered") "delivered" else "held by storer ${outcome.removePrefix("stored via ")}"
+
+/** "now" under a minute old, then the platform's relative span —
+ *  DateUtils prints "0 minutes ago" for anything fresher. */
+private fun relativeAt(at: Long): String =
+    if (System.currentTimeMillis() - at < 60_000) "now"
+    else DateUtils.getRelativeTimeSpanString(at).toString()
 
 /** Copies the picked SAF document into the sandbox (the daemon needs a
  *  real path, not a content URI) and queues the send. */
@@ -1076,8 +1062,7 @@ fun InboxScreen(onClose: () -> Unit) {
                     headlineContent = { Text(f.name) },
                     supportingContent = {
                         Text(
-                            "${humanBytes(f.bytes)} · " +
-                                DateUtils.getRelativeTimeSpanString(f.at).toString(),
+                            "${humanBytes(f.bytes)} · " + relativeAt(f.at),
                         )
                     },
                     modifier = Modifier.fillMaxWidth(),

@@ -75,7 +75,7 @@ the system back gesture closes it.
 |---|---|
 | init | exec `libclowder.so init --name <name>` with `CLOWDER_DIR` and `HOME` pointing into the app sandbox |
 | home | the cat roster (liveness, roles) with in-flight transfers and the outbox, polled over `status` op |
-| cat detail | tap a cat: send (system file picker), ping (online check, marks liveness), its live transfers, queued sends (cancellable) and send receipts (delivered / held-by-storer, kept in a per-clowder log like the inbox's), and a confirmed `forget` — the CLI's local-only forget |
+| cat detail | tap a cat: send (system file picker), ping (online check, marks liveness), its live transfers, queued sends (cancellable) and send receipts (delivered / held-by-storer, session state cleared on app close), and a confirmed `forget` — the CLI's local-only forget |
 | pair | top-bar `+`: IPC ops (`invite`, `join`) over `clow.sock`, the same wire the CLI speaks |
 | inbox | top-bar mail icon: a receipt log, not a directory view — every delivered file is logged when the publisher moves it into the system's `Download/clowder/<name>` for the active clowder (`MediaStore.Downloads`, API 29+; a pre-nesting flat publish migrates into `default/` once), entries survive deleting the file from Downloads, "clear" empties the log only, and "open in files" launches the phone's file manager at its root (the files are in Download/clowder/<name>) |
 | settings | top-bar gear: stop/start the daemon, view/clear the log, leave the clowder, reset (announces the leave — `leave` op, so the clowder learns this cat is gone — then stops the daemon, waits out its IPC socket, then exec's `libclowder.so reset --yes` and returns to init) |

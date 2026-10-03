@@ -164,37 +164,35 @@ class ClowdService : Service() {
             inboxLogFile(ctx).writeText("[]")
         }
 
-        // Send receipts mirror the inbox log: the daemon's status names
-        // a settled transfer id, the outbox rows carried its file and
-        // target. The log outlives the daemon's bounded in-memory
-        // settle history; canceled sends never settle, so they never
-        // log a receipt.
+        // Send receipts are session state, not a file: they clear when
+        // the app closes, like the daemon's own settle history. The
+        // daemon's status names a settled transfer id; the outbox rows
+        // carried its file and target. Canceled sends never settle, so
+        // they never leave a receipt.
         private val sendLock = Any()
         private val sendSeen = HashMap<String, OutboxEntry>()
-        fun sendLogFile(ctx: Context): File =
-            File(ctx.filesDir, "send-log-${activeClowder(ctx)}.json")
+        private val sendReceipts = ArrayList<SendReceipt>()
 
         fun trackSends(ctx: Context, s: Status) = synchronized(sendLock) {
             s.outbox.forEach { sendSeen[it.id] = it }
+            val clowder = activeClowder(ctx)
             s.settled.forEach { (id, outcome) ->
                 val e = sendSeen.remove(id) ?: return@forEach
-                val arr = runCatching { JSONArray(sendLogFile(ctx).readText()) }.getOrElse { JSONArray() }
-                arr.put(
-                    JSONObject()
-                        .put("name", e.fileName)
-                        .put("target", e.targetName)
-                        .put("outcome", outcome)
-                        .put("at", System.currentTimeMillis()),
+                sendReceipts.add(
+                    SendReceipt(e.fileName, e.targetName, outcome, System.currentTimeMillis(), clowder),
                 )
-                while (arr.length() > 200) arr.remove(0)
-                sendLogFile(ctx).writeText(arr.toString())
+                while (sendReceipts.size > 200) sendReceipts.removeAt(0)
             }
             // A queue entry that vanished without settling was canceled.
             sendSeen.keys.retainAll(s.outbox.map { it.id }.toHashSet())
         }
 
-        fun readSendLog(ctx: Context): JSONArray = synchronized(sendLock) {
-            runCatching { JSONArray(sendLogFile(ctx).readText()) }.getOrElse { JSONArray() }
+        fun sendReceiptsFor(ctx: Context, target: String): List<SendReceipt> = synchronized(sendLock) {
+            sendReceipts.filter { it.clowder == activeClowder(ctx) && it.target == target }.asReversed()
+        }
+
+        fun clearSendReceipts() = synchronized(sendLock) {
+            sendReceipts.clear()
         }
 
         fun isInitialized(ctx: Context): Boolean =
@@ -296,6 +294,7 @@ class ClowdService : Service() {
     private fun stopNow() {
         holding.set(false)
         stopping.set(true)
+        clearSendReceipts()
         stopForeground(STOP_FOREGROUND_REMOVE)
         killDaemon()
         Log.i(TAG, "daemon stopped")
