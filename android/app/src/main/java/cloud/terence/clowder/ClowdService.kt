@@ -413,6 +413,10 @@ class ClowdService : Service() {
                         environment()["CLOWDER_DIR"] = configBase(this@ClowdService).absolutePath
                         environment()["CLOWDER"] = activeClowder(this@ClowdService)
                         environment()["HOME"] = filesDir.absolutePath
+                        // No zoneinfo in the sandbox: the binary embeds
+                        // tzdata, and TZ names the phone's zone so its
+                        // log timestamps are local, not UTC.
+                        environment()["TZ"] = java.util.TimeZone.getDefault().id
                     }
                     .start()
                 daemon = proc
