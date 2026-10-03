@@ -1,6 +1,10 @@
 # Shared services.clowder definitions: the NixOS, nix-darwin and Home
 # Manager modules expose identical knobs and map them to the same
 # CLOWDER_* environment, differing only in how the service is declared.
+#
+# Each clowder is one instance (one daemon, one config dir) keyed by
+# its local name under services.clowder.instances; the module wrappers
+# turn the key into CLOWDER=<name>, the unit suffix and the state dir.
 { lib, pkgs, self }:
 let
   inherit (lib) mkEnableOption mkOption optionalAttrs types;

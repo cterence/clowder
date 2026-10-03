@@ -73,15 +73,16 @@ func DefaultInbox() string {
 }
 
 // InboxDir resolves the inbox directory for a config dir: the me.json
-// setting if set, else the default, falling back to <dir>/inbox when
-// there is no home directory.
+// setting if set, else the default (per clowder: the clowder folder in
+// the OS's downloads directory, named after the config dir's last path
+// segment), falling back to <dir>/inbox when there is no home.
 func InboxDir(dir string) string {
 	me, err := loadMe(dir)
 	if err == nil && me.Inbox != "" {
 		return me.Inbox
 	}
 	if d := DefaultInbox(); d != "" {
-		return d
+		return filepath.Join(d, filepath.Base(dir))
 	}
 	return filepath.Join(dir, "inbox")
 }

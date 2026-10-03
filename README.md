@@ -32,10 +32,12 @@ On the other machine, same thing, then:
     clow send macbook DSC01234.jpg
     clow inbox                  # where received files landed
 
-Received files go to your OS downloads dir (`~/Downloads/clowder` by
-default; change with `clow inbox --set DIR`). Config lives under
-`$CLOWDER_DIR` or the user config home (`~/.config/clowder` on Linux,
-`~/Library/Application Support/clowder` on macOS).
+Received files go to your OS downloads dir, one folder per clowder
+(`~/Downloads/clowder/default` by default; change with `clow inbox
+--set DIR`). Config lives under `$CLOWDER_DIR` (the clowder base) or
+the user config home (`~/.config/clowder` on Linux,
+`~/Library/Application Support/clowder` on macOS), with each clowder
+in its own directory under the base.
 
 Building needs Go >= 1.27.1 (a dependency floor, not ours to lower).
 For Android, cross-compile from a machine with that toolchain — the
@@ -44,11 +46,32 @@ android build):
 
     GOOS=android GOARCH=arm64 go build -o clow .
 
+## Multiple clowders
+
+A clowder is a config dir: one daemon process per clowder, and the
+clowder name is purely local — it picks the directory and never rides
+the wire. A second clowder on the same machine:
+
+    clow --clowder work init --name laptop-work
+    clow --clowder work daemon       # or another nix instance
+
+The name resolves `--clowder` flag > `$CLOWDER` env > `default` (a
+no-flag command always means the default clowder — `clow send …` as
+today). Names are lowercase slugs (`^[a-z][a-z0-9-]{0,31}$`) because
+they become directory names and service unit suffixes. Two clowders on
+one host coexist on the same port: the tailcat listener is virtual, on
+each daemon's own overlay — no host socket is bound. Cross-clowder cat
+sameness is a non-goal: each clowder is its own identity and trust
+domain, so rotate or leave one without touching the others. A pre-
+nesting config dir migrates into `default/` automatically on first
+run.
+
 ## Config layout
 
-State lives under `$CLOWDER_DIR` (default: the OS user config home —
-`~/.config/clowder` on Linux, `~/Library/Application Support/clowder`
-on macOS). The files are deliberately separate: secrets never share a
+State lives under the clowder's directory: `$CLOWDER_DIR/<clowder>`
+(default base: the OS user config home — `~/.config/clowder` on Linux,
+`~/Library/Application Support/clowder` on macOS). The files are
+deliberately separate: secrets never share a
 file with frequently-rewritten state, and every ledger has a default
 path if lost — except the identity.
 
@@ -64,6 +87,10 @@ path if lost — except the identity.
 | `spool/` | sealed streams held for others (storer duty) | no | yes — drops held files |
 
 ## Commands
+
+Every command takes a global flag before the command word:
+`clow [--clowder NAME] <command> …` names the local clowder
+(default: `$CLOWDER`, else `default`).
 
     clow init [--name NAME] [--dir CONFIG_DIR] [--inbox INBOX_DIR]
                                                         create the identity
@@ -105,46 +132,52 @@ peers' public endpoints. So no Service is needed for the mesh itself.
 
 ## Running as a service
 
-NixOS gets a `services.clowder` module from the flake:
+NixOS gets a `services.clowder.instances` module from the flake — one
+systemd unit per clowder, keyed by its local name:
 
     {
       inputs.clowder.url = "git+ssh://git@github.com/cterence/clowder.git";
       # in your NixOS config:
       imports = [ clowder.nixosModules.default ];
-      services.clowder = {
+      services.clowder.instances.default = {
         enable = true;
         name = "server-cat";          # optional, defaults to the hostname
         storer = "on";                 # optional: on | off | dropbox
         maxCapacity = "10G";           # optional, with storer
         healthAddr = "127.0.0.1:8080"; # optional, GET /healthz
       };
+      # a second clowder on the same host is another instance:
+      services.clowder.instances.work.enable = true;
     }
 
-The daemon runs as a `clowder` system user with its state in
-`/var/lib/clowder` (a fresh directory auto-inits a new cat), restarts on
+Each instance runs as the `clowder` system user with its state in
+`/var/lib/clowder/<name>` (a fresh directory auto-inits a new cat), restarts on
 failure, and survives suspend/resume — no watchdog, because a watchdog's
 clock counts sleep time and would kill a healthy daemon on wake. Hang
-detection belongs to external probes of `healthAddr`. The CLI reaches
-the daemon through the same socket:
+detection belongs to external probes of `healthAddr` (distinct per
+instance when enabled). The CLI reaches an instance's daemon through
+the same socket:
 
-    sudo -u clowder env CLOWDER_DIR=/var/lib/clowder clow status
+    sudo -u clowder env CLOWDER_DIR=/var/lib/clowder CLOWDER=default clow status
 
-On macOS, nix-darwin gets the same `services.clowder` module from
-`clowder.darwinModules.default` — it wires a per-user launchd agent
-(`KeepAlive` + `RunAtLoad`, so it survives suspend/resume without
-restarts) and installs/loads it on switch. Home Manager gets
-`clowder.homeManagerModules.default`: a launchd agent on macOS, a
-systemd user unit on Linux, running as your own user so `clow
-invite`/`clow status` work as always — the daemon shares your config
-dir and downloads inbox. Don't enable the Home Manager module on a
-host that also runs the system-level NixOS service: two daemons are
+On macOS, nix-darwin gets the same `services.clowder.instances`
+module from `clowder.darwinModules.default` — it wires a per-user
+launchd agent per instance (`KeepAlive` + `RunAtLoad`, so it survives
+suspend/resume without restarts) and installs/loads them on switch.
+Home Manager gets `clowder.homeManagerModules.default`: a launchd
+agent on macOS, a systemd user unit on Linux, running as your own user
+so `clow invite`/`clow status` work as always — the daemon shares your config
+dir and downloads inbox. Don't enable an instance on a host that also
+runs the system-level NixOS instance of the same name: two daemons are
 two cats.
 
 ## Android
 
 An Android client lives in `android/`: the daemon ships as the same
-`GOOS=android` binary, exec'd by a foreground service with a wake
-lock, with a plain Compose UI speaking the CLI's unix-socket IPC. See
+`GOOS=android` binary, exec'd by a service that runs it while the app
+is on screen (promoting to a dataSync foreground service only while a
+transfer is in flight), with a plain Compose UI speaking the CLI's
+unix-socket IPC and a header clowder switcher. See
 `android/README.md`.
 
 

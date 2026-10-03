@@ -22,7 +22,7 @@ func TestInitCreatesIdentity(t *testing.T) {
 		t.Fatalf("init: %v", err)
 	}
 	for _, f := range []string{"identity.json", "me.json"} {
-		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+		if _, err := os.Stat(filepath.Join(dir, "default", f)); err != nil {
 			t.Errorf("missing %s: %v", f, err)
 		}
 	}
@@ -30,6 +30,96 @@ func TestInitCreatesIdentity(t *testing.T) {
 	// Init must refuse to clobber an existing identity.
 	if err := run([]string{"init", "--name", "milo"}); err == nil {
 		t.Error("second init succeeded, want error")
+	}
+}
+
+// TestClowderNesting pins local clowder naming (#19): --clowder >
+// CLOWDER > "default", each resolving to base/<name>; the name is
+// a directory name and must be a lowercase slug.
+func TestClowderNesting(t *testing.T) {
+	base := t.TempDir()
+	t.Setenv("CLOWDER_DIR", base)
+	t.Setenv("CLOWDER", "")
+
+	if err := run([]string{"init", "--name", "milo"}); err != nil {
+		t.Fatalf("default init: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(base, "default", "identity.json")); err != nil {
+		t.Fatalf("no-flag init did not land in base/default: %v", err)
+	}
+
+	t.Setenv("CLOWDER", "work")
+	if err := run([]string{"init", "--name", "workcat"}); err != nil {
+		t.Fatalf("env init: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(base, "work", "identity.json")); err != nil {
+		t.Fatalf("CLOWDER=work did not land in base/work: %v", err)
+	}
+
+	t.Setenv("CLOWDER", "")
+	if err := run([]string{"--clowder", "family", "init", "--name", "famcat"}); err != nil {
+		t.Fatalf("flag init: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(base, "family", "identity.json")); err != nil {
+		t.Fatalf("--clowder family did not land in base/family: %v", err)
+	}
+
+	for _, bad := range []string{"Work", "a b", "../evil", strings.Repeat("x", 33)} {
+		t.Setenv("CLOWDER", bad)
+		err := run([]string{"status"})
+		if err == nil || !strings.Contains(err.Error(), "invalid clowder name") {
+			t.Fatalf("CLOWDER=%q: err = %v, want invalid clowder name", bad, err)
+		}
+	}
+	t.Setenv("CLOWDER", "")
+	if err := run([]string{"--clowder", "nope_dashes", "status"}); err == nil ||
+		!strings.Contains(err.Error(), "invalid clowder name") {
+		t.Fatalf("underscore name: err = %v, want invalid clowder name", err)
+	}
+}
+
+// TestFlatBaseMigration pins the one-time move to the nested layout: a
+// pre-nesting base (identity.json directly in it) migrates into
+// base/default/, and only once.
+func TestFlatBaseMigration(t *testing.T) {
+	base := t.TempDir()
+	t.Setenv("CLOWDER_DIR", base)
+	for _, f := range []string{"identity.json", "me.json", "roster.json"} {
+		if err := os.WriteFile(filepath.Join(base, f), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(base, "outbox"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"status"}); err == nil {
+		t.Fatal("status without daemon succeeded, want IPC error")
+	}
+	def := filepath.Join(base, "default")
+	for _, f := range []string{"identity.json", "me.json", "roster.json"} {
+		if _, err := os.Stat(filepath.Join(def, f)); err != nil {
+			t.Errorf("migrated %s missing: %v", f, err)
+		}
+		if _, err := os.Stat(filepath.Join(base, f)); !os.IsNotExist(err) {
+			t.Errorf("%s still in the flat base", f)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(def, "outbox")); err != nil {
+		t.Errorf("migrated outbox/ missing: %v", err)
+	}
+	// A second pass is a no-op: the flat layout is gone.
+	if err := os.MkdirAll(filepath.Join(base, "work"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLOWDER", "work")
+	if err := run([]string{"status"}); err == nil {
+		t.Fatal("status without daemon succeeded, want IPC error")
+	}
+	if _, err := os.Stat(filepath.Join(base, "identity.json")); !os.IsNotExist(err) {
+		t.Error("second migration pass touched the base")
+	}
+	if _, err := os.Stat(filepath.Join(def, "work")); !os.IsNotExist(err) {
+		t.Error("migration moved a clowder dir into default/")
 	}
 }
 
@@ -67,7 +157,7 @@ func TestReset(t *testing.T) {
 	if err := run([]string{"reset", "--yes"}); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "identity.json")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(dir, "default", "identity.json")); !os.IsNotExist(err) {
 		t.Error("identity survived reset")
 	}
 	// A reset cat can be re-created.
@@ -86,7 +176,7 @@ func TestResetRefusesWhileDaemonRuns(t *testing.T) {
 	}
 
 	gotReq := make(chan daemon.Request, 1)
-	ln, err := net.Listen("unix", daemon.IPCPath(dir))
+	ln, err := net.Listen("unix", daemon.IPCPath(filepath.Join(dir, "default")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +208,7 @@ func TestResetRefusesWhileDaemonRuns(t *testing.T) {
 	}
 
 	// The identity survives: the wipe only happens once the daemon is gone.
-	if _, err := os.Stat(filepath.Join(dir, "identity.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, "default", "identity.json")); err != nil {
 		t.Fatalf("reset wiped the cat while its daemon runs: %v", err)
 	}
 }
@@ -130,8 +220,11 @@ func TestResetRefusesWhileDaemonRuns(t *testing.T) {
 func TestWatchSendReturnsWhenStorerHolds(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CLOWDER_DIR", dir)
+	if err := os.MkdirAll(filepath.Join(dir, "default"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 
-	ln, err := net.Listen("unix", daemon.IPCPath(dir))
+	ln, err := net.Listen("unix", daemon.IPCPath(filepath.Join(dir, "default")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +271,7 @@ func TestInboxSetWithoutDaemon(t *testing.T) {
 	if err := run([]string{"inbox", "--set", inbox}); err != nil {
 		t.Fatalf("inbox --set without daemon: %v", err)
 	}
-	if got := daemon.InboxDir(dir); got != inbox {
+	if got := daemon.InboxDir(filepath.Join(dir, "default")); got != inbox {
 		t.Fatalf("persisted inbox = %q, want %q", got, inbox)
 	}
 	if _, err := os.Stat(inbox); err != nil {

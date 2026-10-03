@@ -157,6 +157,15 @@ fun ClowderApp() {
                     onPair = { screen = Screen.Pairing },
                     onInbox = { screen = Screen.Inbox },
                     onSettings = { screen = Screen.Settings },
+                    onClowder = { name ->
+                        // Switching clowders: the old daemon dies now
+                        // (an in-flight transfer retries later); an
+                        // uninitialized target lands on the init screen.
+                        ClowdService.setActiveClowder(ctx, name)
+                        ClowdService.stop(ctx)
+                        initialized = ClowdService.isInitialized(ctx)
+                        if (initialized) ClowdService.start(ctx)
+                    },
                 )
                 else -> {}
             }
@@ -196,7 +205,9 @@ private fun runInit(ctx: android.content.Context, name: String): String = try {
     val proc = ProcessBuilder(ClowdService.binaryFile(ctx).absolutePath, "init", "--name", name)
         .redirectErrorStream(true)
         .apply {
-            environment()["CLOWDER_DIR"] = dir.absolutePath
+            // The binary resolves the base plus CLOWDER=<name>.
+            environment()["CLOWDER_DIR"] = ClowdService.configBase(ctx).absolutePath
+            environment()["CLOWDER"] = ClowdService.activeClowder(ctx)
             environment()["HOME"] = ctx.filesDir.absolutePath
         }
         .start()
@@ -272,7 +283,8 @@ private fun runReset(ctx: android.content.Context): String = try {
     val proc = ProcessBuilder(ClowdService.binaryFile(ctx).absolutePath, "reset", "--yes")
         .redirectErrorStream(true)
         .apply {
-            environment()["CLOWDER_DIR"] = ClowdService.configDir(ctx).absolutePath
+            environment()["CLOWDER_DIR"] = ClowdService.configBase(ctx).absolutePath
+            environment()["CLOWDER"] = ClowdService.activeClowder(ctx)
             environment()["HOME"] = ctx.filesDir.absolutePath
         }
         .start()
@@ -303,18 +315,22 @@ private fun LivenessDot(online: Boolean) {
 
 /** Home: the cat list. Sending is the point of the app, so the cats
  *  are the list, and everything else (inbox, pair, settings) hangs
- *  off the top bar; a cat's detail screen carries the send action. */
+ *  off the top bar; a cat's detail screen carries the send action.
+ *  The title is the local clowder switcher: one daemon at a time,
+ *  restarted on the chosen clowder's config dir. */
 @Composable
 private fun HomeScreen(
     onCat: (Cat) -> Unit,
     onPair: () -> Unit,
     onInbox: () -> Unit,
     onSettings: () -> Unit,
+    onClowder: (String) -> Unit,
 ) {
     val ctx = LocalContext.current
     var status by remember { mutableStateOf<Status?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
     var noticeIsError by remember { mutableStateOf(false) }
+    var showClowderPicker by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -347,7 +363,11 @@ private fun HomeScreen(
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 LivenessDot(status?.ok == true)
-                Text("clowder", style = MaterialTheme.typography.titleLarge)
+                Text(
+                    ClowdService.activeClowder(ctx),
+                    style = MaterialTheme.typography.titleLarge,
+                    modifier = Modifier.clickable { showClowderPicker = true },
+                )
                 Spacer(Modifier.weight(1f))
                 IconButton(onClick = onInbox) {
                     Icon(Icons.Outlined.Email, contentDescription = "inbox")
@@ -455,6 +475,54 @@ private fun HomeScreen(
             }
         }
     }
+
+    if (showClowderPicker) {
+        ClowderPicker(
+            onDismiss = { showClowderPicker = false },
+            onPick = { name ->
+                showClowderPicker = false
+                onClowder(name)
+            },
+        )
+    }
+}
+
+/** The local clowder switcher: pick an existing clowder or name a new
+ *  one. Names are local only — they pick the config dir, nothing else. */
+@Composable
+private fun ClowderPicker(onDismiss: () -> Unit, onPick: (String) -> Unit) {
+    val ctx = LocalContext.current
+    var newName by remember { mutableStateOf("") }
+    val existing = remember { ClowdService.listClowders(ctx) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("clowder") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                existing.forEach { name ->
+                    ListItem(
+                        headlineContent = { Text(name) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onPick(name) },
+                    )
+                }
+                OutlinedTextField(
+                    value = newName,
+                    onValueChange = { newName = it },
+                    label = { Text("new clowder") },
+                    singleLine = true,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onPick(newName) },
+                enabled = ClowdService.validClowderName(newName),
+            ) { Text("create") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("cancel") } },
+    )
 }
 
 /** One cat: the send action, what is moving to/from it right now,

@@ -64,11 +64,64 @@ class ClowdService : Service() {
 
         fun clearLog() = synchronized(logLines) { logLines.clear() }
 
-        fun configDir(ctx: Context): File = File(ctx.filesDir, "clowder")
+        fun configBase(ctx: Context): File = File(ctx.filesDir, "clowder")
         fun socketFile(ctx: Context): File = File(configDir(ctx), "clow.sock")
-        fun inboxDir(ctx: Context): File = File(File(ctx.filesDir, "Downloads"), "clowder")
+        fun inboxDir(ctx: Context): File =
+            File(File(File(ctx.filesDir, "Downloads"), "clowder"), activeClowder(ctx))
         fun binaryFile(ctx: Context): File =
             File(ctx.applicationInfo.nativeLibraryDir, BINARY)
+
+        // A clowder is a config dir under the base, named locally —
+        // never on the wire. The binary resolves CLOWDER_DIR the same
+        // way, so subprocesses get the base plus CLOWDER=<name>.
+        private const val PREFS = "clowder"
+        private const val PREF_ACTIVE = "active"
+
+        fun activeClowder(ctx: Context): String =
+            ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(PREF_ACTIVE, "default") ?: "default"
+
+        fun setActiveClowder(ctx: Context, name: String) {
+            ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(PREF_ACTIVE, name).apply()
+        }
+
+        fun validClowderName(name: String): Boolean =
+            Regex("^[a-z][a-z0-9-]{0,31}$").matches(name)
+
+        /** The clowder dirs that exist, "default" always offered. */
+        fun listClowders(ctx: Context): List<String> =
+            ((configBase(ctx).listFiles()?.filter { it.isDirectory }?.map { it.name } ?: emptyList()) + "default")
+                .distinct()
+                .sorted()
+
+        /** The pre-nesting layout (identity.json directly in the base,
+         *  loose files directly in the sandbox inbox) migrates into
+         *  default/ once, mirroring the CLI's migration; it runs
+         *  before the daemon ever starts. */
+        private fun migrateFlat(ctx: Context) {
+            val base = configBase(ctx)
+            if (File(base, "identity.json").isFile) {
+                val def = File(base, "default")
+                def.mkdirs()
+                base.listFiles()?.forEach { f ->
+                    if (f.name != "default" && f.name != "identity.json") {
+                        f.renameTo(File(def, f.name))
+                    }
+                }
+                File(base, "identity.json").renameTo(File(def, "identity.json"))
+            }
+            val inbox = File(File(ctx.filesDir, "Downloads"), "clowder")
+            val defInbox = File(inbox, "default")
+            val loose = inbox.listFiles()?.filter { it.isFile } ?: emptyList()
+            if (loose.isNotEmpty() && !defInbox.isDirectory) {
+                defInbox.mkdirs()
+                loose.forEach { it.renameTo(File(defInbox, it.name)) }
+            }
+        }
+
+        fun configDir(ctx: Context): File {
+            migrateFlat(ctx)
+            return File(configBase(ctx), activeClowder(ctx))
+        }
 
         // The inbox is a receipt log, not a directory view: files can be
         // deleted from Downloads without losing the record.
@@ -281,7 +334,10 @@ class ClowdService : Service() {
                 val proc = ProcessBuilder(binaryFile(this).absolutePath, "daemon")
                     .redirectErrorStream(true)
                     .apply {
-                        environment()["CLOWDER_DIR"] = dir.absolutePath
+                        // The binary resolves CLOWDER_DIR the same way we do:
+                        // the base plus CLOWDER=<name> names this clowder.
+                        environment()["CLOWDER_DIR"] = configBase(this@ClowdService).absolutePath
+                        environment()["CLOWDER"] = activeClowder(this@ClowdService)
                         environment()["HOME"] = filesDir.absolutePath
                     }
                     .start()
