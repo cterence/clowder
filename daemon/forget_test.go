@@ -55,14 +55,14 @@ func TestRepairAfterForgetUnblocks(t *testing.T) {
 	}
 
 	if err := milo.addPeerCat(&protocol.PairIntro{
-		Name:      fluff.Me().Name,
-		Addr:      string(fluff.env.Identity.Public.Addr()),
-		ClientKey: fluff.Me().ClientKey,
-		SignKey:   fluff.Me().SignKey,
+		Name:    fluff.Me().Name,
+		Addr:    string(fluff.env.Identity.Public.Addr()),
+		DialKey: fluff.Me().DialKey,
+		SignKey: fluff.Me().SignKey,
 	}); err != nil {
 		t.Fatalf("addPeerCat: %v", err)
 	}
-	if milo.isBlockedKey(fluff.Me().Key) || milo.isBlockedKey(fluff.Me().ClientKey) {
+	if milo.isBlockedKey(fluff.Me().Key) || milo.isBlockedKey(fluff.Me().DialKey) {
 		t.Fatal("re-pairing did not clear the blocklist")
 	}
 }

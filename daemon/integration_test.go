@@ -9,7 +9,7 @@ package daemon
 // The CI workflow runs them in the integration job on every push and
 // PR. They exercise what the loopback transport cannot: real pairing
 // over DERP, the transport-level PeerKey authentication against the
-// claimed hello client key, and a file transfer between two real
+// claimed hello dial key, and a file transfer between two real
 // tailcat stacks.
 
 import (
@@ -82,7 +82,7 @@ func newRealDaemon(t *testing.T, dir, name string) *realDaemon {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	tr := NewTailcatTransport(env.Identity, env.ClientIdentity, DefaultPort, t.Logf)
+	tr := NewTailcatTransport(env.Identity, env.DialIdentity, DefaultPort, t.Logf)
 	d, err := New(cfg, tr)
 	if err != nil {
 		t.Fatalf("New: %v", err)

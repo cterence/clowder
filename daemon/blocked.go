@@ -45,8 +45,8 @@ func (d *Daemon) isBlockedKey(key string) bool {
 func (d *Daemon) blockCat(c roster.Cat) error {
 	d.mu.Lock()
 	d.blocked[c.Key] = true
-	if c.ClientKey != "" {
-		d.blocked[c.ClientKey] = true
+	if c.DialKey != "" {
+		d.blocked[c.DialKey] = true
 	}
 	err := saveBlocked(d.cfg.Dir, d.blocked)
 	d.mu.Unlock()

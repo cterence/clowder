@@ -103,7 +103,7 @@ type Env struct {
 	Identity *tailcat.PrivateKey
 	// Outbound-dial keypair. Must differ from Identity: two engines sharing one
 	// static key cross-deliver handshakes and wedge. Peers allowlist it.
-	ClientIdentity key.NodePrivate
+	DialIdentity key.NodePrivate
 	// Ed25519 keypair derived from the node key seed (not stored; the identity
 	// regenerates it). Signs the cat's roster entries and its leave.
 	SignPriv ed25519.PrivateKey
@@ -138,7 +138,7 @@ func Init(dir, name string) error {
 	if err := saveIdentity(dir, k); err != nil {
 		return err
 	}
-	if err := writeClientKey(dir, key.NewNode()); err != nil {
+	if err := writeDialKey(dir, key.NewNode()); err != nil {
 		return err
 	}
 	if err := saveMe(dir, Me{Name: name}); err != nil {
@@ -159,41 +159,41 @@ func Open(dir string) (*Env, error) {
 	if err != nil {
 		return nil, err
 	}
-	ck, err := loadClientKey(dir)
+	ck, err := loadDialKey(dir)
 	if err != nil {
 		return nil, err
 	}
 	raw := k.Private.Raw32()
 	signPriv := ed25519.NewKeyFromSeed(raw[:])
-	return &Env{Dir: dir, Identity: k, ClientIdentity: ck, SignPriv: signPriv, Me: me}, nil
+	return &Env{Dir: dir, Identity: k, DialIdentity: ck, SignPriv: signPriv, Me: me}, nil
 }
 
-func writeClientKey(dir string, priv key.NodePrivate) error {
+func writeDialKey(dir string, priv key.NodePrivate) error {
 	text, err := priv.MarshalText()
 	if err != nil {
-		return fmt.Errorf("daemon: encoding client key: %w", err)
+		return fmt.Errorf("daemon: encoding dial key: %w", err)
 	}
 	return persist.SaveJSON(clientKeyPath(dir), string(text))
 }
 
-// loadClientKey loads the outbound client identity, generating one for
-// identities created before client keys existed.
-func loadClientKey(dir string) (key.NodePrivate, error) {
+// loadDialKey loads the outbound client identity, generating one for
+// identities created before dial keys existed.
+func loadDialKey(dir string) (key.NodePrivate, error) {
 	var text string
 	ok, err := persist.LoadJSON(clientKeyPath(dir), &text)
 	if err != nil {
-		return key.NodePrivate{}, fmt.Errorf("daemon: parsing client key: %w", err)
+		return key.NodePrivate{}, fmt.Errorf("daemon: parsing dial key: %w", err)
 	}
 	if !ok {
 		priv := key.NewNode()
-		if err := writeClientKey(dir, priv); err != nil {
+		if err := writeDialKey(dir, priv); err != nil {
 			return key.NodePrivate{}, err
 		}
 		return priv, nil
 	}
 	var priv key.NodePrivate
 	if err := priv.UnmarshalText([]byte(text)); err != nil {
-		return key.NodePrivate{}, fmt.Errorf("daemon: client key: %w", err)
+		return key.NodePrivate{}, fmt.Errorf("daemon: dial key: %w", err)
 	}
 	return priv, nil
 }

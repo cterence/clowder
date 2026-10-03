@@ -80,7 +80,7 @@ func TestSyncRejectsKeyNotDerivedFromAddr(t *testing.T) {
 	}
 }
 
-// authedLocalTransport makes loopback connections claim a client key
+// authedLocalTransport makes loopback connections claim a dial key
 // the daemon treats as transport-authenticated.
 type authedLocalTransport struct {
 	*LocalTransport
@@ -107,11 +107,11 @@ func sayHello(t *testing.T, d *Daemon, h *protocol.Hello) {
 }
 
 // TestServeConnMarksOnlyKnownIdentities pins the liveness fix: an
-// authenticated client key may claim its own roster identity, and
+// authenticated dial key may claim its own roster identity, and
 // nothing else — a fake Key claim must not enter the liveness map.
 func TestServeConnMarksOnlyKnownIdentities(t *testing.T) {
 	cedar := startDaemon(t, "cedar")
-	clientKey, err := parseKey(cedar.Me().ClientKey)
+	clientKey, err := parseKey(cedar.Me().DialKey)
 	if err != nil {
 		t.Fatalf("parseKey: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestServeConnMarksOnlyKnownIdentities(t *testing.T) {
 	addCat(t, milo, cedar.Me())
 
 	sayHello(t, milo, &protocol.Hello{ // honest claim
-		Name: "cedar", Key: cedar.Me().Key, ClientKey: cedar.Me().ClientKey,
+		Name: "cedar", Key: cedar.Me().Key, DialKey: cedar.Me().DialKey,
 		Addr: cedar.Me().Addr, Version: protocol.HelloVersion,
 	})
 	waitFor(t, func() bool {
@@ -133,7 +133,7 @@ func TestServeConnMarksOnlyKnownIdentities(t *testing.T) {
 
 	ghost := blockedCat(t, "ghost", time.Now().Unix())
 	sayHello(t, milo, &protocol.Hello{ // forged identity claim
-		Name: "cedar", Key: ghost.Key, ClientKey: cedar.Me().ClientKey,
+		Name: "cedar", Key: ghost.Key, DialKey: cedar.Me().DialKey,
 		Addr: cedar.Me().Addr, Version: protocol.HelloVersion,
 	})
 	time.Sleep(200 * time.Millisecond)
@@ -222,7 +222,7 @@ func TestIPCPathWithColonStaysUnix(t *testing.T) {
 // so a churner cannot pile unbounded serves onto one daemon.
 func TestPeerConnCapDropsExcess(t *testing.T) {
 	cedar, _ := offlineCat(t)
-	clientKey, err := parseKey(cedar.ClientKey)
+	clientKey, err := parseKey(cedar.DialKey)
 	if err != nil {
 		t.Fatalf("parseKey: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestPeerConnCapDropsExcess(t *testing.T) {
 			defer wg.Done()
 			pc := protocol.NewConn(conn)
 			if err := pc.WriteMsg(&protocol.Message{Hello: &protocol.Hello{
-				Name: "churner", Key: ck, ClientKey: ck, Addr: "127.0.0.1:1", Version: protocol.HelloVersion,
+				Name: "churner", Key: ck, DialKey: ck, Addr: "127.0.0.1:1", Version: protocol.HelloVersion,
 			}}); err != nil {
 				return
 			}
@@ -282,7 +282,7 @@ func TestRosterMergeCapCutsConn(t *testing.T) {
 	pc := protocol.NewConn(conn)
 	me := milo.Me()
 	if err := pc.WriteMsg(&protocol.Message{Hello: &protocol.Hello{
-		Name: "churner", Key: me.Key, ClientKey: me.ClientKey, Addr: me.Addr, Version: protocol.HelloVersion,
+		Name: "churner", Key: me.Key, DialKey: me.DialKey, Addr: me.Addr, Version: protocol.HelloVersion,
 	}}); err != nil {
 		t.Fatalf("hello: %v", err)
 	}

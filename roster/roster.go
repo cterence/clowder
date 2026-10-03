@@ -19,11 +19,11 @@ import (
 // Cat is one clowder member. Key is the node public key in string form,
 // Addr the tailcat address, Updated the unix time of the last change (LWW).
 type Cat struct {
-	Name      string `json:"name" cbor:"n"`
-	Addr      string `json:"addr" cbor:"a"`
-	Key       string `json:"key" cbor:"k"`                            // node identity (the address's key)
-	ClientKey string `json:"client_key,omitempty" cbor:"c,omitempty"` // outbound-dial identity peers allowlist
-	Storer    bool   `json:"storer,omitempty" cbor:"s,omitempty"`
+	Name    string `json:"name" cbor:"n"`
+	Addr    string `json:"addr" cbor:"a"`
+	Key     string `json:"key" cbor:"k"`                            // node identity (the address's key)
+	DialKey string `json:"client_key,omitempty" cbor:"c,omitempty"` // outbound-dial identity peers allowlist
+	Storer  bool   `json:"storer,omitempty" cbor:"s,omitempty"`
 	// A storer that only serves third parties: no deliveries to itself, no
 	// originating sends. Implies Storer.
 	Dropbox bool `json:"dropbox,omitempty" cbor:"d,omitempty"`

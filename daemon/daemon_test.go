@@ -198,12 +198,12 @@ func offlineCat(t *testing.T) (roster.Cat, string) {
 	}
 	signPub := env.SignPriv.Public().(ed25519.PublicKey)
 	return roster.SignCat(env.SignPriv, roster.Cat{
-		Name:      name,
-		Addr:      "127.0.0.1:1", // nothing listens here
-		Key:       env.Identity.Public.ServerPublic.String(),
-		ClientKey: env.ClientIdentity.Public().String(),
-		SignKey:   hex.EncodeToString(signPub),
-		Updated:   time.Now().Unix(),
+		Name:    name,
+		Addr:    "127.0.0.1:1", // nothing listens here
+		Key:     env.Identity.Public.ServerPublic.String(),
+		DialKey: env.DialIdentity.Public().String(),
+		SignKey: hex.EncodeToString(signPub),
+		Updated: time.Now().Unix(),
 	}), dir
 }
 
@@ -373,7 +373,7 @@ func TestStartupSyncBurst(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	// macbook must allow the waker's client key for the burst's
+	// macbook must allow the waker's dial key for the burst's
 	// handshake to complete (they were paired before the waker slept).
 	addCat(t, macbook, waker.Me())
 

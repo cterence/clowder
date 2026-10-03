@@ -219,12 +219,12 @@ func New(cfg Config, tr Transport) (*Daemon, error) {
 		inbox:          inbox,
 	}
 	d.meCat = roster.SignCat(env.SignPriv, roster.Cat{
-		Name:      env.Me.Name,
-		Key:       env.Identity.Public.ServerPublic.String(),
-		ClientKey: env.ClientIdentity.Public().String(),
-		Storer:    env.Me.Storer,
-		Dropbox:   env.Me.Dropbox,
-		Updated:   time.Now().Unix(),
+		Name:    env.Me.Name,
+		Key:     env.Identity.Public.ServerPublic.String(),
+		DialKey: env.DialIdentity.Public().String(),
+		Storer:  env.Me.Storer,
+		Dropbox: env.Me.Dropbox,
+		Updated: time.Now().Unix(),
 	})
 	return d, nil
 }
@@ -710,14 +710,14 @@ func (d *Daemon) serveConn(pc *protocol.Conn, authKey key.NodePublic, authed boo
 		return
 	}
 	peer := m.Hello
-	if d.isBlockedKey(peer.Key) || d.isBlockedKey(peer.ClientKey) {
+	if d.isBlockedKey(peer.Key) || d.isBlockedKey(peer.DialKey) {
 		d.cfg.logf("clowder: refusing connection from blocked cat %s", peer.Name)
 		return
 	}
 	if authed {
-		claimed, err := parseKey(peer.ClientKey)
+		claimed, err := parseKey(peer.DialKey)
 		if err != nil || claimed != authKey {
-			d.cfg.logf("clowder: closing conn from %s: claimed client key %q does not match authenticated %s", peer.Name, peer.ClientKey, authKey)
+			d.cfg.logf("clowder: closing conn from %s: claimed dial key %q does not match authenticated %s", peer.Name, peer.DialKey, authKey)
 			return
 		}
 	}
@@ -1217,14 +1217,14 @@ func (d *Daemon) syncPeers(ctx context.Context) {
 func (d *Daemon) helloMsg() *protocol.Hello {
 	me := d.Me()
 	return &protocol.Hello{
-		Name:      me.Name,
-		Key:       me.Key,
-		ClientKey: me.ClientKey,
-		SignKey:   me.SignKey,
-		Addr:      me.Addr,
-		Storer:    me.Storer,
-		Dropbox:   me.Dropbox,
-		Version:   protocol.HelloVersion,
+		Name:    me.Name,
+		Key:     me.Key,
+		DialKey: me.DialKey,
+		SignKey: me.SignKey,
+		Addr:    me.Addr,
+		Storer:  me.Storer,
+		Dropbox: me.Dropbox,
+		Version: protocol.HelloVersion,
 	}
 }
 
@@ -1302,7 +1302,7 @@ func (d *Daemon) mergeRemote(sync *protocol.RosterSync) {
 		}
 		// Blocked cats stay out; re-pairing is the way back (addPeerCat bypasses
 		// the merge).
-		if d.isBlockedKey(c.Key) || d.isBlockedKey(c.ClientKey) {
+		if d.isBlockedKey(c.Key) || d.isBlockedKey(c.DialKey) {
 			continue
 		}
 		// A sync is not a trust root: an entry for a key we do not hold
@@ -1339,11 +1339,11 @@ func (d *Daemon) mergeRemote(sync *protocol.RosterSync) {
 // connection is transport-authenticated, and later merges verify against it.
 // helloIdentityKnown reports whether the Hello's claimed identity key
 // belongs to the authenticated client: a roster entry under that key
-// whose ClientKey matches. Pre-client-key entries cannot be checked
+// whose DialKey matches. Pre-client-key entries cannot be checked
 // and stay trusted as before.
 func (d *Daemon) helloIdentityKnown(peer *protocol.Hello) bool {
 	c, ok := d.ros.GetByKey(peer.Key)
-	return ok && (c.ClientKey == "" || c.ClientKey == peer.ClientKey)
+	return ok && (c.DialKey == "" || c.DialKey == peer.DialKey)
 }
 
 func (d *Daemon) pinSignKey(peer *protocol.Hello) {
@@ -1366,8 +1366,8 @@ func (d *Daemon) pinSignKey(peer *protocol.Hello) {
 }
 
 func (d *Daemon) allowCat(c roster.Cat) {
-	// Peers dial us with their client key, not their identity key.
-	allow := c.ClientKey
+	// Peers dial us with their dial key, not their identity key.
+	allow := c.DialKey
 	if allow == "" {
 		allow = c.Key
 	}

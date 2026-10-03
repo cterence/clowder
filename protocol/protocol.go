@@ -30,16 +30,16 @@ const (
 )
 
 // Hello is the first message on each connection, sent by both sides.
-// Key is the identity (server) key; ClientKey is the separate keypair used
+// Key is the identity (server) key; DialKey is the separate keypair used
 // for all outbound dials, which peers allowlist.
 // HelloVersion is the wire protocol version. No negotiation: newer peers
 // are logged and still served, so an upgrade never partitions the clowder.
 const HelloVersion = 1
 
 type Hello struct {
-	Name      string `cbor:"n"`
-	Key       string `cbor:"k"`
-	ClientKey string `cbor:"c,omitempty"`
+	Name    string `cbor:"n"`
+	Key     string `cbor:"k"`
+	DialKey string `cbor:"c,omitempty"`
 	// Ed25519 public key (hex) derived from the node key seed; signs the
 	// sender's roster entries and its leave.
 	SignKey string `cbor:"g,omitempty"`
@@ -90,12 +90,12 @@ type Ack struct {
 // PairIntro is exchanged over the pairing channel; Addr is the sender's
 // real address, not the ephemeral pairing one.
 type PairIntro struct {
-	Name      string `cbor:"n"`
-	Addr      string `cbor:"a"`
-	ClientKey string `cbor:"c,omitempty"`
-	SignKey   string `cbor:"g,omitempty"`
-	Storer    bool   `cbor:"s,omitempty"`
-	Dropbox   bool   `cbor:"d,omitempty"`
+	Name    string `cbor:"n"`
+	Addr    string `cbor:"a"`
+	DialKey string `cbor:"c,omitempty"`
+	SignKey string `cbor:"g,omitempty"`
+	Storer  bool   `cbor:"s,omitempty"`
+	Dropbox bool   `cbor:"d,omitempty"`
 	// The joiner's signed roster entry rides the intro, so the inviter
 	// stores it verbatim and a stale tombstone from an old leave cannot
 	// un-pair the fresh re-join (the rejoin refusal needs a signed

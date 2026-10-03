@@ -348,7 +348,7 @@ func (d *Daemon) addPeerCat(p *protocol.PairIntro) error {
 	if err != nil {
 		return err
 	}
-	c.ClientKey = p.ClientKey
+	c.DialKey = p.DialKey
 	c.SignKey = p.SignKey
 	c.Storer = p.Storer
 	c.Dropbox = p.Dropbox
@@ -369,8 +369,8 @@ func (d *Daemon) addPeerCat(p *protocol.PairIntro) error {
 	// Re-pairing is the way back from forget: clear the blocklist entry.
 	d.mu.Lock()
 	delete(d.blocked, c.Key)
-	if c.ClientKey != "" {
-		delete(d.blocked, c.ClientKey)
+	if c.DialKey != "" {
+		delete(d.blocked, c.DialKey)
 	}
 	blockErr := saveBlocked(d.cfg.Dir, d.blocked)
 	d.left = false
@@ -622,15 +622,15 @@ func pairAckOf(pc *protocol.Conn) error {
 
 func pairIntroOf(pc *protocol.Conn, me roster.Cat) (*protocol.PairIntro, error) {
 	if err := pc.WriteMsg(&protocol.Message{Pair: &protocol.PairIntro{
-		Name:      me.Name,
-		Addr:      me.Addr,
-		ClientKey: me.ClientKey,
-		SignKey:   me.SignKey,
-		Storer:    me.Storer,
-		Dropbox:   me.Dropbox,
-		Capacity:  me.Capacity,
-		Updated:   me.Updated,
-		Sig:       me.Sig,
+		Name:     me.Name,
+		Addr:     me.Addr,
+		DialKey:  me.DialKey,
+		SignKey:  me.SignKey,
+		Storer:   me.Storer,
+		Dropbox:  me.Dropbox,
+		Capacity: me.Capacity,
+		Updated:  me.Updated,
+		Sig:      me.Sig,
 	}}); err != nil {
 		return nil, err
 	}

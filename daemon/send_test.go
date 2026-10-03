@@ -214,7 +214,7 @@ func TestReceiveIdleStreamIsCleanedUp(t *testing.T) {
 	t.Cleanup(func() { _ = conn.Close() })
 	pc := protocol.NewConn(conn)
 	if err := pc.WriteMsg(&protocol.Message{Hello: &protocol.Hello{
-		Name: "milo", Key: milo.Me().Key, ClientKey: milo.Me().ClientKey,
+		Name: "milo", Key: milo.Me().Key, DialKey: milo.Me().DialKey,
 	}}); err != nil {
 		t.Fatal(err)
 	}

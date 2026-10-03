@@ -71,8 +71,8 @@ grow the same private helper.
   key riding IN the code, SPAKE2) is the documented fix if a
   non-speakable code is ever acceptable.
 - **Two keypairs per cat**: the identity (server) key in the tailcat
-  address, and a separate client key (`clientkey.json`) for ALL outbound
-  dials, which peers allowlist (roster `ClientKey`, authenticated via
+  address, and a separate dial key (`clientkey.json`) for ALL outbound
+  dials, which peers allowlist (roster `DialKey`, authenticated via
   `Server.PeerKey`). Never share one key between the server and client
   engines: same static key + different per-side PSKs cross-deliver
   handshakes and wedge unrecoverably.
@@ -138,7 +138,7 @@ One line each; the pinning tests carry the details.
 - **Security hardening pass** (#6, #9, #13, #14): a sync is not a
   trust root — unsigned entries for unknown keys no longer propagate
   and a tailcat address's Key must derive from the Addr (TestSyncRejects
-  UnknownUnsignedEntry); an authenticated client key can only mark its
+  UnknownUnsignedEntry); an authenticated dial key can only mark its
   own roster identity seen and the liveness map is bounded
   (TestServeConnMarksOnlyKnownIdentities, TestMarkSeenBounded); the
   pairing code is never logged whole (TestInviteCodeStaysOutOfLogs);

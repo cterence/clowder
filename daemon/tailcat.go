@@ -12,14 +12,14 @@ import (
 )
 
 // TailcatTransport is the production Transport: a tailcat Server under the
-// identity key, dials via tailcat Clients under a separate client key.
+// identity key, dials via tailcat Clients under a separate dial key.
 // The keys must differ: two engines sharing one static key (with different
 // per-side PSKs) cross-deliver handshakes and wedge.
 type TailcatTransport struct {
 	Port uint16
 	Key  *tailcat.PrivateKey
 	// Outbound-dial identity; peers allowlist its public form.
-	ClientKey key.NodePrivate
+	DialKey key.NodePrivate
 	// Where the server and dialed clients fetch the DERP map; empty = default.
 	DERPMapURL string
 	Logf       func(format string, args ...any)
@@ -41,7 +41,7 @@ const (
 )
 
 func NewTailcatTransport(k *tailcat.PrivateKey, clientKey key.NodePrivate, port uint16, logf func(format string, args ...any)) *TailcatTransport {
-	return &TailcatTransport{Port: port, Key: k, ClientKey: clientKey, Logf: logf}
+	return &TailcatTransport{Port: port, Key: k, DialKey: clientKey, Logf: logf}
 }
 
 // Listen starts the tailcat server. Callers learn their address via
@@ -112,7 +112,7 @@ func (t *TailcatTransport) clientFor(addr string) *tailcat.Client {
 	if !ok {
 		c = &tailcat.Client{
 			Server:     tailcat.Addr(addr),
-			Key:        t.ClientKey,
+			Key:        t.DialKey,
 			DERPMapURL: t.DERPMapURL,
 			Logf:       t.Logf,
 		}

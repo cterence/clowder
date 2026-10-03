@@ -304,7 +304,7 @@ func cmdDaemon(args []string) error {
 	}
 	logf := func(format string, args ...any) { log.Printf(format, args...) }
 	cfg := daemon.Config{Dir: dir, Logf: logf, HealthAddr: health, DERPMapURL: derpMap, Pprof: pprofOn}
-	tr := daemon.NewTailcatTransport(env.Identity, env.ClientIdentity, uint16(*daemonPort), logf)
+	tr := daemon.NewTailcatTransport(env.Identity, env.DialIdentity, uint16(*daemonPort), logf)
 	tr.DERPMapURL = derpMap
 	d, err := daemon.New(cfg, tr)
 	if err != nil {
