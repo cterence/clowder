@@ -209,18 +209,12 @@ func TestCancelAbortsInFlightStream(t *testing.T) {
 
 	waitFor(t, func() bool { return len(sender.prog.snapshot()) == 0 },
 		"the cancelled attempt to end promptly")
-	// The receiver must have nothing: no finished file, no .tmp.
-	des, err := os.ReadDir(receiver.InboxDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(des) != 0 {
-		var names []string
-		for _, de := range des {
-			names = append(names, de.Name())
-		}
-		t.Fatalf("receiver kept files after the cancel: %v", names)
-	}
+	// The receiver wipes its partial file on its own goroutine once the
+	// conn dies; the sender's progress map draining says nothing about it.
+	waitFor(t, func() bool {
+		des, err := os.ReadDir(receiver.InboxDir())
+		return err == nil && len(des) == 0
+	}, "the cancelled stream's partial file to be wiped")
 }
 
 // A receive stream that goes silent mid-flight (sender cancelled,
