@@ -281,7 +281,7 @@ func (d *Daemon) Forget(who string) (roster.Cat, bool) {
 	}
 	for _, e := range d.ob.All() {
 		if e.TargetKey == c.Key {
-			if err := d.ob.Delete(e.ID); err != nil {
+			if err := d.deleteEntry(e.ID); err != nil {
 				d.cfg.logf("clowder: dropping outbox entry %s: %v", e.ID, err)
 			}
 		}
@@ -343,12 +343,31 @@ func (d *Daemon) Cancel(id string) (int, error) {
 	n := 0
 	for _, x := range ids {
 		d.deliveryClaims.cancel(x)
-		if err := d.ob.Delete(x); err != nil {
+		if err := d.deleteEntry(x); err != nil {
 			return n, err
 		}
 		n++
 	}
 	return n, nil
+}
+
+// deleteEntry drops an outbox entry and sweeps the staged clipboard
+// copy it owned (under <configdir>/staging): retries re-read the
+// source, so the copy must not outlive the entry — and nothing else
+// can clean it up. Sources elsewhere are the user's files, untouched.
+func (d *Daemon) deleteEntry(id string) error {
+	for _, e := range d.ob.All() {
+		if e.ID != id {
+			continue
+		}
+		if rel, err := filepath.Rel(filepath.Join(d.cfg.Dir, "staging"), e.SourcePath); err == nil && !strings.HasPrefix(rel, "..") {
+			if err := os.Remove(e.SourcePath); err != nil && !os.IsNotExist(err) {
+				d.cfg.logf("clowder: removing staged source %s: %v", e.SourcePath, err)
+			}
+		}
+		break
+	}
+	return d.ob.Delete(id)
 }
 
 // livenessMax bounds the liveness map: honest rosters stay far below
@@ -1083,7 +1102,7 @@ func (d *Daemon) deliver(e Entry) {
 	if cat, ok := d.ros.GetByKey(e.TargetKey); ok && !e.ViaStorer {
 		if err := d.deliverStream(ctx, cat, e, cat.Key, cat.Name, protocol.AckDelivered); err == nil {
 			d.settle(e.ID, "delivered")
-			_ = d.ob.Delete(e.ID)
+			_ = d.deleteEntry(e.ID)
 			return
 		} else {
 			d.cfg.logf("clowder: direct to %s failed: %v", cat.Name, err)

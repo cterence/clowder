@@ -606,17 +606,17 @@ func cmdSend(args []string) error {
 		}
 	}
 	if refused, err := queueAndWatch(target, path, async, *sendStorer); err != nil {
-		// The outbox re-reads its source on retries, so the staged copy
-		// stays for a transfer that may still be live (an errored
-		// watch or a lost IPC reply); a refusal queued nothing.
+		// A refusal queued nothing, so a staged copy is garbage. Any
+		// other error may be a live transfer: the daemon sweeps the
+		// copy when the entry dies (delivered, receipted, cancelled).
 		if staged && refused {
 			_ = os.Remove(path)
 		}
 		return err
 	}
-	if staged {
-		_ = os.Remove(path)
-	}
+	// A settled watch is not a dead entry: a storer-held send lives
+	// until the recipient's signed receipt, and retries re-read the
+	// staged source until then.
 	return nil
 }
 
@@ -679,8 +679,9 @@ func readClipboard() ([]byte, error) {
 // stageClipboard parks the clipboard text in the config dir: outbox
 // retries re-read the source path, so it must outlive this process.
 // A trailing newline is added when missing, so the file reads cleanly
-// in terminals and editors. ponytail: --async and errored watches
-// leave the file behind; sweep <configdir>/staging if that matters.
+// in terminals and editors. The daemon sweeps the copy when its
+// outbox entry dies; only a send that never queued (a lost IPC reply)
+// can orphan one.
 func stageClipboard(content []byte) (string, error) {
 	if !bytes.HasSuffix(content, []byte("\n")) {
 		content = append(content, '\n')

@@ -87,7 +87,7 @@ func (d *Daemon) handleReceipt(pc *protocol.Conn, r *protocol.Receipt) bool {
 	}
 	for _, e := range d.ob.All() {
 		if e.ID == r.ID && e.TargetKey == r.TargetKey {
-			if err := d.ob.Delete(r.ID); err != nil {
+			if err := d.deleteEntry(r.ID); err != nil {
 				d.cfg.logf("clowder: deleting receipted entry %s: %v", r.ID, err)
 			}
 			d.settle(r.ID, "delivered")

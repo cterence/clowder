@@ -241,9 +241,13 @@ One line each; the pinning tests carry the details.
 - **Clipboard send**: `clow send --clipboard <CAT>` and the Android
   app's send-clipboard button stage the clipboard as a file
   (`<configdir>/staging` on the CLI, cacheDir on Android — outbox
-  retries re-read the source, so the copy must outlive the send)
-  and the CLI removes it once the send settles; `--async` and
-  refused-IPC paths can leave it behind.
+  retries re-read the source, so the copy must outlive the send).
+  The daemon owns the copy: every outbox-entry death (direct
+  delivery, the recipient's signed receipt, cancel, forget, leave)
+  sweeps its staged source, so a storer-held send keeps it until the
+  receipt arrives and `--async` cannot orphan it; only a send that
+  never queued (a lost IPC reply) can leave one behind
+  (TestStagedSourceSurvivesStorerHold, TestStagedSourceDiesWithOutbox).
 - **Wire-adjacent**: Hello wire-version field (logged, never refused),
   fuzz targets (ReadMsg, parsePairCode, inboxPath), disco-ping dial
   probe (meow Ping is one-shot per client), allocation-bounded

@@ -181,7 +181,7 @@ func (d *Daemon) applyTombstone(t roster.Tombstone) bool {
 		}
 		for _, e := range d.ob.All() {
 			if e.TargetKey == t.Key {
-				if err := d.ob.Delete(e.ID); err != nil {
+				if err := d.deleteEntry(e.ID); err != nil {
 					d.cfg.logf("clowder: dropping outbox entry %s: %v", e.ID, err)
 				}
 			}
