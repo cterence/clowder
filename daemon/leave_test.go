@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"net"
 	"strings"
 	"sync"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/cterence/clowder/protocol"
+	"github.com/cterence/clowder/roster"
 	"github.com/cterence/clowder/store"
 )
 
@@ -66,14 +68,14 @@ func TestLeaveDropsLeaverAndRebroadcasts(t *testing.T) {
 		return b.isBlockedKey(aKey)
 	}, "b to drop the leaver's held file, pending send and allow")
 
-	// The leaver's own roster is wiped and stays wiped while b keeps
-	// syncing to it on every poll tick.
+	// The leaver's own roster is wiped, and a post-leave merge cannot
+	// repopulate it: mergeRemote refuses while left.
 	if len(a.Roster().All()) != 0 {
 		t.Fatal("leaver kept its roster")
 	}
-	time.Sleep(500 * time.Millisecond)
+	a.mergeRemote(&protocol.RosterSync{Cats: []roster.Cat{b.Me()}})
 	if len(a.Roster().All()) != 0 {
-		t.Fatal("b's syncs repopulated the leaver's roster")
+		t.Fatal("a roster merge repopulated the leaver's roster")
 	}
 }
 
@@ -108,7 +110,10 @@ func TestLeaveReachesOfflinePeerViaSync(t *testing.T) {
 	woken := startDaemonAt(t, cDir)
 	waitFor(t, func() bool { _, ok := woken.Roster().GetByKey(aKey); return !ok },
 		"woken c to drop the leaver")
-	time.Sleep(300 * time.Millisecond)
+	// Drive a full sync round both ways — syncPeers returning means
+	// the other side merged the push — then check for resurrection.
+	b.syncPeers(context.Background())
+	woken.syncPeers(context.Background())
 	if _, ok := woken.Roster().GetByKey(aKey); ok {
 		t.Fatal("leaver resurrected on the woken cat")
 	}
