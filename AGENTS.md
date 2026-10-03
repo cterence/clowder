@@ -110,9 +110,12 @@ not already captured there.
 
 Tracked in GitHub issues:
 
-- Security and DoS findings from the 2026-09 security review: #7
-  (sender-auth half open), #8 (receipt-relay half open), #11, #12, #15,
-  #16 (fixed by the hardening pass: #6, #9, #10, #13, #14)
+- Security and DoS findings from the 2026-09 security review — the
+  wire-auth bundle landed (signed offers #7, signed receipts #8, the
+  HKDF sign-key derivation and the provisional-pin binding #12, the
+  storer per-sender quota #15; one mesh-wide re-pair, since all are
+  wire-visible). Still open: #16 (sync scaling), #11 closed as
+  documented accepted risks (rotation runbook in the README).
 - Android app dogfooding (pair, send/receive, boot-receive,
   notifications, storer UI): #18
 - Multiple clowders (named clowders, per-clowder rosters; sync
@@ -121,6 +124,23 @@ Tracked in GitHub issues:
 ## Shipped
 
 One line each; the pinning tests carry the details.
+
+- **Wire-auth bundle** (#7, #8, #12, #15; one mesh-wide re-pair):
+  offers are signed by the sender's sign key and verified by the
+  final recipient — relayed through storers too, the sig rides the
+  spool (TestOfferSignatureRequired); storers refuse unsigned
+  deposits and give each sender at most a quarter of the spool,
+  derived from the spool scan so a restart cannot reset it
+  (TestStorerPerSenderQuota); the sign key is HKDF(node seed,
+  clowder/sign/v1), not the raw seed reused across WireGuard and
+  Ed25519 (TestSignKeyDomainSeparated); a sync-carried sign-key pin is
+  provisional — the owner's authenticated Hello re-pins and takes
+  its live entry (TestSyncPinIsProvisional); and a storer-held send
+  leaves the outbox only on the recipient's signed receipt pushed on
+  its sync round — the hold probe no longer deletes, it only
+  re-queues (TestSignedReceiptClearsOutbox). `clow send --storer`
+  skips the direct attempt and its dial timeout entirely
+  (TestSendViaStorerSkipsDirect).
 
 - **DoS and availability hardening** (#10, parts of #7 and #8): one
   authenticated peer may hold at most 8 concurrent serves
@@ -256,7 +276,8 @@ One line each; the pinning tests carry the details.
   run is observed.
 - Storer spools have TTL but no size quota.
 - Rosters created before the two-keypair fix must be re-paired
-  (`clow forget` + invite/join).
+  (`clow forget` + invite/join); the wire-auth bundle (signed offers,
+  receipts, HKDF sign keys) forces the same one-time re-pair.
 - The simplification pass removed resume, receipts, rotate,
   distrust/trust and /stats; all were wire-visible, so a pre-cut mesh
   re-pairs (`clow forget` + invite/join) to talk to a cut daemon.
@@ -265,9 +286,10 @@ One line each; the pinning tests carry the details.
   Hello — so a cat upgrading mid-attack can be pinned wrong once; and a
   tombstone for a key a cat never knew is unverifiable and dropped, so
   a brand-new member can be fed a stale pre-leave entry by a stale peer.
-- Unsigned sync entries for unknown keys are refused, but a SIGNED
-  entry still propagates for unknown keys: a paired cat can pre-register
-  a victim's key (with the victim's real address and a newer timestamp)
-  under its own sign key, and the victim's genuine entry is then refused
-  until they re-pair. Closing that needs sign keys bound to node keys
-  on the wire.
+- Unsigned sync entries for unknown keys are refused, and a SIGNED
+  entry still propagates for unknown keys — but its sign-key pin is
+  provisional: the key's owner replaces it from its authenticated
+  Hello, taking its live roster entry verbatim. The window is only a
+  victim that never contacts you (offline forever, or the forged
+  entry also mangled the dial key so its dials fail); re-pairing is
+  the way back.

@@ -71,9 +71,12 @@ path if lost — except the identity.
                                                         run the mesh daemon
     clow invite                                         8-word pairing code (5 min, one join)
     clow join <CODE>                                    pair with the inviter
-    clow send [--async] [--clipboard] <CAT> [<FILE>]     send a file, or the
+    clow send [--async] [--clipboard] [--storer] <CAT> [<FILE>]
+                                                        send a file, or the
                                                         clipboard with --clipboard;
-                                                        watches progress unless --async
+                                                        watches progress unless --async;
+                                                        --storer skips the direct
+                                                        attempt and its dial timeout
     clow inbox [--set DIR]                              list received files / change inbox
     clow storer [--max SIZE] on|off|dropbox                           volunteer to hold files for others
                                                         (dropbox: third parties only)
@@ -261,6 +264,26 @@ size, plaintext digest, and the sender's and target's declared names.
 Choosing trustworthy storers (or running your own with `clow storer`)
 is the mitigation; sealing the offer metadata itself is tracked in
 AGENTS.md.
+
+## Rotating keys
+
+All three keypairs (identity, dial, sign) live in the config dir and
+none rotates in place — rotation is re-incarnation with a re-pair:
+
+    clow leave             # while the daemon runs: signed goodbye,
+                           # every cat drops the old keys
+    clow reset --yes       # daemon stopped: wipes the config dir
+    clow init <NAME>       # fresh identity; the old name or a new one
+                           # (a same-name re-pair outranks the leave
+                           # tombstone)
+    clow daemon            # then invite/join with any one member —
+                           # roster sync carries the new you to the rest
+
+Two accepted risks, by decision: the identity files rest unencrypted
+on disk (the OS's disk encryption owns that layer; a passphrase would
+only move the secret to a prompt), and `clow forget`'s blocklist stays
+local — a propagated one would let a paired cat poison other cats'
+views, which signatures cannot arbitrate against their own signer.
 
 ## Design
 
