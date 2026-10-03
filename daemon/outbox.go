@@ -30,6 +30,9 @@ type Entry struct {
 	// HeldBy names the storer that acked a deposit; the entry leaves the
 	// retry cycle until a hold probe confirms the storer still has it.
 	HeldBy string `json:"held_by,omitempty"`
+	// ViaStorer skips the direct attempt on every retry (--storer):
+	// straight to a storer, no dial timeout.
+	ViaStorer bool `json:"via_storer,omitempty"`
 }
 
 // outbox persists entries as <dir>/<id>.json.

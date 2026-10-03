@@ -31,6 +31,35 @@ func TestSendRefusesDuplicateName(t *testing.T) {
 	}
 }
 
+// TestSendViaStorerSkipsDirect pins --storer: the direct attempt (and
+// its dial timeout) is skipped entirely — even an online target gets
+// the file through a storer, never straight from the sender. The
+// storer's spooled counter is the witness: a direct delivery would
+// land on niko without ever touching the storer.
+func TestSendViaStorerSkipsDirect(t *testing.T) {
+	milo := startDaemon(t, "milo", func(c *Config) { c.PollEvery = time.Hour })
+	storer := startDaemon(t, "storer")
+	if err := storer.SetStorer(true, 1<<30); err != nil {
+		t.Fatal(err)
+	}
+	niko := startDaemon(t, "niko")
+	trust(t, milo, storer)
+	trust(t, storer, milo)
+	trust(t, milo, niko)
+	trust(t, niko, milo)
+
+	if _, err := milo.SendVia("niko", writeSource(t, "nap for an online cat")); err != nil {
+		t.Fatalf("SendVia: %v", err)
+	}
+	waitFor(t, func() bool {
+		entries, err := os.ReadDir(niko.InboxDir())
+		return err == nil && len(entries) == 1
+	}, "niko to receive the file")
+	if got := storer.stats.snapshot().Spooled; got != 1 {
+		t.Fatalf("storer spooled %d files, want 1 (via-storer must route through the storer)", got)
+	}
+}
+
 // TestJoinRefusesTakenName pins the joiner-side name check: a joiner
 // whose roster already holds the inviter's name under another key
 // refuses before writing its ack — the inviter commits on that ack, so

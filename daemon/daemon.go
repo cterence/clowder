@@ -612,6 +612,16 @@ func (d *Daemon) Run(ctx context.Context) error {
 // Queues a file for background delivery: direct to the target first, then
 // via any reachable storer, retried on the ticker until one succeeds.
 func (d *Daemon) Send(targetName, path string) (string, error) {
+	return d.queueSend(targetName, path, false)
+}
+
+// SendVia queues a file for delivery straight through a storer, skipping
+// the direct attempt (and its dial timeout) entirely: `clow send --storer`.
+func (d *Daemon) SendVia(targetName, path string) (string, error) {
+	return d.queueSend(targetName, path, true)
+}
+
+func (d *Daemon) queueSend(targetName, path string, viaStorer bool) (string, error) {
 	if d.Me().Dropbox {
 		return "", errors.New("dropbox cats cannot send files")
 	}
@@ -639,6 +649,7 @@ func (d *Daemon) Send(targetName, path string) (string, error) {
 		SourcePath: path,
 		FileName:   filepath.Base(path),
 		AddedAt:    time.Now().Unix(),
+		ViaStorer:  viaStorer,
 	}
 	if err := d.ob.Put(e); err != nil {
 		return "", err
@@ -1028,7 +1039,9 @@ func (d *Daemon) deliver(e Entry) {
 		d.cfg.logf("clowder: %s to %s skipped: target is on the blocklist", e.FileName, e.TargetName)
 		return
 	}
-	if cat, ok := d.ros.GetByKey(e.TargetKey); ok {
+	// --storer skips the direct attempt: no dial, no timeout — the file
+	// goes straight to a storer for the target to collect.
+	if cat, ok := d.ros.GetByKey(e.TargetKey); ok && !e.ViaStorer {
 		if err := d.deliverStream(ctx, cat, e, cat.Key, cat.Name, protocol.AckDelivered); err == nil {
 			d.settle(e.ID, "delivered")
 			_ = d.ob.Delete(e.ID)

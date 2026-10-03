@@ -133,7 +133,7 @@ var commandDocs = []commandDoc{
 		"clow join <CODE>", nil, []string{hintPair, hintDaemon}},
 	{"send", "transferring files",
 		"send a file or the clipboard, watching progress until it is delivered or a storer holds it",
-		"clow send [--async] [--clipboard] <CAT> [<FILE>]", sendFS, []string{hintDaemon}},
+		"clow send [--async] [--clipboard] [--storer] <CAT> [<FILE>]", sendFS, []string{hintDaemon}},
 	{"inbox", "transferring files",
 		"list received files, or move the inbox",
 		"clow inbox [--set DIR]", inboxFS, []string{hintInbox}},
@@ -511,6 +511,7 @@ func storerTag(storer, dropbox bool) string {
 var sendFS = flag.NewFlagSet("send", flag.ContinueOnError)
 var sendAsync = sendFS.Bool("async", false, "queue the send and return (default: watch until delivered or a storer holds it)")
 var sendClipboard = sendFS.Bool("clipboard", false, "send the system clipboard as a text file (takes only the target cat)")
+var sendStorer = sendFS.Bool("storer", false, "skip the direct attempt and its dial timeout; hand the file straight to a storer")
 
 func cmdSend(args []string) error {
 	if err := sendFS.Parse(args); err != nil {
@@ -540,7 +541,7 @@ func cmdSend(args []string) error {
 			return err
 		}
 	}
-	if refused, err := queueAndWatch(target, path, async); err != nil {
+	if refused, err := queueAndWatch(target, path, async, *sendStorer); err != nil {
 		// The outbox re-reads its source on retries, so the staged copy
 		// stays for a transfer that may still be live (an errored
 		// watch or a lost IPC reply); a refusal queued nothing.
@@ -557,8 +558,8 @@ func cmdSend(args []string) error {
 
 // queueAndWatch queues the send and follows it unless async. refused
 // reports the daemon's explicit no — nothing was queued.
-func queueAndWatch(target, path string, async bool) (bool, error) {
-	resp, err := call(daemon.Request{Op: "send", Target: target, Path: path})
+func queueAndWatch(target, path string, async, viaStorer bool) (bool, error) {
+	resp, err := call(daemon.Request{Op: "send", Target: target, Path: path, ViaStorer: viaStorer})
 	if err != nil {
 		return false, err
 	}

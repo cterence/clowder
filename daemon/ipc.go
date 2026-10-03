@@ -15,13 +15,14 @@ import (
 // Request is one command from the clow CLI to the daemon. Ops: send,
 // cancel, cats, storer, status, setinbox, invite, join, ping.
 type Request struct {
-	Op      string `json:"op"`
-	Target  string `json:"target,omitempty"`
-	Path    string `json:"path,omitempty"`
-	On      bool   `json:"on,omitempty"`
-	Dropbox bool   `json:"dropbox,omitempty"`
-	Max     string `json:"max,omitempty"`   // spool capacity for the storer role (e.g. "10G")
-	Words   string `json:"words,omitempty"` // pairing code for join
+	Op        string `json:"op"`
+	Target    string `json:"target,omitempty"`
+	Path      string `json:"path,omitempty"`
+	On        bool   `json:"on,omitempty"`
+	Dropbox   bool   `json:"dropbox,omitempty"`
+	Max       string `json:"max,omitempty"`        // spool capacity for the storer role (e.g. "10G")
+	Words     string `json:"words,omitempty"`      // pairing code for join
+	ViaStorer bool   `json:"via_storer,omitempty"` // send straight through a storer (--storer)
 }
 
 // Response is the daemon's reply.
@@ -100,7 +101,13 @@ func (d *Daemon) handleIPC(req Request) Response {
 
 	switch req.Op {
 	case "send":
-		id, err := d.Send(req.Target, req.Path)
+		var id string
+		var err error
+		if req.ViaStorer {
+			id, err = d.SendVia(req.Target, req.Path)
+		} else {
+			id, err = d.Send(req.Target, req.Path)
+		}
 		if err != nil {
 			return fail(err)
 		}
