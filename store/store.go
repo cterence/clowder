@@ -34,6 +34,9 @@ type Meta struct {
 	FromKey    string `json:"from_key,omitempty"`
 	TargetKey  string `json:"target_key"`  // recipient node public key, string form
 	TargetName string `json:"target_name"` // recipient's declared name
+	// QuotaKey is the transport-authenticated identity the storer's
+	// per-sender quota counts; pre-#26 entries fall back to FromKey.
+	QuotaKey string `json:"quota_key,omitempty"`
 	// Sig is the sender's offer signature, replayed on the relayed
 	// offer so the final recipient can verify the true sender (#7).
 	Sig      []byte `json:"sig,omitempty"`
@@ -121,14 +124,19 @@ func (s *Spool) Usage() int64 {
 }
 
 // UsageBy returns the sealed bytes held from one sender (the storer's
-// per-sender quota check); an empty fromKey attributes nothing.
-func (s *Spool) UsageBy(fromKey string) int64 {
-	if fromKey == "" {
+// per-sender quota check); an empty key attributes nothing. Pre-#26
+// entries without a QuotaKey count under FromKey.
+func (s *Spool) UsageBy(sender string) int64 {
+	if sender == "" {
 		return 0
 	}
 	var total int64
 	for _, m := range s.all() {
-		if m.FromKey == fromKey {
+		k := m.QuotaKey
+		if k == "" {
+			k = m.FromKey
+		}
+		if k == sender {
 			total += m.Size
 		}
 	}

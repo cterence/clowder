@@ -288,3 +288,23 @@ func TestSyncHash(t *testing.T) {
 		t.Fatal("a tombstone did not rewrite the hash")
 	}
 }
+
+// TestSyncHashCrossPeerEqual pins the #28 fix: the digest must not depend
+// on which cat computes it. The local entry folds into the key-sorted
+// set, so two converged peers hash identical state identically — the
+// comparison rosterReplyFor runs against a *peer's* hash.
+func TestSyncHashCrossPeerEqual(t *testing.T) {
+	milo := cat(t, "milo")
+	fluff := cat(t, "fluff")
+	rm := New()
+	if err := rm.Add(fluff); err != nil { // milo knows fluff, never itself
+		t.Fatal(err)
+	}
+	rf := New()
+	if err := rf.Add(milo); err != nil { // fluff knows milo, never itself
+		t.Fatal(err)
+	}
+	if rm.SyncHash(milo) != rf.SyncHash(fluff) {
+		t.Fatal("converged peers hash the same state differently")
+	}
+}
