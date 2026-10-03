@@ -476,3 +476,87 @@ func TestNestedOfferNameSanitized(t *testing.T) {
 		t.Fatal("the offer escaped the inbox")
 	}
 }
+
+// Outbox entries expire: a send to a cat that never comes online must
+// not retry forever — after outboxTTL it settles as expired and dies,
+// staged sources swept with it.
+func TestOutboxExpires(t *testing.T) {
+	milo := startDaemon(t, "milo", func(c *Config) {
+		c.RetryEvery = time.Hour
+		c.PollEvery = time.Hour
+	})
+	niko, _ := offlineCat(t)
+	addCat(t, milo, niko)
+	src := writeSource(t, "undeliverable nap")
+	id, err := milo.Send("niko", src)
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	waitFor(t, func() bool { return len(milo.ob.All()) == 1 }, "the send to queue")
+
+	// Aged past the TTL: the retry cycle drops it and records why.
+	e := milo.ob.All()[0]
+	e.AddedAt = time.Now().Add(-outboxTTL - time.Minute).Unix()
+	if err := milo.ob.Put(e); err != nil {
+		t.Fatal(err)
+	}
+	milo.retryOutbox()
+	if got := len(milo.ob.All()); got != 0 {
+		t.Fatalf("expired entry survived: %d left", got)
+	}
+	if got := milo.settledSnapshot()[id]; got != "expired" {
+		t.Fatalf("outcome = %q, want expired", got)
+	}
+
+	// A fresh entry survives the same pass.
+	if _, err := milo.Send("niko", src); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	milo.retryOutbox()
+	waitFor(t, func() bool { return len(milo.ob.All()) == 1 }, "the fresh send to stay queued")
+}
+
+// A pending send records its last refusal, so `clow status` can say
+// why it is still queued instead of just "old".
+func TestOutboxRecordsLastRefusal(t *testing.T) {
+	milo := startDaemon(t, "milo", func(c *Config) {
+		c.RetryEvery = time.Hour
+		c.PollEvery = time.Hour
+	})
+	niko, _ := offlineCat(t)
+	addCat(t, milo, niko)
+	if _, err := milo.Send("niko", writeSource(t, "refused nap")); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	waitFor(t, func() bool {
+		es := milo.ob.All()
+		return len(es) == 1 && es[0].LastErr != "" && es[0].LastTried > 0
+	}, "the attempt cycle to record its refusal")
+}
+
+// Send resolves its target by name or full key: a key-targeted send to
+// a duplicate-named cat is unambiguous and must work; the name stays
+// refused (--all targets keys for exactly this reason).
+func TestSendByKey(t *testing.T) {
+	milo := startDaemon(t, "milo")
+	one := blockedCat(t, "twins", time.Now().Unix())
+	two := blockedCat(t, "twins", time.Now().Unix())
+	addCat(t, milo, one)
+	addCat(t, milo, two)
+	src := writeSource(t, "twin nap")
+
+	if _, err := milo.Send("twins", src); err == nil {
+		t.Fatal("duplicate name accepted as a send target")
+	}
+	id, err := milo.Send(one.Key, src)
+	if err != nil {
+		t.Fatalf("send by key: %v", err)
+	}
+	e := milo.ob.All()
+	if len(e) != 1 || e[0].ID != id || e[0].TargetKey != one.Key {
+		t.Fatalf("send by key queued the wrong entry: %+v", e)
+	}
+	if _, err := milo.Send("nodekey:deadbeef", src); err == nil {
+		t.Fatal("unknown key accepted as a send target")
+	}
+}

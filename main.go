@@ -577,20 +577,50 @@ var sendFS = flag.NewFlagSet("send", flag.ContinueOnError)
 var sendAsync = sendFS.Bool("async", false, "queue the send and return (default: watch until delivered or a storer holds it)")
 var sendClipboard = sendFS.Bool("clipboard", false, "send the system clipboard as a text file (takes only the target cat)")
 var sendStorer = sendFS.Bool("storer", false, "skip the direct attempt and its dial timeout; hand the file straight to a storer")
+var sendAll = sendFS.Bool("all", false, "send to every cat in the clowder, targeted by key so duplicate names cannot misroute")
 
 func cmdSend(args []string) error {
 	// Package-level flags persist across in-process run() calls
 	// (tests); a fresh CLI process parses once. Reset to the defaults
 	// so each invocation starts from the same state.
-	*sendAsync, *sendClipboard, *sendStorer = false, false, false
+	*sendAsync, *sendClipboard, *sendStorer, *sendAll = false, false, false, false
 	if err := sendFS.Parse(args); err != nil {
 		return err
 	}
-	async, clip := *sendAsync, *sendClipboard
-	if (clip && sendFS.NArg() != 1) || (!clip && sendFS.NArg() < 2) {
+	async, clip, all := *sendAsync, *sendClipboard, *sendAll
+	switch {
+	case clip && all:
+		return fmt.Errorf("--all cannot be combined with --clipboard: one staged copy cannot outlive its first outbox entry")
+	case clip && sendFS.NArg() != 1,
+		!clip && !all && sendFS.NArg() < 2,
+		!clip && all && sendFS.NArg() < 1:
 		return fmt.Errorf("usage: %s", doc("send").usage)
 	}
-	target := sendFS.Arg(0)
+	// --all targets every roster cat by key; otherwise the one named
+	// target rides the request as-is (name or key, the daemon resolves).
+	type sendTarget struct{ key, name string }
+	var targets []sendTarget
+	if all {
+		resp, err := call(daemon.Request{Op: "cats"})
+		if err != nil {
+			return err
+		}
+		if !resp.OK {
+			return fmt.Errorf("%s", resp.Error)
+		}
+		if len(resp.Cats) == 0 {
+			return fmt.Errorf("no cats in the clowder yet (pair with clow invite)")
+		}
+		for _, c := range resp.Cats {
+			targets = append(targets, sendTarget{key: c.Key, name: c.Name})
+		}
+	} else {
+		targets = []sendTarget{{key: sendFS.Arg(0), name: sendFS.Arg(0)}}
+	}
+	fileArgs := sendFS.Args()[1:]
+	if all {
+		fileArgs = sendFS.Args()
+	}
 	if clip {
 		content, err := readClipboard()
 		if err != nil {
@@ -600,7 +630,7 @@ func cmdSend(args []string) error {
 		if err != nil {
 			return err
 		}
-		if refused, err := queueAndWatch(target, path, async, *sendStorer); err != nil {
+		if refused, err := queueAndWatch(targets[0].key, path, async, *sendStorer); err != nil {
 			// A refusal queued nothing, so a staged copy is garbage. Any
 			// other error may be a live transfer: the daemon sweeps the
 			// copy when the entry dies (delivered, receipted, cancelled).
@@ -614,7 +644,7 @@ func cmdSend(args []string) error {
 		// staged source until then.
 		return nil
 	}
-	files, err := expandSendPaths(sendFS.Args()[1:])
+	files, err := expandSendPaths(fileArgs)
 	if err != nil {
 		return err
 	}
@@ -623,24 +653,26 @@ func cmdSend(args []string) error {
 	}
 	var refs []watchRef
 	for _, f := range files {
-		resp, err := call(daemon.Request{
-			Op: "send", Target: target, Path: f.path, Name: f.name, ViaStorer: *sendStorer,
-		})
-		if err != nil {
-			return err
-		}
-		if !resp.OK {
-			return fmt.Errorf("%s: %s", f.name, resp.Error)
-		}
-		fmt.Println(resp.Message)
-		if !async && resp.ID != "" {
-			refs = append(refs, watchRef{id: resp.ID, file: f.name})
+		for _, tgt := range targets {
+			resp, err := call(daemon.Request{
+				Op: "send", Target: tgt.key, Path: f.path, Name: f.name, ViaStorer: *sendStorer,
+			})
+			if err != nil {
+				return err
+			}
+			if !resp.OK {
+				return fmt.Errorf("%s: %s", f.name, resp.Error)
+			}
+			fmt.Println(resp.Message)
+			if !async && resp.ID != "" {
+				refs = append(refs, watchRef{id: resp.ID, file: f.name, target: tgt.name})
+			}
 		}
 	}
 	if len(refs) == 0 {
 		return nil
 	}
-	return watchSends(refs, target)
+	return watchSends(refs)
 }
 
 // sendFile is one file to queue: its source path and its wire name —
@@ -786,13 +818,14 @@ func stageClipboard(content []byte) (string, error) {
 
 // watchRef is one queued transfer the CLI follows.
 type watchRef struct {
-	id   string
-	file string
+	id     string
+	file   string
+	target string
 }
 
 // watchSend follows a single queued transfer (the clipboard send).
 func watchSend(id, file, target string) error {
-	return watchSends([]watchRef{{id: id, file: file}}, target)
+	return watchSends([]watchRef{{id: id, file: file, target: target}})
 }
 
 // watchSends follows the queued transfers until each settles: delivered
@@ -800,7 +833,7 @@ func watchSend(id, file, target string) error {
 // itself leaves only on the target's signed receipt). Ctrl-C cancels
 // every send still pending — the entries are dropped and any in-flight
 // attempt is aborted.
-func watchSends(refs []watchRef, target string) error {
+func watchSends(refs []watchRef) error {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)
 	defer signal.Stop(sig)
@@ -838,7 +871,7 @@ func watchSends(refs []watchRef, target string) error {
 			}
 			if outcome, settled := resp.Settled[r.id]; settled {
 				done[i] = true
-				fmt.Printf("\r%-72s\n", settleLine(outcome, r.file, target))
+				fmt.Printf("\r%-72s\n", settleLine(outcome, r.file, r.target))
 				continue
 			}
 			queued := false
@@ -851,7 +884,7 @@ func watchSends(refs []watchRef, target string) error {
 			if !queued {
 				// Daemon restart pruned the outcome history.
 				done[i] = true
-				fmt.Printf("\r%-72s\n", fmt.Sprintf("sent %s to %s (delivered, or held by a storer until it is online)", r.file, target))
+				fmt.Printf("\r%-72s\n", fmt.Sprintf("sent %s to %s (delivered, or held by a storer until it is online)", r.file, r.target))
 				continue
 			}
 			remaining++
@@ -865,10 +898,10 @@ func watchSends(refs []watchRef, target string) error {
 			if done[i] {
 				continue
 			}
-			line = fmt.Sprintf("waiting: %s queued for %s", r.file, target)
+			line = fmt.Sprintf("waiting: %s queued for %s", r.file, r.target)
 			if p, ok := sendingID(resp.Progress, r.id); ok {
 				line = fmt.Sprintf("sending %s to %s: %3.0f%% of %s%s",
-					r.file, target, p.Percent()*100, daemon.HumanBytes(p.Total), rateSuffix(p))
+					r.file, r.target, p.Percent()*100, daemon.HumanBytes(p.Total), rateSuffix(p))
 			}
 			break
 		}
@@ -989,6 +1022,9 @@ func cmdStatus(args []string) error {
 		queue := sinceStr(e.AddedAt) + " old"
 		if p, ok := sendingID(resp.Progress, e.ID); ok {
 			queue = fmt.Sprintf("%s, sending %.0f%%", sinceStr(e.AddedAt)+" old", p.Percent()*100)
+		}
+		if e.LastErr != "" {
+			queue += fmt.Sprintf(", last tried %s ago: %s", sinceStr(e.LastTried), e.LastErr)
 		}
 		fmt.Printf("  %s -> %s (%s)\n", e.FileName, e.TargetName, queue)
 	}
