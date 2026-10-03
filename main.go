@@ -333,10 +333,8 @@ func defaultName() string {
 	if err != nil || h == "" {
 		return "cat"
 	}
-	for i := 0; i < len(h); i++ {
-		if h[i] == '.' {
-			return h[:i]
-		}
+	if short, _, found := strings.Cut(h, "."); found {
+		return short
 	}
 	return h
 }
@@ -655,12 +653,18 @@ func clipboardCmds() [][]string {
 	return [][]string{{"xclip", "-selection", "clipboard", "-o"}, {"xsel", "-ob"}}
 }
 
+// clipboardTimeout bounds a clipboard dump: a wedged X server or a
+// cold PowerShell start must not hang the send.
+var clipboardTimeout = 10 * time.Second
+
 func readClipboard() ([]byte, error) {
 	for _, cmd := range clipboardCmds() {
 		if _, err := exec.LookPath(cmd[0]); err != nil {
 			continue
 		}
-		out, err := exec.Command(cmd[0], cmd[1:]...).Output()
+		ctx, cancel := context.WithTimeout(context.Background(), clipboardTimeout)
+		out, err := exec.CommandContext(ctx, cmd[0], cmd[1:]...).Output()
+		cancel()
 		if err != nil {
 			return nil, fmt.Errorf("reading clipboard with %s: %w", cmd[0], err)
 		}

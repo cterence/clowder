@@ -396,6 +396,31 @@ func TestReadClipboardFallsBackToInstalledTool(t *testing.T) {
 	}
 }
 
+// TestReadClipboardTimesOut pins the dump deadline: a clipboard tool
+// that never answers must fail the send, not hang it.
+func TestReadClipboardTimesOut(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no shell stubs on windows")
+	}
+	stub := "xclip"
+	if runtime.GOOS == "darwin" {
+		stub = "pbpaste"
+	}
+	dir := t.TempDir()
+	script := "#!/bin/sh\nsleep 30\n"
+	if err := os.WriteFile(filepath.Join(dir, stub), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("WAYLAND_DISPLAY", "")
+	old := clipboardTimeout
+	clipboardTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { clipboardTimeout = old })
+	if _, err := readClipboard(); err == nil {
+		t.Fatal("readClipboard succeeded with a hung clipboard tool, want timeout")
+	}
+}
+
 // TestStatusAddressesFlagParses proves --addresses gets past flag
 // parsing: without a daemon the command must fail on the IPC dial,
 // not on the flag set.
