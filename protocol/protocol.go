@@ -24,6 +24,9 @@ const MaxMessageSize = 8 << 20
 const (
 	AckStored    = "stored"    // storer spooled the blob; sender's job is done
 	AckDelivered = "delivered" // recipient saved and decrypted the blob
+	// AckHolding is a query, not a confirmation: a sender asks a storer
+	// to prove it still holds the spooled transfer; the reply is an Answer.
+	AckHolding = "holding"
 )
 
 // Hello is the first message on each connection, sent by both sides.
@@ -60,10 +63,13 @@ type RosterSync struct {
 // storer. Size is the exact sealed-stream length (envelope.SealedSize);
 // SHA256 is of the plaintext.
 type Offer struct {
-	ID         string `cbor:"i"`
-	FileName   string `cbor:"f"`
-	Size       int64  `cbor:"z"`
-	From       string `cbor:"o"` // sender's declared name
+	ID       string `cbor:"i"`
+	FileName string `cbor:"f"`
+	Size     int64  `cbor:"z"`
+	From     string `cbor:"o"` // sender's declared name
+	// FromKey is the sender's node key: recipients block by key, not by
+	// the spoofable name. Empty on offers from pre-key senders.
+	FromKey    string `cbor:"k,omitempty"`
 	SHA256     string `cbor:"h"` // hex SHA-256 of the plaintext
 	TargetKey  string `cbor:"t"`
 	TargetName string `cbor:"m"`

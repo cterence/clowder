@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"clowder/persist"
+	"clowder/protocol"
 	"clowder/roster"
 )
 
@@ -53,8 +54,18 @@ func (d *Daemon) blockCat(c roster.Cat) error {
 }
 
 // isBlockedName matches a declared name to the blocklist — relayed offers
-// carry the sender's name, not its key.
+// from pre-key senders carry only the sender's name, not its key.
 func (d *Daemon) isBlockedName(name string) bool {
 	cat, ok := d.ros.Get(name)
 	return ok && d.isBlockedKey(cat.Key)
+}
+
+// isBlockedSender checks an offer's sender: by node key when the offer
+// carries one, else by name for pre-key senders. The key path works
+// after a forget — the roster no longer resolves the name then.
+func (d *Daemon) isBlockedSender(o *protocol.Offer) bool {
+	if o.FromKey != "" {
+		return d.isBlockedKey(o.FromKey)
+	}
+	return d.isBlockedName(o.From)
 }

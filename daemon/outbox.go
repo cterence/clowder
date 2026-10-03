@@ -26,6 +26,9 @@ type Entry struct {
 	SourceSHA256 string `json:"source_sha256,omitempty"`
 	SourceSize   int64  `json:"source_size,omitempty"`
 	SourceModNs  int64  `json:"source_mod_ns,omitempty"`
+	// HeldBy names the storer that acked a deposit; the entry leaves the
+	// retry cycle until a hold probe confirms the storer still has it.
+	HeldBy string `json:"held_by,omitempty"`
 }
 
 // outbox persists entries as <dir>/<id>.json.

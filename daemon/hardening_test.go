@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -213,5 +214,139 @@ func TestIPCPathWithColonStaysUnix(t *testing.T) {
 	}
 	if _, err := dialIPC(path); err != nil {
 		t.Fatalf("dialIPC: %v", err)
+	}
+}
+
+// TestPeerConnCapDropsExcess pins the per-peer connection cap: one
+// authenticated peer may hold only maxPeerConns concurrent connections,
+// so a churner cannot pile unbounded serves onto one daemon.
+func TestPeerConnCapDropsExcess(t *testing.T) {
+	cedar, _ := offlineCat(t)
+	clientKey, err := parseKey(cedar.ClientKey)
+	if err != nil {
+		t.Fatalf("parseKey: %v", err)
+	}
+	miloDir := t.TempDir()
+	if err := Init(miloDir, "milo"); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	milo := runDaemon(t, miloDir, &authedLocalTransport{LocalTransport: &LocalTransport{}, peer: clientKey})
+	ck := clientKey.String()
+
+	n := maxPeerConns + 2
+	conns := make([]net.Conn, n)
+	for i := range conns {
+		var err error
+		conns[i], err = net.Dial("tcp", milo.Me().Addr)
+		if err != nil {
+			t.Fatalf("dial %d: %v", i, err)
+		}
+		defer func() { _ = conns[i].Close() }()
+	}
+	var hellos atomic.Int32
+	var wg sync.WaitGroup
+	for _, conn := range conns {
+		wg.Add(1)
+		go func(conn net.Conn) {
+			defer wg.Done()
+			pc := protocol.NewConn(conn)
+			if err := pc.WriteMsg(&protocol.Message{Hello: &protocol.Hello{
+				Name: "churner", Key: ck, ClientKey: ck, Addr: "127.0.0.1:1", Version: protocol.HelloVersion,
+			}}); err != nil {
+				return
+			}
+			_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+			if _, err := pc.ReadMsg(); err == nil {
+				hellos.Add(1)
+			}
+		}(conn)
+	}
+	wg.Wait()
+	if got := hellos.Load(); got != int32(maxPeerConns) {
+		t.Fatalf("got %d hello replies, want exactly %d", got, maxPeerConns)
+	}
+}
+
+// TestRosterMergeCapCutsConn pins the post-handshake merge throttle:
+// a peer may push at most maxRosterMerges roster updates on one
+// connection; beyond that the connection is cut, so a churner cannot
+// run unbounded merges (each a full signature verify pass plus a
+// possible roster write).
+func TestRosterMergeCapCutsConn(t *testing.T) {
+	milo := startDaemon(t, "milo")
+	conn, err := net.Dial("tcp", milo.Me().Addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	pc := protocol.NewConn(conn)
+	me := milo.Me()
+	if err := pc.WriteMsg(&protocol.Message{Hello: &protocol.Hello{
+		Name: "churner", Key: me.Key, ClientKey: me.ClientKey, Addr: me.Addr, Version: protocol.HelloVersion,
+	}}); err != nil {
+		t.Fatalf("hello: %v", err)
+	}
+	if _, err := pc.ReadMsg(); err != nil {
+		t.Fatalf("hello reply: %v", err)
+	}
+	if err := pc.WriteMsg(&protocol.Message{Roster: &protocol.RosterSync{}}); err != nil {
+		t.Fatalf("handshake roster: %v", err)
+	}
+	if _, err := pc.ReadMsg(); err != nil {
+		t.Fatalf("handshake roster reply: %v", err)
+	}
+	for i := 0; i < maxRosterMerges; i++ {
+		if err := pc.WriteMsg(&protocol.Message{Roster: &protocol.RosterSync{}}); err != nil {
+			t.Fatalf("push %d: %v", i, err)
+		}
+	}
+	// One push beyond the cap cuts the connection: the next read fails.
+	if err := pc.WriteMsg(&protocol.Message{Roster: &protocol.RosterSync{}}); err != nil {
+		t.Fatalf("over-cap push: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, err := pc.ReadMsg(); err == nil {
+		t.Fatal("connection served a merge beyond the cap")
+	}
+}
+
+// TestRelayedOfferBlockedByKey pins the key-based blocklist fix: a held
+// file from a forgotten cat must be refused by its target even though
+// the relaying storer — not the sender — delivers it, and the roster
+// no longer resolves the forgotten name.
+func TestRelayedOfferBlockedByKey(t *testing.T) {
+	milo := startDaemon(t, "milo")
+	storer := startDaemon(t, "storer", func(c *Config) { c.SpoolSweepEvery = time.Hour })
+	if err := storer.SetStorer(true, 1<<30); err != nil {
+		t.Fatal(err)
+	}
+	trust(t, milo, storer)
+	trust(t, storer, milo)
+	niko, nikoDir := offlineCat(t)
+	addCat(t, milo, niko)
+	addCat(t, storer, niko)
+
+	src := writeSource(t, "nap for a sleeping cat")
+	if _, err := milo.Send("niko", src); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	waitFor(t, func() bool { return storer.Spool().Count() == 1 }, "storer to hold the file")
+
+	// niko wakes, knows milo, then forgets it: milo is blocked by key,
+	// but no roster entry resolves the name anymore.
+	nikoD := startDaemonAt(t, nikoDir)
+	addCat(t, nikoD, milo.Me())
+	trust(t, nikoD, storer)
+	trust(t, storer, nikoD)
+	if _, ok := nikoD.Forget("milo"); !ok {
+		t.Fatal("forget milo")
+	}
+
+	storer.sweepSpoolFor(context.Background(), niko.Key)
+	if _, ok := inboxFile(t, nikoD, "nap.txt"); ok {
+		t.Fatal("held file from a blocked sender landed in the inbox")
+	}
+	if storer.Spool().Count() != 1 {
+		t.Fatal("storer dropped the refused file")
 	}
 }

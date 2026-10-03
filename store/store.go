@@ -24,11 +24,14 @@ var ErrNotFound = errors.New("store: no such spooled file")
 
 // Meta describes one spooled sealed stream.
 type Meta struct {
-	ID         string `json:"id"`
-	FileName   string `json:"file_name"`
-	Size       int64  `json:"size"`        // sealed stream size in bytes
-	SHA256     string `json:"sha256"`      // hex SHA-256 of the plaintext
-	From       string `json:"from"`        // sender's declared name
+	ID       string `json:"id"`
+	FileName string `json:"file_name"`
+	Size     int64  `json:"size"`   // sealed stream size in bytes
+	SHA256   string `json:"sha256"` // hex SHA-256 of the plaintext
+	From     string `json:"from"`   // sender's declared name
+	// FromKey is the sender's node key, carried onto relayed offers so
+	// targets can block by key, not by the spoofable name.
+	FromKey    string `json:"from_key,omitempty"`
 	TargetKey  string `json:"target_key"`  // recipient node public key, string form
 	TargetName string `json:"target_name"` // recipient's declared name
 	StoredAt   int64  `json:"stored_at"`   // unix seconds
@@ -112,6 +115,13 @@ func (s *Spool) Usage() int64 {
 		total += m.Size
 	}
 	return total
+}
+
+// Has reports whether the spool holds the transfer (meta and blob).
+func (s *Spool) Has(id string) bool {
+	_, err1 := os.Stat(s.metaPath(id))
+	_, err2 := os.Stat(s.blobPath(id))
+	return err1 == nil && err2 == nil
 }
 
 // Open returns the metadata and a seekable reader for the sealed stream.
