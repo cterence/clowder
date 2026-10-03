@@ -69,7 +69,9 @@ type RosterSync struct {
 // Offer announces a sealed file stream. TargetKey/TargetName name the cat
 // the file is for: the peer itself, or a third cat when the peer acts as a
 // storer. Size is the exact sealed-stream length (envelope.SealedSize);
-// SHA256 is of the plaintext.
+// SHA256 is of the plaintext. FileName is the wire name: a directory send
+// carries a slash-separated relative path (#31) — old daemons flatten it
+// to the basename, new ones recreate the structure under the inbox.
 type Offer struct {
 	ID       string `cbor:"i"`
 	FileName string `cbor:"f"`

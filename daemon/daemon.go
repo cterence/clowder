@@ -635,18 +635,30 @@ func (d *Daemon) Run(ctx context.Context) error {
 // Queues a file for background delivery: direct to the target first, then
 // via any reachable storer, retried on the ticker until one succeeds.
 func (d *Daemon) Send(targetName, path string) (string, error) {
-	return d.queueSend(targetName, path, false)
+	return d.queueSend(targetName, path, false, "")
 }
 
 // SendVia queues a file for delivery straight through a storer, skipping
 // the direct attempt (and its dial timeout) entirely: `clow send --storer`.
 func (d *Daemon) SendVia(targetName, path string) (string, error) {
-	return d.queueSend(targetName, path, true)
+	return d.queueSend(targetName, path, true, "")
 }
 
-func (d *Daemon) queueSend(targetName, path string, viaStorer bool) (string, error) {
+// SendNamed queues a file under an explicit wire name — a directory
+// send's relative path (#31). An empty name derives from the file's
+// base, like Send.
+func (d *Daemon) SendNamed(targetName, path, name string, viaStorer bool) (string, error) {
+	return d.queueSend(targetName, path, viaStorer, name)
+}
+
+func (d *Daemon) queueSend(targetName, path string, viaStorer bool, name string) (string, error) {
 	if d.Me().Dropbox {
 		return "", errors.New("dropbox cats cannot send files")
+	}
+	if name != "" {
+		if err := validWireName(name); err != nil {
+			return "", err
+		}
 	}
 	cat, ok := d.ros.Get(targetName)
 	if !ok {
@@ -670,15 +682,36 @@ func (d *Daemon) queueSend(targetName, path string, viaStorer bool) (string, err
 		TargetName: cat.Name,
 		TargetKey:  cat.Key,
 		SourcePath: path,
-		FileName:   filepath.Base(path),
+		FileName:   name,
 		AddedAt:    time.Now().Unix(),
 		ViaStorer:  viaStorer,
+	}
+	if e.FileName == "" {
+		e.FileName = filepath.Base(path)
 	}
 	if err := d.ob.Put(e); err != nil {
 		return "", err
 	}
 	d.goBg(func() { d.deliver(e) })
 	return id, nil
+}
+
+// validWireName rejects names the receiver would have to mangle (#31):
+// sender-side validation is a clear early error; the receiver
+// re-sanitizes every component regardless — it is the boundary.
+func validWireName(name string) error {
+	for _, r := range name {
+		if r < 32 {
+			return fmt.Errorf("daemon: wire name %q contains control characters", name)
+		}
+	}
+	slashName := strings.ReplaceAll(name, "\\", "/")
+	for _, c := range strings.Split(slashName, "/") {
+		if c == "" || c == "." || c == ".." {
+			return fmt.Errorf("daemon: invalid wire name %q", name)
+		}
+	}
+	return nil
 }
 
 // setStepLog installs (or with nil removes) the sink for a long op's
@@ -1007,6 +1040,9 @@ func (d *Daemon) saveIncoming(o *protocol.Offer, src io.Reader, recipient key.No
 		return 0, fmt.Errorf("creating inbox: %w", err)
 	}
 	name := inboxPath(inbox, o.FileName)
+	if err := os.MkdirAll(filepath.Dir(name), 0o700); err != nil {
+		return 0, fmt.Errorf("creating inbox path: %w", err)
+	}
 	ex := &exactReader{r: src}
 	var gotSize int64
 	if err := persist.WriteFunc(name, func(w io.Writer) error {
@@ -1041,29 +1077,48 @@ func (e *exactReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// inboxPath picks a non-existing inbox name, numbering collisions with a
-// dash before the extension (nap-1.txt — a dot would read as an extension).
-// Dotfiles keep their whole name as the stem.
+// inboxPath picks a non-existing inbox path for a possibly-nested wire
+// name ("photos/cats/nap.txt" from a directory send): components are
+// sanitized individually — control characters stripped, backslashes
+// read as separators, empty, "." and ".." dropped (truncating
+// traversal), Windows-reserved names munged — and the leaf numbers
+// collisions with a dash before the extension (nap-1.txt — a dot would
+// read as an extension). Dotfiles keep their whole name as the stem.
+// The result never leaves dir.
 func inboxPath(dir, name string) string {
-	// Strip control characters first: os.Stat fails with EINVAL (not IsNotExist)
-	// on a NUL byte, which would spin the collision loop below.
-	clean := strings.Map(func(r rune) rune {
+	// Strip control characters first: os.Stat fails with EINVAL (not
+	// IsNotExist) on a NUL byte, which would spin the collision loop.
+	cleaned := strings.Map(func(r rune) rune {
 		if r < 32 {
 			return -1
 		}
 		return r
-	}, name)
-	clean = filepath.Base(filepath.Clean(clean))
-	if clean == "" || clean == "." || clean == ".." || clean == "/" {
-		clean = "file"
+	}, strings.ReplaceAll(name, "\\", "/"))
+	comps := make([]string, 0, strings.Count(cleaned, "/")+1)
+	for _, c := range strings.Split(cleaned, "/") {
+		switch c {
+		case "", ".", "..":
+			continue
+		}
+		if windowsReserved(c) {
+			c = "_" + c
+		}
+		comps = append(comps, c)
 	}
-	stem, ext := clean, ""
-	if !strings.HasPrefix(clean, ".") {
-		if e := filepath.Ext(clean); e != "" {
-			stem, ext = strings.TrimSuffix(clean, e), e
+	parent, leaf := dir, "file"
+	if n := len(comps); n > 0 {
+		leaf = comps[n-1]
+		if n > 1 {
+			parent = filepath.Join(append([]string{dir}, comps[:n-1]...)...)
 		}
 	}
-	p := filepath.Join(dir, clean)
+	stem, ext := leaf, ""
+	if !strings.HasPrefix(leaf, ".") {
+		if e := filepath.Ext(leaf); e != "" {
+			stem, ext = strings.TrimSuffix(leaf, e), e
+		}
+	}
+	p := filepath.Join(parent, leaf)
 	for i := 1; ; i++ {
 		if _, err := os.Stat(p); err == nil {
 		} else if os.IsNotExist(err) {
@@ -1074,10 +1129,24 @@ func inboxPath(dir, name string) string {
 		}
 		if i > 1<<16 {
 			// Absurd collision count: pick something unique.
-			return filepath.Join(dir, fmt.Sprintf("clow-%d%s", time.Now().UnixNano(), ext))
+			return filepath.Join(parent, fmt.Sprintf("clow-%d%s", time.Now().UnixNano(), ext))
 		}
-		p = filepath.Join(dir, fmt.Sprintf("%s-%d%s", stem, i, ext))
+		p = filepath.Join(parent, fmt.Sprintf("%s-%d%s", stem, i, ext))
 	}
+}
+
+// windowsReserved reports whether name collides with a device name
+// Windows refuses to open as a file (CON, CON.txt, COM1, ...): a tree
+// sent from unix must still land on a windows cat.
+func windowsReserved(name string) bool {
+	stem, _, _ := strings.Cut(name, ".")
+	stem = strings.ToUpper(stem)
+	if slices.Contains([]string{"CON", "PRN", "AUX", "NUL"}, stem) {
+		return true
+	}
+	return len(stem) == 4 &&
+		(stem[:3] == "COM" || stem[:3] == "LPT") &&
+		stem[3] >= '1' && stem[3] <= '9'
 }
 
 // ---- outbound ----

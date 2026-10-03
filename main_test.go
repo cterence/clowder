@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -536,5 +538,118 @@ func TestVersionCommand(t *testing.T) {
 	}
 	if doc("version").name == "" {
 		t.Error("version has no help entry")
+	}
+}
+
+// expandSendPaths resolves send arguments (#31): files queue as
+// themselves, directories walk to one entry per regular file with the
+// path relative to the argument (root name included, scp -r style),
+// and symlinks are refused, not followed.
+func TestExpandSendPaths(t *testing.T) {
+	root := t.TempDir()
+	touch := func(rel, content string) {
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	touch("photos/a.jpg", "a")
+	touch("photos/cats/b.jpg", "b")
+	touch("c.txt", "c")
+
+	got, err := expandSendPaths([]string{filepath.Join(root, "photos"), filepath.Join(root, "c.txt")})
+	if err != nil {
+		t.Fatalf("expandSendPaths: %v", err)
+	}
+	want := []struct{ path, name string }{
+		{filepath.Join(root, "photos", "a.jpg"), "photos/a.jpg"},
+		{filepath.Join(root, "photos", "cats", "b.jpg"), "photos/cats/b.jpg"},
+		{filepath.Join(root, "c.txt"), "c.txt"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d files, want %d: %+v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i].path != w.path || got[i].name != w.name {
+			t.Errorf("file %d = {%s %s}, want {%s %s}", i, got[i].path, got[i].name, w.path, w.name)
+		}
+	}
+
+	// A symlink anywhere in the tree refuses the whole send.
+	if err := os.Symlink(filepath.Join(root, "c.txt"), filepath.Join(root, "photos", "link.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := expandSendPaths([]string{filepath.Join(root, "photos")}); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("symlink in tree: err = %v, want a symlink refusal", err)
+	}
+	// A symlink as a direct argument is refused too.
+	if _, err := expandSendPaths([]string{filepath.Join(root, "photos", "link.txt")}); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("symlink argument: err = %v, want a symlink refusal", err)
+	}
+}
+
+// A directory send queues one IPC send per file, each with its relative
+// wire name (#31).
+func TestSendDirectoryQueuesEachFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLOWDER_DIR", dir)
+	if err := os.MkdirAll(filepath.Join(dir, "default"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tree := t.TempDir()
+	for _, rel := range []string{"a.jpg", "cats/b.jpg"} {
+		p := filepath.Join(tree, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var mu sync.Mutex
+	var reqs []daemon.Request
+	ln, err := net.Listen("unix", daemon.IPCPath(filepath.Join(dir, "default")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			var req daemon.Request
+			_ = json.NewDecoder(conn).Decode(&req)
+			if req.Op == "send" {
+				mu.Lock()
+				reqs = append(reqs, req)
+				mu.Unlock()
+			}
+			_ = json.NewEncoder(conn).Encode(daemon.Response{OK: true, ID: "t" + req.Path})
+			_ = conn.Close()
+		}
+	}()
+
+	if err := run([]string{"send", "--async", "fluff", tree}); err != nil {
+		t.Fatalf("send dir: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(reqs) != 2 {
+		t.Fatalf("%d send requests, want 2", len(reqs))
+	}
+	var names []string
+	for _, r := range reqs {
+		names = append(names, r.Name)
+	}
+	for _, want := range []string{filepath.Base(tree) + "/a.jpg", filepath.Base(tree) + "/cats/b.jpg"} {
+		if !slices.Contains(names, want) {
+			t.Errorf("no send request named %q (got %v)", want, names)
+		}
 	}
 }

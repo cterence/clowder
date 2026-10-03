@@ -233,6 +233,19 @@ One line each; the pinning tests carry the details.
   or logs; in-flight work is uncancelable by design.
 - **In-status observability**: in-flight transfer progress (both
   directions) and lifetime stats.
+- **Multiple files and directories (#31)**: `clow send <CAT> <FILE-OR-DIR>...`
+  queues one outbox entry per file; a directory walks to one entry per
+  regular file with its slash-separated path relative to the sent root
+  riding `Offer.FileName` (the root's name included, scp -r style).
+  Symlinks and special files are refused, never followed. The receiver
+  sanitizes each component itself — control chars stripped, empty/./..
+  dropped, backslashes read as separators, Windows-reserved names munged
+  — and mkdirs the parents; a pre-#31 daemon flattens the name to the
+  basename, so a mixed mesh degrades instead of breaking. Pins:
+  TestInboxPathNested, FuzzInboxPath (containment),
+  TestSendNameValidation, TestSendNamedDeliversNested,
+  TestSendNamedViaStorer, TestNestedOfferNameSanitized,
+  TestExpandSendPaths, TestSendDirectoryQueuesEachFile.
 - **Sync send and cancel**: `clow send` follows the transfer until it
   is delivered or a storer holds it; `--async` queues and returns
   immediately. Ctrl-C (or `clow cancel [<ID>]`, all sends when no
